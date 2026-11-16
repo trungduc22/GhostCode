@@ -1,0 +1,27 @@
+[package]
+name = "autoname-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI-independent engine: detects the active OJ problem and hot-archives scratch code files under <Code>_<Title> names."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+notify = { version = "6.1", default-features = false }
+tiny_http = "0.12"
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]

@@ -1,0 +1,6 @@
+/target/
+config.json
+*.o
+*.exe
+*.pdb
+*.log

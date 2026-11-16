@@ -1,0 +1,5 @@
+# Dev-C++ ships GCC 4.9.2 whose `ld` cannot link modern Rust (unknown option
+# --high-entropy-va). Force rustup's bundled self-contained MinGW linker so the
+# build works even if Dev-C++'s MinGW64\bin is on PATH.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-self-contained=yes"]

@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/autoname-core", "crates/autoname-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 1

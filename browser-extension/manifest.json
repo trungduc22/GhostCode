@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "AutoName Code Bridge (PTIT & Codeforces)",
+  "version": "1.1.0",
+  "description": "Extracts the active problem Code + Title from Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank and sends it to the AutoName Windows app via background service worker.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://code.ptit.edu.vn/*",
+    "*://*.codeforces.com/*",
+    "*://oj.vnoi.info/*",
+    "*://*.leetcode.com/*",
+    "*://*.leetcode.cn/*",
+    "*://*.hackerrank.com/*",
+    "http://127.0.0.1:48123/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://code.ptit.edu.vn/*",
+        "*://*.codeforces.com/*",
+        "*://oj.vnoi.info/*",
+        "*://*.leetcode.com/*",
+        "*://*.leetcode.cn/*",
+        "*://*.hackerrank.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
