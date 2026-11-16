@@ -79,6 +79,51 @@ public enum ConflictResolutionPolicy
     PreferRemote
 }
 
+public enum CloudProviderKind
+{
+    GoogleDrive,
+    OneDrive,
+    LocalOnly
+}
+
+public enum NotificationLevel
+{
+    All,
+    WarningsOnly,
+    Disabled
+}
+
+public enum BackupProtectionState
+{
+    Protected,
+    Degraded,
+    Paused,
+    Unhealthy
+}
+
+public enum SubmissionVerdict
+{
+    NotSubmitted,
+    Submitted,
+    Pending,
+    Judging,
+    Accepted,
+    WrongAnswer,
+    TimeLimitExceeded,
+    MemoryLimitExceeded,
+    RuntimeError,
+    CompilationError,
+    Other,
+    Unknown
+}
+
+public enum MicaAppearanceKind
+{
+    Mica,
+    MicaAlt,
+    SolidFallback
+}
+
 public sealed record BrowserStatusInfo(
     BrowserKind Kind,
     string DisplayName,
@@ -149,6 +194,61 @@ public sealed record WatchedFolderConfig(
 public sealed record GoogleOAuthClientConfig(
     string ClientId = "",
     [property: JsonIgnore] string ClientSecret = "");
+
+public sealed record MicrosoftOAuthClientConfig(
+    string ClientId = "",
+    [property: JsonIgnore] string TenantId = "consumers");
+
+public sealed record ProblemStatementRecord(
+    string ProblemKey,
+    string Platform,
+    string ProblemCode,
+    string Title,
+    string Url,
+    string Description,
+    string InputSpec,
+    string OutputSpec,
+    string Constraints,
+    string TimeLimit,
+    string MemoryLimit,
+    bool InteractiveOrCustomJudge,
+    long CapturedAtUnixMs)
+{
+    public static string BuildKey(string platform, string problemCode) =>
+        $"{(platform ?? string.Empty).Trim().ToUpperInvariant()}::{(problemCode ?? string.Empty).Trim().ToUpperInvariant()}";
+}
+
+public sealed record SampleTestCaseRecord(
+    string Id,
+    string ProblemKey,
+    int CaseIndex,
+    string InputText,
+    string ExpectedOutput,
+    string SourceUrl,
+    bool IsCustom,
+    long CapturedAtUnixMs);
+
+public sealed record SubmissionRecord(
+    string Id,
+    string Platform,
+    string ProblemCode,
+    string? SubmissionId,
+    long SubmittedAtUnixMs,
+    string Language,
+    SubmissionVerdict Verdict,
+    int? RuntimeMs,
+    int? MemoryKb,
+    string? VersionId,
+    bool IsVersionCertain);
+
+public sealed record NotificationRecord(
+    string Id,
+    string Category,
+    string Severity,
+    string Title,
+    string Message,
+    string DedupKey,
+    long OccurredAtUnixMs);
 
 public sealed record FileSnapshotRecord(
     string SourcePath,
@@ -255,6 +355,42 @@ public sealed class GhostCodeConfig
     public Dictionary<string, string> CustomBrowserPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> CustomIdePaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    // Expansion Pack: Cloud Provider Selection & Sync Pause
+    public CloudProviderKind PrimaryCloudProvider { get; set; } = CloudProviderKind.GoogleDrive;
+    public MicrosoftOAuthClientConfig OneDriveOAuthClient { get; set; } = new();
+    public string OneDriveFolderName { get; set; } = "CodeArchive";
+    public bool SyncPausedManually { get; set; } = false;
+
+    // Expansion Pack: Native Notifications & Quiet Hours
+    public NotificationLevel NotificationLevel { get; set; } = NotificationLevel.All;
+    public bool AlertCloudConnection { get; set; } = true;
+    public bool AlertBackupFailures { get; set; } = true;
+    public bool AlertSubmissionVerdicts { get; set; } = true;
+    public bool AlertSuccessfulSync { get; set; } = false;
+    public bool QuietHoursEnabled { get; set; } = false;
+    public int QuietHoursStartHour { get; set; } = 23;
+    public int QuietHoursEndHour { get; set; } = 7;
+
+    // Expansion Pack: Productivity Hotkey, Default IDEs & Problem Capture
+    public string GlobalHotkeyGesture { get; set; } = "Ctrl+Shift+F9";
+    public bool GlobalHotkeyEnabled { get; set; } = true;
+    public string DefaultIdeForC { get; set; } = "Auto";
+    public string DefaultIdeForCpp { get; set; } = "Auto";
+    public string DefaultIdeForPython { get; set; } = "Auto";
+    public bool CaptureProblemStatements { get; set; } = true;
+    public Dictionary<string, bool> WebsiteStatementCaptureEnabled { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool TrackSubmissionVerdicts { get; set; } = true;
+    public bool TrimTrailingWhitespaceOnCompare { get; set; } = true;
+    public bool EstimateActiveCodingTime { get; set; } = false;
+    public int AutoRecoveryCheckIntervalMinutes { get; set; } = 0;
+
+    // Expansion Pack: Customizable Mica & Opt-In AI Assistance
+    public MicaAppearanceKind MicaKind { get; set; } = MicaAppearanceKind.Mica;
+    public string MicaTintColorHex { get; set; } = "#181C32";
+    public double MicaTintOpacity { get; set; } = 0.5;
+    public double MicaLuminosityOpacity { get; set; } = 0.85;
+    public bool AiAssistanceOptIn { get; set; } = false;
+
     public static string DefaultConfigPath(string? localAppDataOverride = null) =>
         Path.Combine(KnownFoldersResolver.ResolveAppDataDir(localAppDataOverride), "config.json");
 
@@ -347,6 +483,16 @@ public sealed class GhostCodeConfig
         if (ExecutionMemoryLimitMb <= 0) ExecutionMemoryLimitMb = 256;
         CustomBrowserPaths ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         CustomIdePaths ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        OneDriveOAuthClient ??= new MicrosoftOAuthClientConfig();
+        if (string.IsNullOrWhiteSpace(OneDriveFolderName)) OneDriveFolderName = "CodeArchive";
+        if (string.IsNullOrWhiteSpace(GlobalHotkeyGesture)) GlobalHotkeyGesture = "Ctrl+Shift+F9";
+        DefaultIdeForC = string.IsNullOrWhiteSpace(DefaultIdeForC) ? "Auto" : DefaultIdeForC;
+        DefaultIdeForCpp = string.IsNullOrWhiteSpace(DefaultIdeForCpp) ? "Auto" : DefaultIdeForCpp;
+        DefaultIdeForPython = string.IsNullOrWhiteSpace(DefaultIdeForPython) ? "Auto" : DefaultIdeForPython;
+        WebsiteStatementCaptureEnabled ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(MicaTintColorHex)) MicaTintColorHex = "#181C32";
+        MicaTintOpacity = Math.Clamp(MicaTintOpacity, 0.0, 1.0);
+        MicaLuminosityOpacity = Math.Clamp(MicaLuminosityOpacity, 0.0, 1.0);
     }
 
     public void Save(string configPath)
@@ -390,7 +536,35 @@ public sealed class GhostCodeConfig
             ExecutionMemoryLimitMb = ExecutionMemoryLimitMb,
             ConflictPolicy = ConflictPolicy,
             CustomBrowserPaths = new Dictionary<string, string>(CustomBrowserPaths, StringComparer.OrdinalIgnoreCase),
-            CustomIdePaths = new Dictionary<string, string>(CustomIdePaths, StringComparer.OrdinalIgnoreCase)
+            CustomIdePaths = new Dictionary<string, string>(CustomIdePaths, StringComparer.OrdinalIgnoreCase),
+            PrimaryCloudProvider = PrimaryCloudProvider,
+            OneDriveOAuthClient = new MicrosoftOAuthClientConfig(OneDriveOAuthClient.ClientId, string.IsNullOrWhiteSpace(OneDriveOAuthClient.TenantId) ? "consumers" : OneDriveOAuthClient.TenantId),
+            OneDriveFolderName = OneDriveFolderName,
+            SyncPausedManually = SyncPausedManually,
+            NotificationLevel = NotificationLevel,
+            AlertCloudConnection = AlertCloudConnection,
+            AlertBackupFailures = AlertBackupFailures,
+            AlertSubmissionVerdicts = AlertSubmissionVerdicts,
+            AlertSuccessfulSync = AlertSuccessfulSync,
+            QuietHoursEnabled = QuietHoursEnabled,
+            QuietHoursStartHour = QuietHoursStartHour,
+            QuietHoursEndHour = QuietHoursEndHour,
+            GlobalHotkeyGesture = GlobalHotkeyGesture,
+            GlobalHotkeyEnabled = GlobalHotkeyEnabled,
+            DefaultIdeForC = DefaultIdeForC,
+            DefaultIdeForCpp = DefaultIdeForCpp,
+            DefaultIdeForPython = DefaultIdeForPython,
+            CaptureProblemStatements = CaptureProblemStatements,
+            WebsiteStatementCaptureEnabled = new Dictionary<string, bool>(WebsiteStatementCaptureEnabled, StringComparer.OrdinalIgnoreCase),
+            TrackSubmissionVerdicts = TrackSubmissionVerdicts,
+            TrimTrailingWhitespaceOnCompare = TrimTrailingWhitespaceOnCompare,
+            EstimateActiveCodingTime = EstimateActiveCodingTime,
+            AutoRecoveryCheckIntervalMinutes = AutoRecoveryCheckIntervalMinutes,
+            MicaKind = MicaKind,
+            MicaTintColorHex = MicaTintColorHex,
+            MicaTintOpacity = MicaTintOpacity,
+            MicaLuminosityOpacity = MicaLuminosityOpacity,
+            AiAssistanceOptIn = AiAssistanceOptIn
         };
         return JsonSerializer.Serialize(sanitized, JsonOptions);
     }

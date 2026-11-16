@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Models;
+using GhostCode.Core.Notifications;
 using GhostCode.Core.Storage;
 
 namespace GhostCode.Core.Cloud;
@@ -55,7 +56,7 @@ public sealed record DisconnectResult(
 /// Native Google Drive v3 client using OAuth 2.0 Desktop PKCE, DPAPI token persistence,
 /// SHA-256 duplicate avoidance, bounded exponential backoff, and explicit server confirmation.
 /// </summary>
-public sealed class GoogleDriveService : IAsyncDisposable
+public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
 {
     public const string DriveScope = "https://www.googleapis.com/auth/drive.file openid email profile";
 
@@ -63,6 +64,7 @@ public sealed class GoogleDriveService : IAsyncDisposable
     private readonly SqliteArchiveStore _store;
     private readonly DpapiCredentialStore _credentialStore;
     private readonly HttpClient _http;
+    private readonly NotificationCoordinator? _notifications;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
 
     private CancellationTokenSource? _bgCts;
@@ -72,15 +74,66 @@ public sealed class GoogleDriveService : IAsyncDisposable
         GhostCodeConfig config,
         SqliteArchiveStore store,
         DpapiCredentialStore credentialStore,
-        HttpClient? httpClient = null)
+        HttpClient? httpClient = null,
+        NotificationCoordinator? notifications = null)
     {
         _config = config;
         _store = store;
         _credentialStore = credentialStore;
         _http = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+        _notifications = notifications;
     }
 
+    public CloudProviderKind ProviderKind => CloudProviderKind.GoogleDrive;
+    public string DisplayName => "Google Drive";
+    public bool IsConfigured => HasOAuthClientConfigured;
     public bool HasOAuthClientConfigured => !string.IsNullOrWhiteSpace(_config.OAuthClient?.ClientId);
+
+    public async Task<CloudAccountInfo> GetAccountInfoAsync(CancellationToken ct = default)
+    {
+        var tok = await _credentialStore.LoadAsync(ct);
+        return tok is null
+            ? new CloudAccountInfo(CloudProviderKind.GoogleDrive, false, string.Empty, "Not connected")
+            : new CloudAccountInfo(CloudProviderKind.GoogleDrive, true, tok.Email, tok.DisplayName);
+    }
+
+    public Task<DrivePullReport> PullAndReconcileAsync(IProgress<DriveSyncProgress>? progress = null, CancellationToken ct = default) =>
+        PullAndReconcileFromDriveAsync(progress, ct);
+
+    public async Task<IReadOnlyList<CloudObjectMetadata>> ListRemoteObjectsAsync(CancellationToken ct = default)
+    {
+        var tokens = await EnsureValidTokenAsync(ct);
+        if (tokens is null)
+            return Array.Empty<CloudObjectMetadata>();
+        var folderId = await EnsureRemoteFolderIdAsync(tokens.AccessToken, ct);
+        var entries = await ListFolderFilesAsync(tokens.AccessToken, folderId, ct);
+        return entries
+            .Where(e => !e.Name.Equals(ManifestFileName, StringComparison.OrdinalIgnoreCase))
+            .Select(e =>
+            {
+                e.AppProperties.TryGetValue("ghostcode_sha256", out var propSha);
+                return new CloudObjectMetadata(e.Id, e.Name, e.Size, propSha ?? e.Sha256Checksum, e.CreatedUnixMs);
+            })
+            .ToList();
+    }
+
+    public async Task<byte[]> DownloadRawBytesAsync(string remoteId, CancellationToken ct = default)
+    {
+        var tokens = await EnsureValidTokenAsync(ct)
+            ?? throw new InvalidOperationException("Not connected to Google Drive.");
+        return await DownloadRawFileBytesAsync(tokens.AccessToken, remoteId, ct);
+    }
+
+    public async Task<string> UploadVersionBytesAsync(ArchiveVersionRecord version, byte[] rawBytes, CancellationToken ct = default)
+    {
+        var tokens = await EnsureValidTokenAsync(ct)
+            ?? throw new InvalidOperationException("Not connected to Google Drive.");
+        var folderId = await EnsureRemoteFolderIdAsync(tokens.AccessToken, ct);
+        var existingId = await FindExistingDriveFileByShaAsync(tokens.AccessToken, folderId, version.Sha256, ct);
+        if (!string.IsNullOrEmpty(existingId))
+            return existingId;
+        return await UploadMultipartAsync(tokens.AccessToken, folderId, version, rawBytes, ct);
+    }
 
     public event Action<DriveSyncReport>? SyncCompleted;
     public event Action<OAuthConnectionStage, string>? AuthStageChanged;
@@ -103,7 +156,10 @@ public sealed class GoogleDriveService : IAsyncDisposable
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(20), ct);
-                if (_config.DriveEnabled && await GetConnectedAccountAsync(ct) is not null)
+                if (!_config.SyncPausedManually
+                    && _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive
+                    && _config.DriveEnabled
+                    && await GetConnectedAccountAsync(ct) is not null)
                 {
                     await SyncPendingAsync(progress: null, ct);
                 }
@@ -410,6 +466,8 @@ public sealed class GoogleDriveService : IAsyncDisposable
     {
         if (!_config.DriveEnabled)
             return new DriveSyncReport(0, 0, 0, false, "Google Drive synchronization is disabled in Settings.");
+        if (_config.SyncPausedManually)
+            return new DriveSyncReport(0, 0, 0, true, "Synchronization is paused manually.");
 
         await _syncLock.WaitAsync(ct);
         try
@@ -421,6 +479,8 @@ public sealed class GoogleDriveService : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                if (_notifications is not null)
+                    await _notifications.NotifyAsync("cloud", "Error", "GhostCode — Google Drive Authorization Lost", ex.Message, "gdrive_auth_lost", "open", ct);
                 return new DriveSyncReport(0, 0, 0, false, ex.Message);
             }
 
@@ -492,6 +552,19 @@ public sealed class GoogleDriveService : IAsyncDisposable
             }
 
             progress?.Report(new DriveSyncProgress(items.Count, items.Count, string.Empty, 100.0));
+            if (_notifications is not null)
+            {
+                await _notifications.NotifyRepeatedFailureOrRecoveryAsync(
+                    "cloud",
+                    "gdrive_upload",
+                    failed > 0,
+                    "GhostCode — Google Drive Sync Interrupted",
+                    $"Cannot upload {failed} file(s) to Google Drive. Local backups remain safe and queued ({lastError}).",
+                    "GhostCode — Google Drive Sync Recovered",
+                    $"Successfully uploaded {uploaded} queued file(s) to Google Drive.",
+                    thresholdBeforeAlert: 2,
+                    ct: ct);
+            }
             var report = new DriveSyncReport(uploaded, failed, deduped, true, lastError);
             SyncCompleted?.Invoke(report);
             return report;
@@ -670,42 +743,7 @@ public sealed class GoogleDriveService : IAsyncDisposable
 
     private async Task PublishManifestLockedAsync(string accessToken, string folderId, CancellationToken ct)
     {
-        var versions = await _store.QueryVersionsAsync(limit: 5000, ct: ct);
-        var events = await _store.GetArchiveHistoryEventsAsync(1000, ct);
-        var manifestObj = new
-        {
-            schema = 2,
-            exported_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            device = Environment.MachineName,
-            versions = versions.Select(v => new
-            {
-                id = v.Id,
-                version_num = v.VersionNum,
-                source_path = v.SourcePath,
-                file_name = v.FileName,
-                sha256 = v.Sha256,
-                norm_hash = v.NormHash,
-                size_bytes = v.SizeBytes,
-                problem_code = v.ProblemCode,
-                problem_title = v.ProblemTitle,
-                platform = v.Platform,
-                created_at = v.CreatedAtUnixMs,
-                drive_file_id = v.DriveFileId,
-                is_conflict = v.IsConflictBranch
-            }),
-            events = events.Select(e => new
-            {
-                id = e.Id,
-                event_type = e.EventType,
-                source_path = e.SourcePath,
-                version_id = e.VersionId,
-                summary = e.Summary,
-                occurred_at = e.OccurredAtUnixMs,
-                device_name = e.DeviceName
-            })
-        };
-
-        var payloadBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(manifestObj));
+        var payloadBytes = await CloudManifestCodec.BuildManifestBytesAsync(_store, ct);
         var existingManifestId = await FindDriveFileByNameAsync(accessToken, folderId, ManifestFileName, ct);
 
         using var multipart = new MultipartContent("related", "gcm_" + Guid.NewGuid().ToString("N"));
@@ -780,51 +818,22 @@ public sealed class GoogleDriveService : IAsyncDisposable
         }
 
         var remoteFiles = await ListFolderFilesAsync(accessToken, folderId, ct);
-        var beforeAll = await _store.QueryVersionsAsync(limit: 10_000, ct: ct);
-        var existingById = beforeAll.ToDictionary(v => v.Id, StringComparer.OrdinalIgnoreCase);
 
         int discovered = 0, newCloud = 0, conflicts = 0, eventsImported = 0;
         var seenDriveIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. Reconcile manifest first if present (contains complete multi-version tree + history events)
+        // 1. Reconcile manifest first if present (contains complete multi-version tree + statements + samples + submissions + history events)
         var manifestEntry = remoteFiles.FirstOrDefault(f => f.Name.Equals(ManifestFileName, StringComparison.OrdinalIgnoreCase));
         if (manifestEntry is not null)
         {
             var manifestBytes = await DownloadRawFileBytesAsync(accessToken, manifestEntry.Id, ct);
-            using var mdoc = JsonDocument.Parse(manifestBytes);
-            if (mdoc.RootElement.TryGetProperty("versions", out var verArray) && verArray.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var ve in verArray.EnumerateArray())
-                {
-                    var rec = ParseManifestVersion(ve);
-                    if (rec is null)
-                        continue;
-                    discovered++;
-                    if (!string.IsNullOrEmpty(rec.DriveFileId))
-                        seenDriveIds.Add(rec.DriveFileId);
-
-                    var hadConflictCountBefore = (await _store.QueryVersionsAsync(limit: 10_000, ct: ct)).Count(x => x.IsConflictBranch);
-                    bool existed = existingById.ContainsKey(rec.Id);
-                    await _store.UpsertRemoteVersionMetadataAsync(rec, ct);
-                    var afterAll = await _store.QueryVersionsAsync(limit: 10_000, ct: ct);
-                    if (!existed && afterAll.Any(x => x.Id == rec.Id && !x.IsLocalAvailable))
-                        newCloud++;
-                    if (afterAll.Count(x => x.IsConflictBranch) > hadConflictCountBefore)
-                        conflicts++;
-                }
-            }
-
-            if (mdoc.RootElement.TryGetProperty("events", out var evArray) && evArray.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var ee in evArray.EnumerateArray())
-                {
-                    var ev = ParseManifestEvent(ee);
-                    if (ev is null)
-                        continue;
-                    await _store.RecordArchiveHistoryEventAsync(ev, ct);
-                    eventsImported++;
-                }
-            }
+            var manifestRec = await CloudManifestCodec.ReconcileManifestBytesAsync(_store, manifestBytes, ct);
+            discovered += manifestRec.Discovered;
+            newCloud += manifestRec.NewCloudOnly;
+            conflicts += manifestRec.Conflicts;
+            eventsImported += manifestRec.EventsImported;
+            foreach (var sid in manifestRec.SeenRemoteIds)
+                seenDriveIds.Add(sid);
         }
 
         // 2. Also inspect individual remote files (handles uploads made without a manifest)
@@ -1040,42 +1049,6 @@ public sealed class GoogleDriveService : IAsyncDisposable
             throw new InvalidOperationException($"Drive download failed ({(int)resp.StatusCode}): {err}");
         }
         return await resp.Content.ReadAsByteArrayAsync(ct);
-    }
-
-    private static ArchiveVersionRecord? ParseManifestVersion(JsonElement ve)
-    {
-        var id = ve.TryGetProperty("id", out var p) ? p.GetString() : null;
-        var fileName = ve.TryGetProperty("file_name", out var fn) ? fn.GetString() : null;
-        var sha = ve.TryGetProperty("sha256", out var sh) ? sh.GetString() : null;
-        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(fileName) || string.IsNullOrWhiteSpace(sha))
-            return null;
-        var ver = ve.TryGetProperty("version_num", out var vn) ? vn.GetInt32() : 1;
-        var sp = ve.TryGetProperty("source_path", out var spp) ? (spp.GetString() ?? fileName) : fileName;
-        var nh = ve.TryGetProperty("norm_hash", out var nhp) ? (nhp.GetString() ?? sha) : sha;
-        var sz = ve.TryGetProperty("size_bytes", out var szp) ? szp.GetInt64() : 0;
-        var pc = ve.TryGetProperty("problem_code", out var pcp) ? pcp.GetString() : null;
-        var pt = ve.TryGetProperty("problem_title", out var ptp) ? ptp.GetString() : null;
-        var pl = ve.TryGetProperty("platform", out var plp) ? (plp.GetString() ?? "Unknown") : "Unknown";
-        var ts = ve.TryGetProperty("created_at", out var tsp) ? tsp.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var did = ve.TryGetProperty("drive_file_id", out var dip) ? dip.GetString() : null;
-        var conf = ve.TryGetProperty("is_conflict", out var cp) && cp.ValueKind == JsonValueKind.True;
-        return new ArchiveVersionRecord(
-            id, ver, sp, $"cloud://{did ?? id}", null, fileName, sha, nh, sz, pc, pt, pl, ts,
-            IsLocalAvailable: false, DriveFileId: did, IsConflictBranch: conf);
-    }
-
-    private static ArchiveHistoryEvent? ParseManifestEvent(JsonElement ee)
-    {
-        var id = ee.TryGetProperty("id", out var ip) ? ip.GetString() : null;
-        var et = ee.TryGetProperty("event_type", out var etp) ? etp.GetString() : null;
-        var sum = ee.TryGetProperty("summary", out var sump) ? sump.GetString() : null;
-        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(et) || string.IsNullOrWhiteSpace(sum))
-            return null;
-        var sp = ee.TryGetProperty("source_path", out var spp) ? (spp.GetString() ?? string.Empty) : string.Empty;
-        var vid = ee.TryGetProperty("version_id", out var vip) ? vip.GetString() : null;
-        var ts = ee.TryGetProperty("occurred_at", out var tsp) ? tsp.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var dev = ee.TryGetProperty("device_name", out var dp) ? (dp.GetString() ?? "Cloud") : "Cloud";
-        return new ArchiveHistoryEvent(id, et, sp, vid, sum, ts, dev);
     }
 
     private static ArchiveVersionRecord? ParseDriveFileMetadata(RemoteDriveFileEntry rf)

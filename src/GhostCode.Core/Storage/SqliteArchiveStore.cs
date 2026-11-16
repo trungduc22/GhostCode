@@ -8,6 +8,15 @@ public sealed record ArchiveSearchResult(
     ArchiveVersionRecord Version,
     string MatchKind);
 
+public sealed record ProblemTimelineEntry(
+    string Id,
+    string EventType,
+    string Summary,
+    long OccurredAtUnixMs,
+    string DeviceOrSource,
+    string? VersionId,
+    string? Detail);
+
 /// <summary>
 /// Thread-safe, transactional SQLite WAL store for Last-Known-Good snapshots,
 /// immutable historical backup versions, upload queue, and monitoring events.
@@ -158,6 +167,60 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 occurred_at INTEGER NOT NULL,
                 device_name TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS problem_statements (
+                problem_key TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                problem_code TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT NOT NULL,
+                input_spec TEXT NOT NULL,
+                output_spec TEXT NOT NULL,
+                constraints TEXT NOT NULL,
+                time_limit TEXT NOT NULL,
+                memory_limit TEXT NOT NULL,
+                interactive_or_custom INTEGER NOT NULL DEFAULT 0,
+                captured_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS problem_sample_tests (
+                id TEXT PRIMARY KEY,
+                problem_key TEXT NOT NULL,
+                case_index INTEGER NOT NULL,
+                input_text TEXT NOT NULL,
+                expected_output TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                is_custom INTEGER NOT NULL DEFAULT 0,
+                captured_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sample_tests_key ON problem_sample_tests(problem_key, case_index);
+
+            CREATE TABLE IF NOT EXISTS submission_records (
+                id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                problem_code TEXT NOT NULL,
+                submission_id TEXT,
+                submitted_at INTEGER NOT NULL,
+                language TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                runtime_ms INTEGER,
+                memory_kb INTEGER,
+                version_id TEXT,
+                is_version_certain INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_submissions_problem ON submission_records(problem_code, submitted_at DESC);
+
+            CREATE TABLE IF NOT EXISTS notification_history (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                dedup_key TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_notif_occurred ON notification_history(occurred_at DESC);
 
             UPDATE upload_queue
             SET status = 'Pending', updated_at = $now
@@ -965,6 +1028,416 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
 
         return results;
     }
+
+    public async Task<(bool Healthy, string Detail)> CheckDatabaseHealthAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA quick_check;";
+            var res = Convert.ToString(await cmd.ExecuteScalarAsync(ct));
+            bool ok = string.Equals(res, "ok", StringComparison.OrdinalIgnoreCase);
+            return (ok, ok ? "SQLite WAL quick_check OK" : $"SQLite quick_check: {res}");
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    public async Task UpsertProblemStatementAsync(ProblemStatementRecord rec, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO problem_statements (problem_key, platform, problem_code, title, url, description, input_spec, output_spec, constraints, time_limit, memory_limit, interactive_or_custom, captured_at)
+                VALUES ($pk, $pl, $pc, $title, $url, $desc, $inSpec, $outSpec, $cons, $tl, $ml, $inter, $ts)
+                ON CONFLICT(problem_key) DO UPDATE SET
+                    platform=excluded.platform,
+                    problem_code=excluded.problem_code,
+                    title=excluded.title,
+                    url=excluded.url,
+                    description=excluded.description,
+                    input_spec=excluded.input_spec,
+                    output_spec=excluded.output_spec,
+                    constraints=excluded.constraints,
+                    time_limit=excluded.time_limit,
+                    memory_limit=excluded.memory_limit,
+                    interactive_or_custom=excluded.interactive_or_custom,
+                    captured_at=CASE WHEN excluded.captured_at > problem_statements.captured_at THEN excluded.captured_at ELSE problem_statements.captured_at END;
+                """;
+            cmd.Parameters.AddWithValue("$pk", rec.ProblemKey);
+            cmd.Parameters.AddWithValue("$pl", rec.Platform);
+            cmd.Parameters.AddWithValue("$pc", rec.ProblemCode);
+            cmd.Parameters.AddWithValue("$title", rec.Title);
+            cmd.Parameters.AddWithValue("$url", rec.Url);
+            cmd.Parameters.AddWithValue("$desc", rec.Description);
+            cmd.Parameters.AddWithValue("$inSpec", rec.InputSpec);
+            cmd.Parameters.AddWithValue("$outSpec", rec.OutputSpec);
+            cmd.Parameters.AddWithValue("$cons", rec.Constraints);
+            cmd.Parameters.AddWithValue("$tl", rec.TimeLimit);
+            cmd.Parameters.AddWithValue("$ml", rec.MemoryLimit);
+            cmd.Parameters.AddWithValue("$inter", rec.InteractiveOrCustomJudge ? 1 : 0);
+            cmd.Parameters.AddWithValue("$ts", rec.CapturedAtUnixMs);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<ProblemStatementRecord?> GetProblemStatementAsync(string problemKey, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT problem_key, platform, problem_code, title, url, description, input_spec, output_spec, constraints, time_limit, memory_limit, interactive_or_custom, captured_at
+            FROM problem_statements
+            WHERE problem_key = $pk COLLATE NOCASE OR problem_code = $pk COLLATE NOCASE
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$pk", problemKey);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct))
+            return null;
+        return ReadProblemStatement(r);
+    }
+
+    public async Task<List<ProblemStatementRecord>> GetAllProblemStatementsAsync(int limit = 1000, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT problem_key, platform, problem_code, title, url, description, input_spec, output_spec, constraints, time_limit, memory_limit, interactive_or_custom, captured_at
+            FROM problem_statements
+            ORDER BY captured_at DESC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<ProblemStatementRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(ReadProblemStatement(r));
+        return list;
+    }
+
+    public async Task UpsertSampleTestAsync(SampleTestCaseRecord tc, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO problem_sample_tests (id, problem_key, case_index, input_text, expected_output, source_url, is_custom, captured_at)
+                VALUES ($id, $pk, $idx, $inTxt, $outTxt, $url, $custom, $ts)
+                ON CONFLICT(id) DO UPDATE SET
+                    case_index=excluded.case_index,
+                    input_text=excluded.input_text,
+                    expected_output=excluded.expected_output,
+                    source_url=excluded.source_url,
+                    is_custom=excluded.is_custom,
+                    captured_at=excluded.captured_at;
+                """;
+            cmd.Parameters.AddWithValue("$id", tc.Id);
+            cmd.Parameters.AddWithValue("$pk", tc.ProblemKey);
+            cmd.Parameters.AddWithValue("$idx", tc.CaseIndex);
+            cmd.Parameters.AddWithValue("$inTxt", tc.InputText);
+            cmd.Parameters.AddWithValue("$outTxt", tc.ExpectedOutput);
+            cmd.Parameters.AddWithValue("$url", tc.SourceUrl);
+            cmd.Parameters.AddWithValue("$custom", tc.IsCustom ? 1 : 0);
+            cmd.Parameters.AddWithValue("$ts", tc.CapturedAtUnixMs);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<List<SampleTestCaseRecord>> GetSampleTestsAsync(string problemKey, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, problem_key, case_index, input_text, expected_output, source_url, is_custom, captured_at
+            FROM problem_sample_tests
+            WHERE problem_key = $pk COLLATE NOCASE
+            ORDER BY is_custom ASC, case_index ASC, captured_at ASC;
+            """;
+        cmd.Parameters.AddWithValue("$pk", problemKey);
+        var list = new List<SampleTestCaseRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(ReadSampleTest(r));
+        return list;
+    }
+
+    public async Task<List<SampleTestCaseRecord>> GetAllSampleTestsAsync(int limit = 2000, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, problem_key, case_index, input_text, expected_output, source_url, is_custom, captured_at
+            FROM problem_sample_tests
+            ORDER BY problem_key ASC, case_index ASC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<SampleTestCaseRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(ReadSampleTest(r));
+        return list;
+    }
+
+    public async Task DeleteSampleTestAsync(string testId, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM problem_sample_tests WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", testId);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task UpsertSubmissionRecordAsync(SubmissionRecord sub, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    INSERT INTO submission_records (id, platform, problem_code, submission_id, submitted_at, language, verdict, runtime_ms, memory_kb, version_id, is_version_certain)
+                    VALUES ($id, $pl, $pc, $sid, $ts, $lang, $vrd, $rt, $mem, $vid, $cert)
+                    ON CONFLICT(id) DO UPDATE SET
+                        verdict=excluded.verdict,
+                        runtime_ms=COALESCE(excluded.runtime_ms, submission_records.runtime_ms),
+                        memory_kb=COALESCE(excluded.memory_kb, submission_records.memory_kb),
+                        version_id=COALESCE(excluded.version_id, submission_records.version_id),
+                        is_version_certain=CASE WHEN excluded.is_version_certain = 1 THEN 1 ELSE submission_records.is_version_certain END;
+                    """;
+                cmd.Parameters.AddWithValue("$id", sub.Id);
+                cmd.Parameters.AddWithValue("$pl", sub.Platform);
+                cmd.Parameters.AddWithValue("$pc", sub.ProblemCode);
+                cmd.Parameters.AddWithValue("$sid", (object?)sub.SubmissionId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$ts", sub.SubmittedAtUnixMs);
+                cmd.Parameters.AddWithValue("$lang", sub.Language);
+                cmd.Parameters.AddWithValue("$vrd", sub.Verdict.ToString());
+                cmd.Parameters.AddWithValue("$rt", (object?)sub.RuntimeMs ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$mem", (object?)sub.MemoryKb ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$vid", (object?)sub.VersionId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$cert", sub.IsVersionCertain ? 1 : 0);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            var certNote = sub.IsVersionCertain && !string.IsNullOrEmpty(sub.VersionId)
+                ? "verified version match"
+                : "version link uncertain";
+            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                $"sub_{sub.Id}_{sub.Verdict}",
+                "SubmissionVerdict",
+                sub.ProblemCode,
+                sub.IsVersionCertain ? sub.VersionId : null,
+                $"[{sub.Platform}] {sub.ProblemCode} Submission {sub.SubmissionId ?? sub.Id}: {sub.Verdict} ({certNote})",
+                sub.SubmittedAtUnixMs,
+                sub.Platform), ct);
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<List<SubmissionRecord>> GetSubmissionsForProblemAsync(string problemCode, int limit = 100, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, platform, problem_code, submission_id, submitted_at, language, verdict, runtime_ms, memory_kb, version_id, is_version_certain
+            FROM submission_records
+            WHERE problem_code = $pc COLLATE NOCASE
+            ORDER BY submitted_at DESC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$pc", problemCode);
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<SubmissionRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(ReadSubmission(r));
+        return list;
+    }
+
+    public async Task<List<SubmissionRecord>> GetAllSubmissionsAsync(int limit = 1000, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, platform, problem_code, submission_id, submitted_at, language, verdict, runtime_ms, memory_kb, version_id, is_version_certain
+            FROM submission_records
+            ORDER BY submitted_at DESC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<SubmissionRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(ReadSubmission(r));
+        return list;
+    }
+
+    public async Task<SubmissionRecord?> GetLatestVerdictForVersionAsync(string versionId, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, platform, problem_code, submission_id, submitted_at, language, verdict, runtime_ms, memory_kb, version_id, is_version_certain
+            FROM submission_records
+            WHERE version_id = $vid AND is_version_certain = 1
+            ORDER BY submitted_at DESC
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$vid", versionId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return await r.ReadAsync(ct) ? ReadSubmission(r) : null;
+    }
+
+    public async Task RecordNotificationAsync(NotificationRecord nr, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR IGNORE INTO notification_history (id, category, severity, title, message, dedup_key, occurred_at)
+                VALUES ($id, $cat, $sev, $title, $msg, $dk, $ts);
+                """;
+            cmd.Parameters.AddWithValue("$id", nr.Id);
+            cmd.Parameters.AddWithValue("$cat", nr.Category);
+            cmd.Parameters.AddWithValue("$sev", nr.Severity);
+            cmd.Parameters.AddWithValue("$title", nr.Title);
+            cmd.Parameters.AddWithValue("$msg", nr.Message);
+            cmd.Parameters.AddWithValue("$dk", nr.DedupKey);
+            cmd.Parameters.AddWithValue("$ts", nr.OccurredAtUnixMs);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<List<NotificationRecord>> GetRecentNotificationsAsync(int limit = 100, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, category, severity, title, message, dedup_key, occurred_at
+            FROM notification_history
+            ORDER BY occurred_at DESC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<NotificationRecord>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            list.Add(new NotificationRecord(
+                r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt64(6)));
+        }
+        return list;
+    }
+
+    public async Task<List<ProblemTimelineEntry>> GetTimelineForProblemAsync(string problemCode, int limit = 200, CancellationToken ct = default)
+    {
+        var entries = new List<ProblemTimelineEntry>();
+        var needle = problemCode.Trim();
+        var versions = await QueryVersionsAsync(search: needle, limit: 500, ct: ct);
+        var matchingVersionIds = versions
+            .Where(v => string.Equals(v.ProblemCode, needle, StringComparison.OrdinalIgnoreCase))
+            .Select(v => v.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var matchingSourcePaths = versions
+            .Where(v => string.Equals(v.ProblemCode, needle, StringComparison.OrdinalIgnoreCase))
+            .Select(v => v.SourcePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var history = await GetArchiveHistoryEventsAsync(1000, ct);
+        foreach (var h in history)
+        {
+            bool matches = (h.VersionId is not null && matchingVersionIds.Contains(h.VersionId))
+                || matchingSourcePaths.Contains(h.SourcePath)
+                || string.Equals(h.SourcePath, needle, StringComparison.OrdinalIgnoreCase)
+                || h.Summary.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            if (matches)
+            {
+                entries.Add(new ProblemTimelineEntry(h.Id, h.EventType, h.Summary, h.OccurredAtUnixMs, h.DeviceName, h.VersionId, h.SourcePath));
+            }
+        }
+
+        return entries
+            .OrderByDescending(e => e.OccurredAtUnixMs)
+            .Take(limit)
+            .ToList();
+    }
+
+    private static ProblemStatementRecord ReadProblemStatement(SqliteDataReader r) =>
+        new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4),
+            r.GetString(5), r.GetString(6), r.GetString(7), r.GetString(8), r.GetString(9),
+            r.GetString(10), r.GetInt64(11) != 0, r.GetInt64(12));
+
+    private static SampleTestCaseRecord ReadSampleTest(SqliteDataReader r) =>
+        new(r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetString(3), r.GetString(4),
+            r.GetString(5), r.GetInt64(6) != 0, r.GetInt64(7));
+
+    private static SubmissionRecord ReadSubmission(SqliteDataReader r) =>
+        new(
+            r.GetString(0),
+            r.GetString(1),
+            r.GetString(2),
+            r.IsDBNull(3) ? null : r.GetString(3),
+            r.GetInt64(4),
+            r.GetString(5),
+            Enum.TryParse<SubmissionVerdict>(r.GetString(6), true, out var v) ? v : SubmissionVerdict.Unknown,
+            r.IsDBNull(7) ? null : r.GetInt32(7),
+            r.IsDBNull(8) ? null : r.GetInt32(8),
+            r.IsDBNull(9) ? null : r.GetString(9),
+            r.GetInt64(10) != 0);
 
     private static async Task InsertHistoryEventInTxAsync(
         SqliteConnection conn,
