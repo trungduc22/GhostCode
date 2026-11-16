@@ -315,6 +315,10 @@
                                 Content="{x:Bind ViewModel.Strings.RunnerTabIo, Mode=OneWay}"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 Click="IoTab_Click" />
+                            <Button
+                                x:Name="SamplesTabBtn"
+                                Content="{x:Bind ViewModel.ExpStrings.SamplesTabLabel, Mode=OneWay}"
+                                Click="SamplesTab_Click" />
                         </StackPanel>
 
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
@@ -438,6 +442,82 @@
                                 TextWrapping="NoWrap"
                                 FontFamily="Consolas"
                                 FontSize="12"
+                                ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                        </Grid>
+                    </Grid>
+
+                    <!-- View C: Problem Statement, Judge Verdict & Sample Test Runner -->
+                    <Grid
+                        x:Name="SamplesPanel"
+                        Grid.Row="2"
+                        RowSpacing="8"
+                        Visibility="{x:Bind ViewModel.SamplesTabVisibility, Mode=OneWay}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Problem Statement & Judge Verdict Card -->
+                        <Border Grid.Row="0" Padding="8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                            <StackPanel Spacing="4">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Problem &amp; Verdict" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <Border Grid.Column="1" Padding="6,2" CornerRadius="4" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                        <TextBlock Text="{x:Bind ViewModel.LatestVerdictBadgeText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" />
+                                    </Border>
+                                </Grid>
+                                <TextBlock Text="{x:Bind ViewModel.CurrentProblemStatementSummary, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" MaxLines="5" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Sample Selector & Actions -->
+                        <StackPanel Grid.Row="1" Spacing="6">
+                            <ComboBox
+                                HorizontalAlignment="Stretch"
+                                PlaceholderText="No sample cases captured yet..."
+                                ItemsSource="{x:Bind ViewModel.SampleTests}"
+                                SelectedItem="{x:Bind ViewModel.SelectedSampleTest, Mode=TwoWay}"
+                                DisplayMemberPath="DisplayLabel" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="{x:Bind ViewModel.ExpStrings.RunSampleButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.RunSelectedSampleCommand}" />
+                                <Button Content="{x:Bind ViewModel.ExpStrings.RunAllSamplesButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunAllSamplesCommand}" />
+                                <Button Content="{x:Bind ViewModel.ExpStrings.AddCustomTestButton, Mode=OneWay}" Click="AddCustomSample_Click" />
+                                <Button Content="Delete" Command="{x:Bind ViewModel.DeleteSelectedSampleCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Input / Expected Preview -->
+                        <Grid Grid.Row="2" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Header="Sample Input" Text="{x:Bind ViewModel.SelectedSampleInputPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
+                            <TextBox Grid.Column="1" Header="Expected Output" Text="{x:Bind ViewModel.SelectedSampleExpectedPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
+                        </Grid>
+
+                        <!-- Comparison Summary & Expected vs Actual Diff -->
+                        <Grid Grid.Row="3" RowSpacing="4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="{x:Bind ViewModel.SampleRunSummaryText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" />
+                            <TextBox
+                                Grid.Row="1"
+                                Text="{x:Bind ViewModel.SampleComparisonDiffText, Mode=OneWay}"
+                                IsReadOnly="True"
+                                AcceptsReturn="True"
+                                TextWrapping="NoWrap"
+                                FontFamily="Consolas"
+                                FontSize="11"
                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
                         </Grid>

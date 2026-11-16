@@ -78,7 +78,11 @@ public partial class App : Application
             sp.GetRequiredService<LosslessArchiver>(),
             sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton(_ => new BrowserIntegrationService());
-        services.AddSingleton(_ => new AuthenticatedBrowserBridge(config));
+        services.AddSingleton(sp => new AuthenticatedBrowserBridge(
+            config,
+            sp.GetRequiredService<BrowserIntegrationService>(),
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton(_ => new ToolchainDiscoveryService());
         services.AddSingleton(sp => new IdeLauncherService(
             config,
@@ -89,6 +93,10 @@ public partial class App : Application
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<LosslessArchiver>(),
             sp.GetRequiredService<ToolchainDiscoveryService>()));
+        services.AddSingleton(sp => new SampleTestRunnerService(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<CodeExecutionService>()));
         services.AddSingleton(sp => new MultiDirectoryMonitor(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
@@ -115,7 +123,8 @@ public partial class App : Application
             sp.GetRequiredService<IdeLauncherService>(),
             sp.GetRequiredService<NotificationCoordinator>(),
             sp.GetRequiredService<OneDriveService>(),
-            sp.GetRequiredService<CloudMigrationService>()));
+            sp.GetRequiredService<CloudMigrationService>(),
+            sp.GetRequiredService<SampleTestRunnerService>()));
         services.AddSingleton<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();

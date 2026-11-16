@@ -226,7 +226,11 @@ public sealed record SampleTestCaseRecord(
     string ExpectedOutput,
     string SourceUrl,
     bool IsCustom,
-    long CapturedAtUnixMs);
+    long CapturedAtUnixMs)
+{
+    [JsonIgnore]
+    public string DisplayLabel => IsCustom ? $"Custom #{CaseIndex}" : $"Sample #{CaseIndex}";
+}
 
 public sealed record SubmissionRecord(
     string Id,

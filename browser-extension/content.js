@@ -9,9 +9,146 @@
 
   let lastUrl = location.href;
   let lastSentKey = "";
+  let lastSentProblemKey = "";
+  let lastSentVerdictKey = "";
 
   function cleanText(raw) {
     return (raw || "").replace(/\s+/g, " ").trim();
+  }
+
+  function extractPreText(pre) {
+    if (!pre) return "";
+    const lines = pre.querySelectorAll(".test-example-line");
+    if (lines && lines.length > 0) {
+      return Array.from(lines).map((el) => (el.textContent || "").replace(/\r?\n$/, "")).join("\n");
+    }
+    const clone = pre.cloneNode(true);
+    clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+    return (clone.textContent || "").replace(/\r\n/g, "\n").replace(/^\n+|\s+$/g, "");
+  }
+
+  function extractSamplePairs(platform) {
+    const pairs = [];
+    if (platform === "Codeforces") {
+      document.querySelectorAll(".problem-statement .sample-test").forEach((box) => {
+        const inputs = box.querySelectorAll(".input pre");
+        const outputs = box.querySelectorAll(".output pre");
+        const count = Math.min(inputs.length, outputs.length);
+        for (let i = 0; i < count; i++) {
+          pairs.push({ input: extractPreText(inputs[i]), output: extractPreText(outputs[i]) });
+        }
+      });
+      return pairs;
+    }
+
+    if (platform === "HackerRank") {
+      const ins = document.querySelectorAll(".challenge_sample_input pre, pre.sample-input");
+      const outs = document.querySelectorAll(".challenge_sample_output pre, pre.sample-output");
+      const count = Math.min(ins.length, outs.length);
+      for (let i = 0; i < count; i++) {
+        pairs.push({ input: extractPreText(ins[i]), output: extractPreText(outs[i]) });
+      }
+      if (pairs.length > 0) return pairs;
+    }
+
+    // PTIT / VNOJ / general fallback: inspect tables with 2 columns containing <pre> or cells, or adjacent <pre> pairs
+    const tables = document.querySelectorAll(".submit__des table, .problem-statement table, .content-description table");
+    tables.forEach((tbl) => {
+      const rows = Array.from(tbl.querySelectorAll("tr"));
+      for (const row of rows) {
+        const cells = Array.from(row.querySelectorAll("td"));
+        if (cells.length === 2) {
+          const inpEl = cells[0].querySelector("pre") || cells[0];
+          const outEl = cells[1].querySelector("pre") || cells[1];
+          const inpTxt = extractPreText(inpEl);
+          const outTxt = extractPreText(outEl);
+          if (inpTxt || outTxt) {
+            if (/^(input|dữ\s*liệu\s*vào)$/i.test(cleanText(inpTxt))) continue;
+            pairs.push({ input: inpTxt, output: outTxt });
+          }
+        }
+      }
+    });
+    if (pairs.length > 0) return pairs;
+
+    const pres = Array.from(document.querySelectorAll(".submit__des pre, .content-description pre, .challenge-body-html pre"));
+    for (let i = 0; i + 1 < pres.length; i += 2) {
+      pairs.push({ input: extractPreText(pres[i]), output: extractPreText(pres[i + 1]) });
+    }
+    return pairs.slice(0, 10);
+  }
+
+  function extractProblemDetails(ctx) {
+    if (!ctx) return null;
+    const container = document.querySelector(".problem-statement, .submit__des, .content-description, [data-track-load='description_content'], .challenge-body-html");
+    if (!container) return null;
+
+    const fullText = cleanText(container.textContent);
+    const description = fullText.slice(0, 3500);
+    const inputSpec = firstText([".input-specification", ".input-spec", "[data-section='input']"]);
+    const outputSpec = firstText([".output-specification", ".output-spec", "[data-section='output']"]);
+    const timeLimit = firstText([".time-limit", ".problem-info .time-limit"]);
+    const memoryLimit = firstText([".memory-limit", ".problem-info .memory-limit"]);
+    const interactive = /\b(interactive|custom checker|special judge)\b/i.test(fullText);
+    const samples = extractSamplePairs(ctx.platform);
+
+    return {
+      problem_code: ctx.problem_code,
+      problem_title: ctx.problem_title || "",
+      platform: ctx.platform,
+      url: ctx.url,
+      description,
+      input_spec: inputSpec,
+      output_spec: outputSpec,
+      constraints: "",
+      time_limit: timeLimit,
+      memory_limit: memoryLimit,
+      interactive_or_custom: interactive,
+      samples,
+      tab_active: true,
+      timestamp: Date.now()
+    };
+  }
+
+  function extractSubmissionVerdict(ctx) {
+    if (!ctx) return null;
+    let verdictText = "";
+    let submissionId = "";
+    let language = "";
+
+    if (ctx.platform === "Codeforces") {
+      const cell = document.querySelector(".status-verdict-cell[submissionid], td.status-verdict-cell");
+      if (cell) {
+        verdictText = cleanText(cell.textContent);
+        submissionId = cell.getAttribute("submissionid") || "";
+      }
+    } else if (ctx.platform === "LeetCode") {
+      verdictText = firstText(['[data-e2e-locator="submission-result"]', ".text-green-s", ".text-red-s"]);
+    } else if (ctx.platform === "PTIT") {
+      verdictText = firstText([".submit__history tbody tr:first-child td .badge", ".submit__history tbody tr:first-child td:last-child"]);
+      submissionId = firstText([".submit__history tbody tr:first-child td:first-child"]);
+    } else if (ctx.platform === "VNOJ") {
+      verdictText = firstText(["#submission-info .verdict", ".submission-row .status"]);
+    } else if (ctx.platform === "HackerRank") {
+      verdictText = firstText([".submission-status", ".congratulations h3"]);
+    }
+
+    if (!verdictText) return null;
+    if (/^(judging|running|in queue|pending|waiting)/i.test(verdictText)) {
+      verdictText = "Pending";
+    }
+
+    return {
+      platform: ctx.platform,
+      problem_code: ctx.problem_code,
+      url: ctx.url,
+      submission_id: submissionId || null,
+      submitted_at: Date.now(),
+      language,
+      verdict: verdictText,
+      is_version_certain: false,
+      tab_active: true
+    };
   }
 
   function stripCodePrefix(title, code) {
@@ -118,14 +255,38 @@
     return null;
   }
 
-  function sendViaBackground(ctx) {
+  function sendMessageSafe(type, payload) {
     try {
       if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({ type: "AUTONAME_CONTEXT", payload: ctx }, () => {
+        chrome.runtime.sendMessage({ type, payload }, () => {
           void chrome.runtime.lastError;
         });
       }
     } catch {}
+  }
+
+  function sendViaBackground(ctx) {
+    sendMessageSafe("AUTONAME_CONTEXT", ctx);
+  }
+
+  function syncProblemAndVerdicts(ctx, force) {
+    const details = extractProblemDetails(ctx);
+    if (details) {
+      const pKey = `${details.platform}|${details.problem_code}|${details.samples.length}|${details.description.length}`;
+      if (force || pKey !== lastSentProblemKey) {
+        lastSentProblemKey = pKey;
+        sendMessageSafe("GHOSTCODE_PROBLEM", details);
+      }
+    }
+
+    const sub = extractSubmissionVerdict(ctx);
+    if (sub) {
+      const sKey = `${sub.platform}|${sub.problem_code}|${sub.submission_id || ""}|${sub.verdict}`;
+      if (sKey !== lastSentVerdictKey) {
+        lastSentVerdictKey = sKey;
+        sendMessageSafe("GHOSTCODE_SUBMISSION", sub);
+      }
+    }
   }
 
   function syncContext(force) {
@@ -142,10 +303,12 @@
     }
 
     const key = `${ctx.problem_code}|${ctx.problem_title}|${ctx.url}`;
-    if (!force && key === lastSentKey) return;
-    lastSentKey = key;
+    if (force || key !== lastSentKey) {
+      lastSentKey = key;
+      sendViaBackground(ctx);
+    }
 
-    sendViaBackground(ctx);
+    syncProblemAndVerdicts(ctx, force);
   }
 
   window.__autonameSyncNow = syncContext;

@@ -301,13 +301,25 @@ async function scanFocusedActiveTab() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "AUTONAME_CONTEXT" && msg.payload) {
-    const isActive = Boolean(sender && sender.tab && sender.tab.active);
-    if (!isActive) {
-      sendResponse({ ok: false, ignored: "background_tab" });
-      return false;
-    }
+  if (!msg || !msg.payload) return false;
+  const isActive = Boolean(sender && sender.tab && sender.tab.active);
+  if (!isActive) {
+    sendResponse({ ok: false, ignored: "background_tab" });
+    return false;
+  }
+
+  if (msg.type === "AUTONAME_CONTEXT") {
     postToApp(msg.payload, true).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "GHOSTCODE_PROBLEM") {
+    postAuthenticated("/problem", { ...msg.payload, tab_active: true, browser_name: detectBrowserName() })
+      .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "GHOSTCODE_SUBMISSION") {
+    postAuthenticated("/submission", { ...msg.payload, tab_active: true, browser_name: detectBrowserName() })
+      .then(() => sendResponse({ ok: true }));
     return true;
   }
 });

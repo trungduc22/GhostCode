@@ -223,6 +223,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly NotificationCoordinator _notifications;
     private readonly OneDriveService? _oneDrive;
     private readonly CloudMigrationService? _migrationService;
+    private readonly SampleTestRunnerService _sampleRunner;
 
     private Func<Action, bool> _dispatch = action => { action(); return true; };
     private Action<ElementTheme>? _applyThemeCallback;
@@ -244,6 +245,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _quickActionsAmbiguityNote = string.Empty;
     private string _activeSampleInputText = string.Empty;
     private string _activeSampleOutputText = string.Empty;
+    private SampleTestCaseRecord? _selectedSampleTest;
+    private string _currentProblemStatementSummary = "Select an archived problem or browse a supported OJ problem to load its statement and sample cases.";
+    private string _latestVerdictBadgeText = "No Judge Verdict";
+    private string _sampleRunSummaryText = "Not run yet";
+    private string _sampleComparisonDiffText = string.Empty;
 
     private string _backupHealthSummary = "Checking...";
     private string _backupProtectionBadge = "Checking";
@@ -341,7 +347,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IdeLauncherService? ideLauncher = null,
         NotificationCoordinator? notifications = null,
         OneDriveService? oneDrive = null,
-        CloudMigrationService? migrationService = null)
+        CloudMigrationService? migrationService = null,
+        SampleTestRunnerService? sampleRunner = null)
     {
         _config = config;
         _configPath = configPath;
@@ -359,6 +366,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ideLauncher = ideLauncher ?? new IdeLauncherService(_config, _toolchains, _archiver);
         _oneDrive = oneDrive;
         _migrationService = migrationService;
+        _sampleRunner = sampleRunner ?? new SampleTestRunnerService(_config, _store, _runner);
         _strings = UiStrings.For(config.Language);
         _expStrings = UiStrings.ExpansionFor(config.Language);
         _runnerStatusText = _strings.StatusReady;
@@ -402,11 +410,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         DisconnectOneDriveCommand = new AsyncRelayCommand(DisconnectOneDriveAsync);
         MigrateToOneDriveCommand = new AsyncRelayCommand(() => MigrateCloudProviderAsync(googleToOneDrive: true));
         MigrateToGoogleDriveCommand = new AsyncRelayCommand(() => MigrateCloudProviderAsync(googleToOneDrive: false));
+        RunSelectedSampleCommand = new AsyncRelayCommand(RunSelectedSampleAsync);
+        RunAllSamplesCommand = new AsyncRelayCommand(RunAllSamplesAsync);
+        DeleteSelectedSampleCommand = new AsyncRelayCommand(DeleteSelectedSampleAsync);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
         _bridge.ContextChanged += OnContextChanged;
         _bridge.BrowserConnectionsChanged += OnBrowserConnectionsChanged;
+        _bridge.ProblemStatementReceived += OnProblemStatementReceived;
+        _bridge.SubmissionVerdictReceived += OnSubmissionVerdictReceived;
         _drive.SyncCompleted += OnDriveSyncCompleted;
         _drive.AuthStageChanged += OnAuthStageChanged;
         if (_oneDrive is not null)
@@ -433,6 +446,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<GlobalSearchSuggestion> GlobalSearchSuggestions { get; } = new();
     public ObservableCollection<DiffLineRow> DiffSideBySideLines { get; } = new();
     public ObservableCollection<ArchiveFileGroupRow> QuickActionsCandidates { get; } = new();
+    public ObservableCollection<SampleTestCaseRecord> SampleTests { get; } = new();
 
     public IReadOnlyList<string> PlatformFilters { get; } =
         new[] { "All", "Ptit", "Codeforces", "Vnoj", "LeetCode", "HackerRank", "Offline", "Other" };
@@ -502,6 +516,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand DisconnectOneDriveCommand { get; }
     public IAsyncRelayCommand MigrateToOneDriveCommand { get; }
     public IAsyncRelayCommand MigrateToGoogleDriveCommand { get; }
+    public IAsyncRelayCommand RunSelectedSampleCommand { get; }
+    public IAsyncRelayCommand RunAllSamplesCommand { get; }
+    public IAsyncRelayCommand DeleteSelectedSampleCommand { get; }
 
     public ExpansionTextBundle ExpStrings
     {
@@ -703,12 +720,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 OnPropertyChanged(nameof(ConsoleTabVisibility));
                 OnPropertyChanged(nameof(IoTabVisibility));
+                OnPropertyChanged(nameof(SamplesTabVisibility));
             }
         }
     }
 
     public Visibility ConsoleTabVisibility => RunnerTabIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
     public Visibility IoTabVisibility => RunnerTabIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility SamplesTabVisibility => RunnerTabIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+
+    public SampleTestCaseRecord? SelectedSampleTest
+    {
+        get => _selectedSampleTest;
+        set
+        {
+            if (SetProperty(ref _selectedSampleTest, value))
+            {
+                _activeSampleInputText = value?.InputText ?? string.Empty;
+                _activeSampleOutputText = value?.ExpectedOutput ?? string.Empty;
+                OnPropertyChanged(nameof(SelectedSampleInputPreview));
+                OnPropertyChanged(nameof(SelectedSampleExpectedPreview));
+            }
+        }
+    }
+
+    public string SelectedSampleInputPreview => SelectedSampleTest?.InputText ?? string.Empty;
+    public string SelectedSampleExpectedPreview => SelectedSampleTest?.ExpectedOutput ?? string.Empty;
+    public string CurrentProblemStatementSummary { get => _currentProblemStatementSummary; private set => SetProperty(ref _currentProblemStatementSummary, value); }
+    public string LatestVerdictBadgeText { get => _latestVerdictBadgeText; private set => SetProperty(ref _latestVerdictBadgeText, value); }
+    public string SampleRunSummaryText { get => _sampleRunSummaryText; private set => SetProperty(ref _sampleRunSummaryText, value); }
+    public string SampleComparisonDiffText { get => _sampleComparisonDiffText; private set => SetProperty(ref _sampleComparisonDiffText, value); }
 
     public bool IsExecuting
     {
@@ -2199,6 +2240,144 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             SelectedVersionSource = $"// [INTEGRITY ERROR] {ex.Message}";
             ShowInfoBar("Archive Integrity Error", ex.Message, InfoBarSeverity.Error);
         }
+        finally
+        {
+            await LoadProblemDataForSelectionAsync(row.Record.Platform, row.Record.ProblemCode);
+        }
+    }
+
+    private string ResolveCurrentProblemKey()
+    {
+        if (SelectedVersion is not null && !string.IsNullOrWhiteSpace(SelectedVersion.Record.ProblemCode))
+            return ProblemStatementRecord.BuildKey(SelectedVersion.Record.Platform, SelectedVersion.Record.ProblemCode!);
+        if (HasActiveContext)
+            return ProblemStatementRecord.BuildKey(ActivePlatform, ActiveCode);
+        return string.Empty;
+    }
+
+    private async Task LoadProblemDataForSelectionAsync(string? platform, string? problemCode)
+    {
+        var effCode = !string.IsNullOrWhiteSpace(problemCode) ? problemCode : (HasActiveContext ? ActiveCode : string.Empty);
+        var effPlat = !string.IsNullOrWhiteSpace(platform) ? platform : ActivePlatform;
+        if (string.IsNullOrWhiteSpace(effCode) || effCode == "-")
+        {
+            SampleTests.Clear();
+            SelectedSampleTest = null;
+            CurrentProblemStatementSummary = "Select an archived problem with a recognized problem code or browse a problem in Chrome/Edge/Firefox.";
+            LatestVerdictBadgeText = "No Judge Verdict";
+            return;
+        }
+
+        var key = ProblemStatementRecord.BuildKey(effPlat ?? "Unknown", effCode);
+        var stmt = await _store.GetProblemStatementAsync(key);
+        if (stmt is null && !string.IsNullOrWhiteSpace(ActivePlatform) && !string.Equals(ActivePlatform, "Offline", StringComparison.OrdinalIgnoreCase))
+        {
+            key = ProblemStatementRecord.BuildKey(ActivePlatform, effCode);
+            stmt = await _store.GetProblemStatementAsync(key);
+        }
+
+        if (stmt is not null)
+        {
+            var limits = string.Join(" • ", new[] { stmt.TimeLimit, stmt.MemoryLimit }.Where(s => !string.IsNullOrWhiteSpace(s)));
+            var checker = stmt.InteractiveOrCustomJudge ? " [Interactive / Custom Checker]" : string.Empty;
+            var bodySnippet = stmt.Description.Length > 350 ? stmt.Description[..350] + "..." : stmt.Description;
+            CurrentProblemStatementSummary = $"[{stmt.ProblemCode}] {stmt.Title}{checker}{(string.IsNullOrWhiteSpace(limits) ? "" : $"\nLimits: {limits}")}\n{bodySnippet}";
+        }
+        else
+        {
+            CurrentProblemStatementSummary = $"Problem {effCode} (statement not captured yet — open problem tab with extension connected).";
+        }
+
+        var prevId = SelectedSampleTest?.Id;
+        var samples = await _store.GetSampleTestsAsync(key);
+        SampleTests.Clear();
+        foreach (var tc in samples)
+            SampleTests.Add(tc);
+        SelectedSampleTest = SampleTests.FirstOrDefault(s => s.Id == prevId) ?? SampleTests.FirstOrDefault();
+
+        var subs = await _store.GetSubmissionsForProblemAsync(effCode, 10);
+        if (subs.Count > 0)
+        {
+            var top = subs[0];
+            var tag = top.IsVersionCertain ? "verified version" : "version link unverified";
+            LatestVerdictBadgeText = $"{top.Verdict} ({tag})";
+        }
+        else
+        {
+            LatestVerdictBadgeText = "No Judge Verdict";
+        }
+    }
+
+    public async Task RunSelectedSampleAsync()
+    {
+        if (SelectedVersion is null || SelectedSampleTest is null)
+        {
+            ShowInfoBar("Run Sample", "Select both an archived version and a sample test case first.", InfoBarSeverity.Informational);
+            return;
+        }
+        IsExecuting = true;
+        try
+        {
+            var res = await _sampleRunner.RunSingleSampleAsync(SelectedVersion.Id, SelectedSampleTest);
+            SampleRunSummaryText = res.DiffSummary;
+            SampleComparisonDiffText = !string.IsNullOrWhiteSpace(res.CompilerOrStderr) && !res.Passed
+                ? $"{res.StatusLabel}\n{res.CompilerOrStderr}\n\n{res.UnifiedDiffText}"
+                : res.UnifiedDiffText;
+            RunnerStatusText = res.StatusLabel;
+            RunnerMetricsText = $"{res.ElapsedMs} ms";
+        }
+        finally
+        {
+            IsExecuting = false;
+        }
+    }
+
+    public async Task RunAllSamplesAsync()
+    {
+        var key = ResolveCurrentProblemKey();
+        if (SelectedVersion is null || string.IsNullOrEmpty(key))
+        {
+            ShowInfoBar("Run All Samples", "Select an archived problem version with a recognized problem code.", InfoBarSeverity.Informational);
+            return;
+        }
+        IsExecuting = true;
+        try
+        {
+            var suite = await _sampleRunner.RunAllSamplesAsync(SelectedVersion.Id, key);
+            SampleRunSummaryText = suite.SummaryLabel;
+            SampleComparisonDiffText = string.Join(
+                "\n\n",
+                suite.CaseResults.Select(r => $"--- Case #{r.CaseIndex}{(r.IsCustom ? " (Custom)" : "")}: {r.StatusLabel} ({r.ElapsedMs} ms) ---\n{r.UnifiedDiffText}"));
+            RunnerStatusText = suite.SummaryLabel;
+        }
+        finally
+        {
+            IsExecuting = false;
+        }
+    }
+
+    public async Task AddCustomSampleAsync(string inputText, string expectedOutput)
+    {
+        var key = ResolveCurrentProblemKey();
+        if (string.IsNullOrEmpty(key))
+        {
+            ShowInfoBar("Custom Sample", "Select a problem first to attach a custom test case.", InfoBarSeverity.Warning);
+            return;
+        }
+        var added = await _sampleRunner.AddCustomSampleAsync(key, inputText, expectedOutput, ActiveUrl);
+        SampleTests.Add(added);
+        SelectedSampleTest = added;
+        ShowInfoBar("Custom Test Added", $"Added Custom Test #{added.CaseIndex}.", InfoBarSeverity.Success);
+    }
+
+    public async Task DeleteSelectedSampleAsync()
+    {
+        if (SelectedSampleTest is null)
+            return;
+        var toDelete = SelectedSampleTest;
+        await _store.DeleteSampleTestAsync(toDelete.Id);
+        SampleTests.Remove(toDelete);
+        SelectedSampleTest = SampleTests.FirstOrDefault();
     }
 
     private void UpdateContext(ProblemContext? ctx)
@@ -2228,7 +2407,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ActiveContextStateBadge = isFresh ? Strings.ProblemActiveBadge : Strings.ProblemStaleBadge;
     }
 
-    private void OnContextChanged(ProblemContext? ctx) => _dispatch(() => UpdateContext(ctx));
+    private void OnContextChanged(ProblemContext? ctx) => _dispatch(() =>
+    {
+        UpdateContext(ctx);
+        if (ctx is not null)
+            _ = LoadProblemDataForSelectionAsync(ctx.Platform.ToString(), ctx.Code);
+    });
+
+    private void OnProblemStatementReceived(ProblemStatementRecord stmt, IReadOnlyList<SampleTestCaseRecord> samples) =>
+        _dispatch(() => { _ = LoadProblemDataForSelectionAsync(stmt.Platform, stmt.ProblemCode); });
+
+    private void OnSubmissionVerdictReceived(SubmissionRecord sub) =>
+        _dispatch(() =>
+        {
+            _ = LoadProblemDataForSelectionAsync(sub.Platform, sub.ProblemCode);
+            _ = RefreshStatsAndEventsAsync();
+        });
 
     private void OnBrowserConnectionsChanged() => _dispatch(RefreshBrowserAndIdeDiscovery);
 
@@ -2274,6 +2468,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _monitor.EventRecorded -= OnMonitorEventRecorded;
         _bridge.ContextChanged -= OnContextChanged;
         _bridge.BrowserConnectionsChanged -= OnBrowserConnectionsChanged;
+        _bridge.ProblemStatementReceived -= OnProblemStatementReceived;
+        _bridge.SubmissionVerdictReceived -= OnSubmissionVerdictReceived;
         _drive.SyncCompleted -= OnDriveSyncCompleted;
         _drive.AuthStageChanged -= OnAuthStageChanged;
         if (_oneDrive is not null)

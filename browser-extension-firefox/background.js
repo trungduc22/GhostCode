@@ -273,10 +273,20 @@ async function scanFocusedActiveTab() {
 }
 
 ext.runtime.onMessage.addListener((msg, sender) => {
-  if (msg && msg.type === "AUTONAME_CONTEXT" && msg.payload) {
-    const isActive = Boolean(sender && sender.tab && sender.tab.active);
-    if (!isActive) return Promise.resolve({ ok: false, ignored: "background_tab" });
+  if (!msg || !msg.payload) return undefined;
+  const isActive = Boolean(sender && sender.tab && sender.tab.active);
+  if (!isActive) return Promise.resolve({ ok: false, ignored: "background_tab" });
+
+  if (msg.type === "AUTONAME_CONTEXT") {
     return postToApp(msg.payload, true).then(() => ({ ok: true }));
+  }
+  if (msg.type === "GHOSTCODE_PROBLEM") {
+    return postAuthenticated("/problem", { ...msg.payload, tab_active: true, browser_name: "Firefox" })
+      .then(() => ({ ok: true }));
+  }
+  if (msg.type === "GHOSTCODE_SUBMISSION") {
+    return postAuthenticated("/submission", { ...msg.payload, tab_active: true, browser_name: "Firefox" })
+      .then(() => ({ ok: true }));
   }
   return undefined;
 });

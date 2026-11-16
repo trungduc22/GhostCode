@@ -6,6 +6,8 @@ using System.Text;
 using System.Text.Json;
 using GhostCode.Core.Analysis;
 using GhostCode.Core.Models;
+using GhostCode.Core.Notifications;
+using GhostCode.Core.Storage;
 
 namespace GhostCode.Core.Browser;
 
@@ -16,6 +18,41 @@ public sealed record BrowserContextPayload(
     string? url,
     bool tab_active = true,
     long timestamp = 0,
+    string? browser_name = null);
+
+public sealed record BrowserSamplePairPayload(
+    string? input,
+    string? output);
+
+public sealed record BrowserProblemPayload(
+    string? problem_code,
+    string? problem_title,
+    string? platform,
+    string? url,
+    string? description = null,
+    string? input_spec = null,
+    string? output_spec = null,
+    string? constraints = null,
+    string? time_limit = null,
+    string? memory_limit = null,
+    bool interactive_or_custom = false,
+    List<BrowserSamplePairPayload>? samples = null,
+    bool tab_active = true,
+    long timestamp = 0,
+    string? browser_name = null);
+
+public sealed record BrowserSubmissionPayload(
+    string? platform,
+    string? problem_code,
+    string? url,
+    string? submission_id = null,
+    long submitted_at = 0,
+    string? language = null,
+    string? verdict = null,
+    int? runtime_ms = null,
+    int? memory_kb = null,
+    bool is_version_certain = false,
+    bool tab_active = true,
     string? browser_name = null);
 
 internal sealed record ActiveBrowserSession(
@@ -37,6 +74,8 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
 
     private readonly GhostCodeConfig _config;
     private readonly BrowserIntegrationService _browserIntegration;
+    private readonly SqliteArchiveStore? _store;
+    private readonly NotificationCoordinator? _notifications;
     private readonly object _ctxLock = new();
     private readonly object _authLock = new();
     private readonly Dictionary<string, long> _seenNonces = new(StringComparer.Ordinal);
@@ -54,10 +93,16 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
     private Task? _acceptTask;
     private Task? _win32Task;
 
-    public AuthenticatedBrowserBridge(GhostCodeConfig config, BrowserIntegrationService? browserIntegration = null)
+    public AuthenticatedBrowserBridge(
+        GhostCodeConfig config,
+        BrowserIntegrationService? browserIntegration = null,
+        SqliteArchiveStore? store = null,
+        NotificationCoordinator? notifications = null)
     {
         _config = config;
         _browserIntegration = browserIntegration ?? new BrowserIntegrationService();
+        _store = store;
+        _notifications = notifications;
         if (string.IsNullOrWhiteSpace(_config.BridgeAuthToken))
             _config.BridgeAuthToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         RotateSessionToken();
@@ -79,6 +124,8 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
 
     public event Action<ProblemContext?>? ContextChanged;
     public event Action? BrowserConnectionsChanged;
+    public event Action<ProblemStatementRecord, IReadOnlyList<SampleTestCaseRecord>>? ProblemStatementReceived;
+    public event Action<SubmissionRecord>? SubmissionVerdictReceived;
 
     public string RotateSessionToken()
     {
@@ -499,7 +546,9 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                 return;
             }
 
-            if (method == "POST" && path.StartsWith("/context", StringComparison.Ordinal))
+            if (method == "POST" && (path.StartsWith("/context", StringComparison.Ordinal)
+                                       || path.StartsWith("/problem", StringComparison.Ordinal)
+                                       || path.StartsWith("/submission", StringComparison.Ordinal)))
             {
                 if (isWebOrigin)
                 {
@@ -514,29 +563,43 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     return;
                 }
 
-                BrowserContextPayload? payload;
+                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
+                headers.TryGetValue("X-GhostCode-Ext-Version", out var extVerHdr);
+
                 try
                 {
-                    payload = JsonSerializer.Deserialize<BrowserContextPayload>(bodyBytes);
+                    if (path.StartsWith("/problem", StringComparison.Ordinal))
+                    {
+                        var probPayload = JsonSerializer.Deserialize<BrowserProblemPayload>(bodyBytes);
+                        RecordHeartbeatFromPayloadOrHeaders(probPayload?.browser_name, browserHdr, extVerHdr);
+                        var (status, responseBody) = await ApplyProblemPayloadAsync(probPayload, ct);
+                        await WriteHttpResponseAsync(stream, status, responseBody, allowedOrigin, ct);
+                        return;
+                    }
+
+                    if (path.StartsWith("/submission", StringComparison.Ordinal))
+                    {
+                        var subPayload = JsonSerializer.Deserialize<BrowserSubmissionPayload>(bodyBytes);
+                        RecordHeartbeatFromPayloadOrHeaders(subPayload?.browser_name, browserHdr, extVerHdr);
+                        var (status, responseBody) = await ApplySubmissionPayloadAsync(subPayload, ct);
+                        await WriteHttpResponseAsync(stream, status, responseBody, allowedOrigin, ct);
+                        return;
+                    }
+
+                    var payload = JsonSerializer.Deserialize<BrowserContextPayload>(bodyBytes);
+                    RecordHeartbeatFromPayloadOrHeaders(payload?.browser_name, browserHdr, extVerHdr);
+                    if (payload is not null && string.IsNullOrWhiteSpace(payload.browser_name) && !string.IsNullOrWhiteSpace(browserHdr))
+                        payload = payload with { browser_name = browserHdr };
+
+                    var (ctxStatus, ctxResponseBody) = ApplyContextPayload(payload);
+                    await WriteHttpResponseAsync(stream, ctxStatus, ctxResponseBody, allowedOrigin, ct);
+                    return;
                 }
-                catch
+                catch (JsonException)
                 {
                     await WriteHttpResponseAsync(stream, 400, """{"error":"invalid json"}""", allowedOrigin, ct);
                     return;
                 }
-
-                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
-                headers.TryGetValue("X-GhostCode-Ext-Version", out var extVerHdr);
-                var effectiveBrowser = !string.IsNullOrWhiteSpace(payload?.browser_name) ? payload!.browser_name : browserHdr;
-                if (TryParseBrowserKind(effectiveBrowser, out var ctxBrowser))
-                    RecordBrowserHeartbeat(ctxBrowser, extVerHdr);
-
-                if (payload is not null && string.IsNullOrWhiteSpace(payload.browser_name) && !string.IsNullOrWhiteSpace(browserHdr))
-                    payload = payload with { browser_name = browserHdr };
-
-                var (status, responseBody) = ApplyContextPayload(payload);
-                await WriteHttpResponseAsync(stream, status, responseBody, allowedOrigin, ct);
-                return;
             }
 
             await WriteHttpResponseAsync(stream, 404, """{"error":"not found"}""", allowedOrigin, ct);
@@ -600,6 +663,215 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             ContextChanged?.Invoke(parsed);
 
         return (200, """{"ok":true}""");
+    }
+
+    private void RecordHeartbeatFromPayloadOrHeaders(string? payloadBrowser, string? browserHdr, string? extVerHdr)
+    {
+        var effectiveBrowser = !string.IsNullOrWhiteSpace(payloadBrowser) ? payloadBrowser : browserHdr;
+        if (TryParseBrowserKind(effectiveBrowser, out var kind))
+            RecordBrowserHeartbeat(kind, extVerHdr);
+    }
+
+    private bool IsWebsiteCaptureAllowed(string host, string platformName, string? rawPlatform)
+    {
+        if (_config.WebsiteStatementCaptureEnabled is null || _config.WebsiteStatementCaptureEnabled.Count == 0)
+            return true;
+
+        string?[] keys = { host, platformName, rawPlatform };
+        foreach (var k in keys)
+        {
+            if (string.IsNullOrWhiteSpace(k))
+                continue;
+            if (_config.WebsiteStatementCaptureEnabled.TryGetValue(k.Trim(), out var allowed) && !allowed)
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsSupportedHost(string host)
+    {
+        var h = host.ToLowerInvariant();
+        if (h.StartsWith("www.", StringComparison.Ordinal))
+            h = h[4..];
+        return h is "code.ptit.edu.vn" or "codeforces.com" or "oj.vnoi.info" or "leetcode.com" or "leetcode.cn" or "hackerrank.com"
+            || h.EndsWith(".code.ptit.edu.vn", StringComparison.Ordinal)
+            || h.EndsWith(".codeforces.com", StringComparison.Ordinal)
+            || h.EndsWith(".oj.vnoi.info", StringComparison.Ordinal)
+            || h.EndsWith(".leetcode.com", StringComparison.Ordinal)
+            || h.EndsWith(".hackerrank.com", StringComparison.Ordinal);
+    }
+
+    public async Task<(int StatusCode, string JsonBody)> ApplyProblemPayloadAsync(
+        BrowserProblemPayload? payload,
+        CancellationToken ct = default)
+    {
+        if (payload is null)
+            return (400, """{"error":"empty payload"}""");
+        if (!payload.tab_active)
+            return (202, """{"ok":false,"ignored":"background_tab"}""");
+        if (!_config.CaptureProblemStatements)
+            return (202, """{"ok":false,"ignored":"capture_disabled"}""");
+
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (string.IsNullOrWhiteSpace(payload.url)
+            || payload.url.Length > 2048
+            || ContainsControlChars(payload.url)
+            || !Uri.TryCreate(payload.url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return (400, """{"error":"invalid or unsupported problem url"}""");
+        }
+
+        var parsed = SourceAnalyzer.ParseContextFromUrl(payload.url, payload.problem_title, nowMs);
+        if (parsed is null)
+            return (400, """{"error":"unrecognized or unsupported problem url"}""");
+
+        if (!IsWebsiteCaptureAllowed(uri.Host, parsed.Platform.ToString(), payload.platform))
+            return (202, """{"ok":false,"ignored":"site_capture_disabled"}""");
+
+        var problemKey = ProblemStatementRecord.BuildKey(parsed.Platform.ToString(), parsed.Code);
+        var stmt = new ProblemStatementRecord(
+            ProblemKey: problemKey,
+            Platform: parsed.Platform.ToString(),
+            ProblemCode: parsed.Code,
+            Title: string.IsNullOrWhiteSpace(payload.problem_title) ? parsed.Title : payload.problem_title.Trim(),
+            Url: payload.url.Trim(),
+            Description: (payload.description ?? string.Empty).Trim(),
+            InputSpec: (payload.input_spec ?? string.Empty).Trim(),
+            OutputSpec: (payload.output_spec ?? string.Empty).Trim(),
+            Constraints: (payload.constraints ?? string.Empty).Trim(),
+            TimeLimit: (payload.time_limit ?? string.Empty).Trim(),
+            MemoryLimit: (payload.memory_limit ?? string.Empty).Trim(),
+            InteractiveOrCustomJudge: payload.interactive_or_custom,
+            CapturedAtUnixMs: payload.timestamp > 0 ? payload.timestamp : nowMs);
+
+        var samples = new List<SampleTestCaseRecord>();
+        if (payload.samples is not null)
+        {
+            for (int i = 0; i < payload.samples.Count && i < 20; i++)
+            {
+                var s = payload.samples[i];
+                if (s is null) continue;
+                var tc = new SampleTestCaseRecord(
+                    Id: $"{problemKey}_sample_{i + 1}",
+                    ProblemKey: problemKey,
+                    CaseIndex: i + 1,
+                    InputText: s.input ?? string.Empty,
+                    ExpectedOutput: s.output ?? string.Empty,
+                    SourceUrl: payload.url.Trim(),
+                    IsCustom: false,
+                    CapturedAtUnixMs: stmt.CapturedAtUnixMs);
+                samples.Add(tc);
+            }
+        }
+
+        if (_store is not null)
+        {
+            await _store.UpsertProblemStatementAsync(stmt, ct);
+            foreach (var tc in samples)
+                await _store.UpsertSampleTestAsync(tc, ct);
+        }
+
+        ProblemStatementReceived?.Invoke(stmt, samples);
+        return (200, JsonSerializer.Serialize(new { ok = true, problem_key = problemKey, samples_count = samples.Count }));
+    }
+
+    public async Task<(int StatusCode, string JsonBody)> ApplySubmissionPayloadAsync(
+        BrowserSubmissionPayload? payload,
+        CancellationToken ct = default)
+    {
+        if (payload is null)
+            return (400, """{"error":"empty payload"}""");
+        if (!payload.tab_active)
+            return (202, """{"ok":false,"ignored":"background_tab"}""");
+        if (!_config.TrackSubmissionVerdicts)
+            return (202, """{"ok":false,"ignored":"verdict_tracking_disabled"}""");
+
+        if (string.IsNullOrWhiteSpace(payload.url)
+            || !Uri.TryCreate(payload.url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !IsSupportedHost(uri.Host))
+        {
+            return (400, """{"error":"invalid or unsupported submission url"}""");
+        }
+
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var parsedCtx = SourceAnalyzer.ParseContextFromUrl(payload.url, null, nowMs);
+        var platformName = parsedCtx?.Platform.ToString() ?? (payload.platform ?? "Unknown").Trim();
+        var problemCode = !string.IsNullOrWhiteSpace(parsedCtx?.Code) ? parsedCtx!.Code : (payload.problem_code ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(problemCode))
+            return (400, """{"error":"missing problem_code"}""");
+
+        if (!IsWebsiteCaptureAllowed(uri.Host, platformName, payload.platform))
+            return (202, """{"ok":false,"ignored":"site_capture_disabled"}""");
+
+        var verdict = ParseSubmissionVerdict(payload.verdict);
+        string? matchedVersionId = null;
+        if (_store is not null)
+        {
+            var versions = await _store.QueryVersionsAsync(search: problemCode, limit: 50, ct: ct);
+            var latest = versions
+                .Where(v => string.Equals(v.ProblemCode, problemCode, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(v => v.CreatedAtUnixMs)
+                .ThenByDescending(v => v.VersionNum)
+                .FirstOrDefault();
+            matchedVersionId = latest?.Id;
+        }
+
+        // Honest attribution: only claim certain version match when the caller provably matches exact bytes/commit.
+        bool versionCertain = payload.is_version_certain && !string.IsNullOrEmpty(matchedVersionId);
+        var stableId = !string.IsNullOrWhiteSpace(payload.submission_id)
+            ? $"sub_{platformName}_{problemCode}_{payload.submission_id.Trim()}"
+            : $"sub_{platformName}_{problemCode}_{Guid.NewGuid():N}";
+
+        var record = new SubmissionRecord(
+            Id: stableId,
+            Platform: platformName,
+            ProblemCode: problemCode,
+            SubmissionId: payload.submission_id?.Trim(),
+            SubmittedAtUnixMs: payload.submitted_at > 0 ? payload.submitted_at : nowMs,
+            Language: (payload.language ?? string.Empty).Trim(),
+            Verdict: verdict,
+            RuntimeMs: payload.runtime_ms,
+            MemoryKb: payload.memory_kb,
+            VersionId: matchedVersionId,
+            IsVersionCertain: versionCertain);
+
+        if (_store is not null)
+            await _store.UpsertSubmissionRecordAsync(record, ct);
+
+        if (_notifications is not null && _config.AlertSubmissionVerdicts && verdict is not SubmissionVerdict.Pending and not SubmissionVerdict.Judging)
+        {
+            var severity = verdict == SubmissionVerdict.Accepted ? "Info" : "Warning";
+            var uncertaintyNote = versionCertain ? string.Empty : " (version link unverified)";
+            await _notifications.NotifyAsync(
+                "verdict",
+                severity,
+                $"GhostCode — {problemCode}: {verdict}",
+                $"[{platformName}] {problemCode} verdict: {verdict}{uncertaintyNote}",
+                $"verdict_{record.Id}_{verdict}",
+                "open",
+                ct);
+        }
+
+        SubmissionVerdictReceived?.Invoke(record);
+        return (200, JsonSerializer.Serialize(new { ok = true, id = record.Id, verdict = verdict.ToString(), is_version_certain = versionCertain }));
+    }
+
+    public static SubmissionVerdict ParseSubmissionVerdict(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return SubmissionVerdict.Unknown;
+        var norm = raw.Trim().ToLowerInvariant();
+        if (norm is "ac" || norm.Contains("accepted")) return SubmissionVerdict.Accepted;
+        if (norm is "wa" || norm.Contains("wrong answer")) return SubmissionVerdict.WrongAnswer;
+        if (norm is "tle" || norm.Contains("time limit")) return SubmissionVerdict.TimeLimitExceeded;
+        if (norm is "mle" || norm.Contains("memory limit")) return SubmissionVerdict.MemoryLimitExceeded;
+        if (norm is "re" or "rte" || norm.Contains("runtime error")) return SubmissionVerdict.RuntimeError;
+        if (norm is "ce" || norm.Contains("compil")) return SubmissionVerdict.CompilationError;
+        if (norm.Contains("judg") || norm.Contains("running")) return SubmissionVerdict.Judging;
+        if (norm.Contains("pending") || norm.Contains("queue") || norm.Contains("waiting")) return SubmissionVerdict.Pending;
+        return SubmissionVerdict.Other;
     }
 
     public static bool TryParseBrowserKind(string? raw, out BrowserKind kind)
