@@ -1,10 +1,35 @@
 const DEFAULT_PORT = 48123;
+const EXT_VERSION = "1.4.0";
 const injectedByTab = new Map();
 let activePort = DEFAULT_PORT;
 let sessionToken = "";
 let sessionExpiresAt = 0;
 let lastSentKey = "";
 let lastSentAt = 0;
+
+function detectBrowserName() {
+  try {
+    const ua = (navigator.userAgent || "").toLowerCase();
+    const brands = Array.isArray(navigator.userAgentData?.brands)
+      ? navigator.userAgentData.brands.map((b) => String(b.brand || "").toLowerCase()).join(" ")
+      : "";
+    const combined = `${ua} ${brands}`;
+    if (combined.includes("thorium")) return "Thorium";
+    if (combined.includes("edg/") || combined.includes("edge")) return "Edge";
+    if (combined.includes("firefox")) return "Firefox";
+    if (combined.includes("chrome")) return "Chrome";
+  } catch {}
+  return "Chrome";
+}
+
+function buildBridgeHeaders(extra = {}) {
+  return {
+    "Content-Type": "application/json",
+    "X-GhostCode-Browser": detectBrowserName(),
+    "X-GhostCode-Ext-Version": EXT_VERSION,
+    ...extra
+  };
+}
 
 function cleanText(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
@@ -154,13 +179,12 @@ async function ensureToken(forceRefresh = false) {
   try {
     const resp = await fetch(`http://127.0.0.1:${activePort}/handshake`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+      headers: buildBridgeHeaders({
         "X-GhostCode-Pairing-Id": pairing.pairing_id,
         "X-GhostCode-Nonce": nonce,
         "X-GhostCode-Timestamp": String(timestamp),
         "X-GhostCode-Proof": proof
-      },
+      }),
       body: "{}"
     });
     if (resp.ok) {
@@ -176,37 +200,45 @@ async function ensureToken(forceRefresh = false) {
   return "";
 }
 
+async function postAuthenticated(path, bodyObj) {
+  let token = await ensureToken(false);
+  if (!token) return null;
+  const serialized = JSON.stringify(bodyObj ?? {});
+  try {
+    let resp = await fetch(`http://127.0.0.1:${activePort}${path}`, {
+      method: "POST",
+      headers: buildBridgeHeaders({ "X-GhostCode-Token": token }),
+      body: serialized
+    });
+    if (resp.status === 401) {
+      token = await ensureToken(true);
+      if (token) {
+        resp = await fetch(`http://127.0.0.1:${activePort}${path}`, {
+          method: "POST",
+          headers: buildBridgeHeaders({ "X-GhostCode-Token": token }),
+          body: serialized
+        });
+      }
+    }
+    return resp;
+  } catch {
+    return null;
+  }
+}
+
+async function sendHeartbeat() {
+  await postAuthenticated("/heartbeat", {
+    browser_name: detectBrowserName(),
+    ext_version: EXT_VERSION,
+    timestamp: Date.now()
+  });
+}
+
 async function clearContextInApp() {
   if (!lastSentKey) return;
   lastSentKey = "";
   lastSentAt = 0;
-
-  const token = await ensureToken(false);
-  if (!token) return;
-
-  try {
-    const resp = await fetch(`http://127.0.0.1:${activePort}/context/clear`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-GhostCode-Token": token
-      },
-      body: "{}"
-    });
-    if (resp.status === 401) {
-      const fresh = await ensureToken(true);
-      if (fresh) {
-        await fetch(`http://127.0.0.1:${activePort}/context/clear`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-GhostCode-Token": fresh
-          },
-          body: "{}"
-        });
-      }
-    }
-  } catch {}
+  await postAuthenticated("/context/clear", {});
 }
 
 async function postToApp(payload, tabActive) {
@@ -218,45 +250,21 @@ async function postToApp(payload, tabActive) {
     return;
   }
 
-  let token = await ensureToken(false);
-  if (!token) return;
-
   const body = {
     problem_code: payload.problem_code,
     problem_title: payload.problem_title || "",
     platform: payload.platform || "",
     url: payload.url || "",
     tab_active: true,
-    timestamp: now
+    timestamp: now,
+    browser_name: detectBrowserName()
   };
 
-  try {
-    let resp = await fetch(`http://127.0.0.1:${activePort}/context`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-GhostCode-Token": token
-      },
-      body: JSON.stringify(body)
-    });
-    if (resp.status === 401) {
-      token = await ensureToken(true);
-      if (token) {
-        resp = await fetch(`http://127.0.0.1:${activePort}/context`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-GhostCode-Token": token
-          },
-          body: JSON.stringify(body)
-        });
-      }
-    }
-    if (resp.ok) {
-      lastSentKey = key;
-      lastSentAt = now;
-    }
-  } catch {}
+  const resp = await postAuthenticated("/context", body);
+  if (resp && resp.ok) {
+    lastSentKey = key;
+    lastSentAt = now;
+  }
 }
 
 async function processTab(tab) {
@@ -308,6 +316,7 @@ chrome.runtime.onInstalled.addListener(() => {
   injectedByTab.clear();
   sessionToken = "";
   sessionExpiresAt = 0;
+  sendHeartbeat();
   scanFocusedActiveTab();
 });
 
@@ -315,6 +324,7 @@ chrome.runtime.onStartup.addListener(() => {
   injectedByTab.clear();
   sessionToken = "";
   sessionExpiresAt = 0;
+  sendHeartbeat();
   scanFocusedActiveTab();
 });
 
@@ -338,9 +348,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 if (chrome.windows && chrome.windows.onFocusChanged) {
   chrome.windows.onFocusChanged.addListener(() => {
+    sendHeartbeat();
     scanFocusedActiveTab();
   });
 }
 
+setInterval(sendHeartbeat, 4000);
 setInterval(scanFocusedActiveTab, 5000);
+sendHeartbeat();
 scanFocusedActiveTab();

@@ -1,28 +1,70 @@
 using GhostCode.App.Interop;
 using GhostCode.App.ViewModels;
 using GhostCode.App.Views;
+using Microsoft.UI;
+using Microsoft.UI.Input;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.Graphics;
+using Windows.System;
 using WinRT.Interop;
 
 namespace GhostCode.App;
 
+public sealed record TitleBarGeometrySnapshot(
+    bool ExtendsContentIntoTitleBar,
+    double TitleBarTop,
+    double TitleBarBottom,
+    double SearchBoxTop,
+    double SearchBoxBottom,
+    double SearchBoxLeft,
+    double SearchBoxRight,
+    double LogoTop,
+    double LogoBottom,
+    double StatusTop,
+    double StatusBottom);
+
 public sealed partial class MainWindow : Window
 {
+    private readonly AppWindow _appWindow;
+    private readonly WindowId _windowId;
     private TrayIconManager? _tray;
+    private CancellationTokenSource? _searchDebounceCts;
 
     public MainWindow(MainViewModel viewModel)
     {
         ViewModel = viewModel;
         InitializeComponent();
 
-        Title = ViewModel.Strings.AppTitle;
-        ExtendsContentIntoTitleBar = false;
-
         var hwnd = WindowNative.GetWindowHandle(this);
         App.SetMainWindowHandle(hwnd);
+        _windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+        _appWindow = AppWindow.GetFromWindowId(_windowId);
+
+        Title = ViewModel.Strings.AppTitle;
+        ExtendsContentIntoTitleBar = true;
+        if (AppWindowTitleBar.IsCustomizationSupported())
+        {
+            _appWindow.TitleBar.ExtendsContentIntoTitleBar = true;
+            _appWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+            _appWindow.TitleBar.ButtonBackgroundColor = Colors.Transparent;
+            _appWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+        }
+        SetTitleBar(CustomTitleBarGrid);
+
+        var logoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "ghostcode_logo.png");
+        if (File.Exists(logoPath))
+            TitleBarLogoImage.Source = new BitmapImage(new Uri(logoPath));
+
+        CustomTitleBarGrid.Loaded += (_, _) => UpdateTitleBarRegions();
+        CustomTitleBarGrid.SizeChanged += (_, _) => UpdateTitleBarRegions();
+        GlobalSearchBox.SizeChanged += (_, _) => UpdateTitleBarRegions();
+        RootGrid.ActualThemeChanged += (_, _) => ApplyTitleBarThemeColors();
 
         ViewModel.AttachUiHooks(
             action =>
@@ -34,7 +76,11 @@ public sealed partial class MainWindow : Window
                 }
                 return DispatcherQueue.TryEnqueue(() => action());
             },
-            theme => RootGrid.RequestedTheme = theme,
+            theme =>
+            {
+                RootGrid.RequestedTheme = theme;
+                ApplyTitleBarThemeColors();
+            },
             CopyTextToClipboard);
         ViewModel.PropertyChanged += (_, e) =>
         {
@@ -49,7 +95,9 @@ public sealed partial class MainWindow : Window
     public MainViewModel ViewModel { get; }
     public ElementTheme CurrentRootTheme => RootGrid.RequestedTheme;
     public Type? CurrentPageType => ContentFrame.CurrentSourcePageType;
+    public object? CurrentPageContent => ContentFrame.Content;
     public TrayIconManager? TrayManager => _tray;
+    public AutoSuggestBox TitleBarSearchBox => GlobalSearchBox;
 
     public bool NavigateToTag(string tag)
     {
@@ -62,11 +110,185 @@ public sealed partial class MainWindow : Window
         return true;
     }
 
+    public TitleBarGeometrySnapshot GetTitleBarGeometrySnapshot()
+    {
+        var titleBounds = GetBoundsRelativeToRoot(CustomTitleBarGrid);
+        var searchBounds = GetBoundsRelativeToRoot(GlobalSearchBox);
+        var logoBounds = GetBoundsRelativeToRoot(TitleBarLogoImage);
+        var statusBounds = GetBoundsRelativeToRoot(TitleBarStatusPanel);
+        return new TitleBarGeometrySnapshot(
+            ExtendsContentIntoTitleBar,
+            titleBounds.Top,
+            titleBounds.Bottom,
+            searchBounds.Top,
+            searchBounds.Bottom,
+            searchBounds.Left,
+            searchBounds.Right,
+            logoBounds.Top,
+            logoBounds.Bottom,
+            statusBounds.Top,
+            statusBounds.Bottom);
+    }
+
+    private Rect GetBoundsRelativeToRoot(FrameworkElement el)
+    {
+        if (el.ActualWidth <= 0 || el.ActualHeight <= 0)
+            return Rect.Empty;
+        try
+        {
+            var transform = el.TransformToVisual(RootGrid);
+            return transform.TransformBounds(new Rect(0, 0, el.ActualWidth, el.ActualHeight));
+        }
+        catch
+        {
+            return Rect.Empty;
+        }
+    }
+
+    private void UpdateTitleBarRegions()
+    {
+        if (RootGrid.XamlRoot is null)
+            return;
+
+        var scale = RootGrid.XamlRoot.RasterizationScale;
+        if (scale <= 0) scale = 1.0;
+
+        if (AppWindowTitleBar.IsCustomizationSupported())
+        {
+            var rightInsetDip = Math.Max(138.0, _appWindow.TitleBar.RightInset / scale);
+            TitleBarRightInsetCol.MinWidth = rightInsetDip;
+        }
+
+        try
+        {
+            var nonClient = InputNonClientPointerSource.GetForWindowId(_windowId);
+            var passthrough = new List<RectInt32>();
+
+            var searchRect = ToPhysicalRect(GlobalSearchBox, scale);
+            if (searchRect.Width > 0 && searchRect.Height > 0)
+                passthrough.Add(searchRect);
+
+            nonClient.SetRegionRects(NonClientRegionKind.Passthrough, passthrough.ToArray());
+        }
+        catch
+        {
+            // Older OS builds without InputNonClientPointerSource fallback gracefully
+        }
+    }
+
+    private RectInt32 ToPhysicalRect(FrameworkElement element, double scale)
+    {
+        var rect = GetBoundsRelativeToRoot(element);
+        if (rect.IsEmpty)
+            return default;
+        return new RectInt32(
+            (int)Math.Floor(rect.X * scale),
+            (int)Math.Floor(rect.Y * scale),
+            (int)Math.Ceiling(rect.Width * scale),
+            (int)Math.Ceiling(rect.Height * scale));
+    }
+
+    private void ApplyTitleBarThemeColors()
+    {
+        if (!AppWindowTitleBar.IsCustomizationSupported())
+            return;
+
+        var isDark = RootGrid.ActualTheme == ElementTheme.Dark;
+        _appWindow.TitleBar.ButtonBackgroundColor = Colors.Transparent;
+        _appWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+        _appWindow.TitleBar.ButtonForegroundColor = isDark ? Colors.White : Colors.Black;
+        _appWindow.TitleBar.ButtonHoverForegroundColor = isDark ? Colors.White : Colors.Black;
+        _appWindow.TitleBar.ButtonHoverBackgroundColor = isDark
+            ? Windows.UI.Color.FromArgb(30, 255, 255, 255)
+            : Windows.UI.Color.FromArgb(20, 0, 0, 0);
+    }
+
+    public void FocusGlobalSearch()
+    {
+        GlobalSearchBox.Focus(FocusState.Programmatic);
+    }
+
+    public async Task TriggerGlobalSearchQueryAsync(string query)
+    {
+        GlobalSearchBox.Text = query;
+        var suggestions = await ViewModel.UpdateGlobalSearchSuggestionsAsync(query);
+        GlobalSearchBox.ItemsSource = suggestions;
+        if (suggestions.Count > 0)
+        {
+            NavigateToTag("Archive");
+            await ViewModel.SelectArchiveVersionByIdAsync(suggestions[0].Id);
+        }
+        else
+        {
+            ViewModel.SearchQuery = query;
+            NavigateToTag("Archive");
+            await ViewModel.RefreshArchiveAsync();
+        }
+    }
+
+    private void SearchShortcut_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        FocusGlobalSearch();
+        args.Handled = true;
+    }
+
+    private async void GlobalSearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+            return;
+
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = new CancellationTokenSource();
+        var ct = _searchDebounceCts.Token;
+        var query = sender.Text;
+
+        try
+        {
+            await Task.Delay(120, ct);
+            var results = await ViewModel.UpdateGlobalSearchSuggestionsAsync(query, ct);
+            if (!ct.IsCancellationRequested)
+                sender.ItemsSource = results;
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void GlobalSearchBox_SuggestionChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (args.SelectedItem is GlobalSearchSuggestion sug)
+            sender.Text = sug.DisplayTitle;
+    }
+
+    private async void GlobalSearchBox_QuerySubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        if (args.ChosenSuggestion is GlobalSearchSuggestion chosen)
+        {
+            NavigateToTag("Archive");
+            await ViewModel.SelectArchiveVersionByIdAsync(chosen.Id);
+            return;
+        }
+
+        await TriggerGlobalSearchQueryAsync(args.QueryText);
+    }
+
+    private void GlobalSearchBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == VirtualKey.Escape)
+        {
+            GlobalSearchBox.Text = string.Empty;
+            GlobalSearchBox.ItemsSource = null;
+            RootNav.Focus(FocusState.Programmatic);
+            e.Handled = true;
+        }
+    }
+
     public void AttachTray(Action onExitRequested)
     {
         _tray?.Dispose();
         _tray = new TrayIconManager(this, ViewModel, onExitRequested);
-        _tray.AppWindow.Resize(new SizeInt32(1160, 760));
+        _tray.AppWindow.Resize(new SizeInt32(1280, 820));
+        UpdateTitleBarRegions();
+        ApplyTitleBarThemeColors();
     }
 
     public void DisposeTray()
@@ -100,9 +322,6 @@ public sealed partial class MainWindow : Window
             pkg.SetText(text);
             Clipboard.SetContent(pkg);
         }
-        catch
-        {
-            // Clipboard may be locked briefly by another process
-        }
+        catch { }
     }
 }

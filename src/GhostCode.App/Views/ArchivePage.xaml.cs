@@ -15,6 +15,7 @@ public sealed partial class ArchivePage : Page
     {
         ViewModel = App.Services.GetRequiredService<MainViewModel>();
         InitializeComponent();
+        UpdateTabButtonStyles();
     }
 
     public MainViewModel ViewModel { get; }
@@ -23,6 +24,38 @@ public sealed partial class ArchivePage : Page
     {
         if (e.Key == VirtualKey.Enter)
             _ = ViewModel.SearchArchiveCommand.ExecuteAsync(null);
+    }
+
+    private void ConsoleTab_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.RunnerTabIndex = 0;
+        UpdateTabButtonStyles();
+    }
+
+    private void IoTab_Click(object sender, RoutedEventArgs e)
+    {
+        ViewModel.RunnerTabIndex = 1;
+        UpdateTabButtonStyles();
+    }
+
+    private void UpdateTabButtonStyles()
+    {
+        var accent = Application.Current.Resources.TryGetValue("AccentButtonStyle", out var res) ? res as Style : null;
+        ConsoleTabBtn.Style = ViewModel.RunnerTabIndex == 0 ? accent : null;
+        IoTabBtn.Style = ViewModel.RunnerTabIndex == 1 ? accent : null;
+    }
+
+    private void IoSplitter_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
+    {
+        var totalH = IoSplitContainer.ActualHeight;
+        if (totalH <= 180)
+            return;
+
+        var currentStdinH = StdinRowDef.ActualHeight;
+        var nextStdinH = Math.Clamp(currentStdinH + e.Delta.Translation.Y, 80, totalH - 100);
+        var nextOutputH = Math.Max(90, totalH - 10 - nextStdinH);
+        StdinRowDef.Height = new GridLength(nextStdinH, GridUnitType.Pixel);
+        OutputRowDef.Height = new GridLength(nextOutputH, GridUnitType.Pixel);
     }
 
     private async void RestoreVersion_Click(object sender, RoutedEventArgs e)

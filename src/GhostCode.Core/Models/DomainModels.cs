@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GhostCode.Core.Analysis;
 using GhostCode.Core.Monitoring;
 
 namespace GhostCode.Core.Models;
@@ -44,6 +45,79 @@ public enum UploadStatus
     Failed
 }
 
+public enum BrowserKind
+{
+    Chrome,
+    Edge,
+    Firefox,
+    Thorium
+}
+
+public enum BrowserConnectionState
+{
+    NotInstalled,
+    Installed,
+    Running,
+    ExtensionConnected,
+    ExtensionDisconnected,
+    ExtensionError
+}
+
+public enum VersionAvailability
+{
+    Synced,
+    LocalOnly,
+    CloudOnly,
+    Conflict,
+    Error
+}
+
+public enum ConflictResolutionPolicy
+{
+    PreserveBothBranches,
+    PreferLocal,
+    PreferRemote
+}
+
+public sealed record BrowserStatusInfo(
+    BrowserKind Kind,
+    string DisplayName,
+    bool IsInstalled,
+    bool IsRunning,
+    string? ExecutablePath,
+    string? Version,
+    BrowserConnectionState ConnectionState,
+    string? ExtensionVersion,
+    long? LastHeartbeatUnixMs,
+    string StatusDetail);
+
+public sealed record IdeStatusInfo(
+    string Name,
+    bool IsInstalled,
+    bool IsRunning,
+    string? ExecutablePath,
+    string? Version,
+    string SupportedLanguages,
+    string ToolchainSummary);
+
+public sealed record ToolchainInfo(
+    string Kind,
+    string DisplayName,
+    bool IsAvailable,
+    string? ExecutablePath,
+    string? Version,
+    string DefaultFlags,
+    string StatusDetail);
+
+public sealed record ArchiveHistoryEvent(
+    string Id,
+    string EventType,
+    string SourcePath,
+    string? VersionId,
+    string Summary,
+    long OccurredAtUnixMs,
+    string DeviceName);
+
 public sealed record ProblemContext(
     OjPlatform Platform,
     string Code,
@@ -51,7 +125,20 @@ public sealed record ProblemContext(
     string Url,
     string Source,
     long SeenAtUnixMs,
-    bool TabActive = true);
+    bool TabActive = true,
+    string BrowserName = "")
+{
+    public string FilenamePreview
+    {
+        get
+        {
+            var lang = SourceLanguage.Cpp;
+            var stem = SourceAnalyzer.BuildProblemBaseName(this, "Untitled1.cpp", string.Empty, lang);
+            var ext = SourceAnalyzer.TargetExtension(this, lang, string.Empty);
+            return $"{stem}.{ext}";
+        }
+    }
+}
 
 public sealed record WatchedFolderConfig(
     string Path,
@@ -87,7 +174,20 @@ public sealed record ArchiveVersionRecord(
     string? ProblemCode,
     string? ProblemTitle,
     string Platform,
-    long CreatedAtUnixMs);
+    long CreatedAtUnixMs,
+    bool IsLocalAvailable = true,
+    string? DriveFileId = null,
+    bool IsConflictBranch = false)
+{
+    [JsonIgnore]
+    public VersionAvailability Availability => !IsLocalAvailable
+        ? VersionAvailability.CloudOnly
+        : IsConflictBranch
+            ? VersionAvailability.Conflict
+            : !string.IsNullOrEmpty(DriveFileId)
+                ? VersionAvailability.Synced
+                : VersionAvailability.LocalOnly;
+}
 
 public sealed record UploadQueueItem(
     string VersionId,
@@ -144,6 +244,16 @@ public sealed class GhostCodeConfig
     [JsonIgnore]
     public string? PairingFilePath { get; set; }
     public GoogleOAuthClientConfig OAuthClient { get; set; } = new();
+    public string CCompilerPath { get; set; } = string.Empty;
+    public string CppCompilerPath { get; set; } = string.Empty;
+    public string PythonInterpreterPath { get; set; } = string.Empty;
+    public string CStandard { get; set; } = "c11";
+    public string CppStandard { get; set; } = "auto";
+    public int ExecutionTimeoutMs { get; set; } = 5000;
+    public int ExecutionMemoryLimitMb { get; set; } = 256;
+    public ConflictResolutionPolicy ConflictPolicy { get; set; } = ConflictResolutionPolicy.PreserveBothBranches;
+    public Dictionary<string, string> CustomBrowserPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> CustomIdePaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public static string DefaultConfigPath(string? localAppDataOverride = null) =>
         Path.Combine(KnownFoldersResolver.ResolveAppDataDir(localAppDataOverride), "config.json");
@@ -231,6 +341,12 @@ public sealed class GhostCodeConfig
         if (string.IsNullOrWhiteSpace(DriveFolderName))
             DriveFolderName = "CodeArchive";
         OAuthClient ??= new GoogleOAuthClientConfig();
+        CStandard = string.IsNullOrWhiteSpace(CStandard) ? "c11" : CStandard;
+        CppStandard = string.IsNullOrWhiteSpace(CppStandard) ? "auto" : CppStandard;
+        if (ExecutionTimeoutMs <= 0) ExecutionTimeoutMs = 5000;
+        if (ExecutionMemoryLimitMb <= 0) ExecutionMemoryLimitMb = 256;
+        CustomBrowserPaths ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        CustomIdePaths ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
     public void Save(string configPath)
@@ -264,7 +380,17 @@ public sealed class GhostCodeConfig
             ContextExpirationSeconds = ContextExpirationSeconds,
             SessionTokenTtlSeconds = SessionTokenTtlSeconds,
             BridgeAuthToken = string.IsNullOrEmpty(BridgeAuthToken) ? string.Empty : "[REDACTED]",
-            OAuthClient = new GoogleOAuthClientConfig(OAuthClient.ClientId, string.Empty)
+            OAuthClient = new GoogleOAuthClientConfig(OAuthClient.ClientId, string.Empty),
+            CCompilerPath = CCompilerPath,
+            CppCompilerPath = CppCompilerPath,
+            PythonInterpreterPath = PythonInterpreterPath,
+            CStandard = CStandard,
+            CppStandard = CppStandard,
+            ExecutionTimeoutMs = ExecutionTimeoutMs,
+            ExecutionMemoryLimitMb = ExecutionMemoryLimitMb,
+            ConflictPolicy = ConflictPolicy,
+            CustomBrowserPaths = new Dictionary<string, string>(CustomBrowserPaths, StringComparer.OrdinalIgnoreCase),
+            CustomIdePaths = new Dictionary<string, string>(CustomIdePaths, StringComparer.OrdinalIgnoreCase)
         };
         return JsonSerializer.Serialize(sanitized, JsonOptions);
     }

@@ -5,17 +5,19 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:GhostCode.App.ViewModels">
 
-    <Grid Padding="24,16,24,24" RowSpacing="12">
+    <Grid Padding="20,12,20,20" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Search & Filter Bar -->
+        <!-- Search & Filters Header -->
         <Grid Grid.Row="0" ColumnSpacing="10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="180" />
+                <ColumnDefinition Width="150" />
+                <ColumnDefinition Width="165" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
@@ -31,46 +33,164 @@
                 ItemsSource="{x:Bind ViewModel.PlatformFilters}"
                 SelectedItem="{x:Bind ViewModel.SelectedPlatformFilter, Mode=TwoWay}" />
 
-            <Button
+            <ComboBox
                 Grid.Column="2"
+                HorizontalAlignment="Stretch"
+                ItemsSource="{x:Bind ViewModel.AvailabilityFilterLabels, Mode=OneWay}"
+                SelectedIndex="{x:Bind ViewModel.SelectedAvailabilityFilterIndex, Mode=TwoWay}" />
+
+            <Button
+                Grid.Column="3"
                 Content="Search"
                 Style="{ThemeResource AccentButtonStyle}"
                 Command="{x:Bind ViewModel.SearchArchiveCommand}" />
+
+            <Button
+                Grid.Column="4"
+                Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}"
+                Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
         </Grid>
 
-        <!-- Master-Detail Archive Browser -->
-        <Grid Grid.Row="1" ColumnSpacing="16">
+        <!-- 3-Pane Workspace: File Explorer | Source + Version Viewer | Console & Split I/O Runner -->
+        <Grid Grid.Row="1" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="380" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="290" MinWidth="220" />
+                <ColumnDefinition Width="1.2*" MinWidth="300" />
+                <ColumnDefinition Width="*" MinWidth="320" />
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Padding="8" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+            <!-- Pane 1: File Explorer -->
+            <Border
+                x:Name="ExplorerPane"
+                Grid.Column="0"
+                Padding="8"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
                 <ListView
-                    ItemsSource="{x:Bind ViewModel.ArchiveVersions}"
-                    SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
+                    x:Name="FileExplorerListView"
+                    ItemsSource="{x:Bind ViewModel.ArchiveFileGroups}"
+                    SelectedItem="{x:Bind ViewModel.SelectedFileGroup, Mode=TwoWay}"
                     SelectionMode="Single">
                     <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="vm:ArchiveVersionRow">
-                            <StackPanel Padding="4,8" Spacing="2">
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Border Padding="6,2" CornerRadius="4" Background="{ThemeResource AccentFillColorDefaultBrush}">
-                                        <TextBlock Text="{x:Bind VersionBadge}" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="11" FontWeight="SemiBold" />
+                        <DataTemplate x:DataType="vm:ArchiveFileGroupRow">
+                            <StackPanel Padding="4,8" Spacing="3">
+                                <Grid ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Padding="6,2" CornerRadius="4" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                        <TextBlock Text="{x:Bind LatestVersionBadge}" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="11" FontWeight="SemiBold" />
                                     </Border>
-                                    <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                </StackPanel>
-                                <TextBlock Text="{x:Bind ProblemSummary}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <TextBlock Text="{x:Bind TimestampText}" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                    <TextBlock Text="{x:Bind ShortSha}" FontSize="11" FontFamily="Consolas" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="{x:Bind FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                </Grid>
+                                <TextBlock Text="{x:Bind Subtitle}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                             </StackPanel>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
             </Border>
 
-            <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+            <!-- Pane 2: Read-Only Versioned Source Code Viewer -->
+            <Border
+                x:Name="SourceViewerPane"
+                Grid.Column="1"
+                Padding="14"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <Grid RowSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Version Selector & Action Toolbar -->
+                    <Grid Grid.Row="0" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <ComboBox
+                            Grid.Column="0"
+                            HorizontalAlignment="Stretch"
+                            Header="{x:Bind ViewModel.Strings.VersionSelectorLabel, Mode=OneWay}"
+                            ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
+                            SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
+                            DisplayMemberPath="SelectorLabel" />
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Bottom">
+                            <Button
+                                Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
+                                Command="{x:Bind ViewModel.CopySelectedCodeCommand}" />
+                            <Button
+                                Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
+                                Click="RestoreVersion_Click" />
+                            <Button
+                                Content="{x:Bind ViewModel.Strings.DownloadVersionButton, Mode=OneWay}"
+                                Visibility="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
+                                Command="{x:Bind ViewModel.DownloadSelectedVersionCommand}" />
+                            <Button
+                                x:Name="RunSourceButton"
+                                Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Command="{x:Bind ViewModel.RunCodeCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Version Integrity Header -->
+                    <StackPanel Grid.Row="1" Spacing="2">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.SelectedVersionHeaderText, Mode=OneWay}"
+                            FontWeight="SemiBold"
+                            FontSize="12"
+                            TextTrimming="CharacterEllipsis" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.SelectedVersion.SourcePath, Mode=OneWay, FallbackValue=''}"
+                            FontSize="11"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <!-- Cloud-Only Banner -->
+                    <InfoBar
+                        Grid.Row="2"
+                        IsOpen="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
+                        IsClosable="False"
+                        Severity="Informational"
+                        Message="{x:Bind ViewModel.Strings.CloudOnlyNotice, Mode=OneWay}" />
+
+                    <!-- Read-Only Source Viewer -->
+                    <TextBox
+                        x:Name="SourceCodeViewerBox"
+                        Grid.Row="3"
+                        Text="{x:Bind ViewModel.SelectedVersionSource, Mode=OneWay}"
+                        PlaceholderText="{x:Bind ViewModel.Strings.NoVersionSelected, Mode=OneWay}"
+                        IsReadOnly="True"
+                        AcceptsReturn="True"
+                        TextWrapping="NoWrap"
+                        FontFamily="Consolas"
+                        FontSize="13"
+                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                        ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </Grid>
+            </Border>
+
+            <!-- Pane 3: Console & Split STDIN/OUTPUT Execution Panel -->
+            <Border
+                x:Name="RunnerPane"
+                Grid.Column="2"
+                Padding="14"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
                 <Grid RowSpacing="10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -78,37 +198,150 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
-                        <Button
-                            Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.CopySelectedCodeCommand}" />
-                        <Button
-                            Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
-                            Style="{ThemeResource AccentButtonStyle}"
-                            Click="RestoreVersion_Click" />
-                        <Button
-                            Content="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
-                        <Button
-                            Content="{x:Bind ViewModel.Strings.OpenReadyButton, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.OpenReadyFolderCommand}" />
-                    </StackPanel>
+                    <!-- Tab & Execution Action Bar -->
+                    <Grid Grid.Row="0" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
 
-                    <TextBlock
-                        Grid.Row="1"
-                        Text="{x:Bind ViewModel.SelectedVersion.SourcePath, Mode=OneWay, FallbackValue=''}"
-                        FontSize="12"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        TextTrimming="CharacterEllipsis" />
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                            <Button
+                                x:Name="ConsoleTabBtn"
+                                Content="{x:Bind ViewModel.Strings.RunnerTabConsole, Mode=OneWay}"
+                                Click="ConsoleTab_Click" />
+                            <Button
+                                x:Name="IoTabBtn"
+                                Content="{x:Bind ViewModel.Strings.RunnerTabIo, Mode=OneWay}"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Click="IoTab_Click" />
+                        </StackPanel>
 
-                    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Background="{ThemeResource LayerFillColorAltBrush}" CornerRadius="6" Padding="12">
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                            <Button
+                                x:Name="PanelRunButton"
+                                Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Command="{x:Bind ViewModel.RunCodeCommand}" />
+                            <Button
+                                x:Name="PanelStopButton"
+                                Content="{x:Bind ViewModel.Strings.StopRunButton, Mode=OneWay}"
+                                Command="{x:Bind ViewModel.StopExecutionCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Status & Metrics Strip -->
+                    <Grid Grid.Row="1" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Padding="8,3" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                            <TextBlock x:Name="RunnerStatusLabel" Text="{x:Bind ViewModel.RunnerStatusText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" />
+                        </Border>
                         <TextBlock
-                            Text="{x:Bind ViewModel.SelectedVersionSource, Mode=OneWay}"
-                            FontFamily="Cascadia Code, Consolas, Courier New"
-                            FontSize="13"
-                            IsTextSelectionEnabled="True"
-                            TextWrapping="NoWrap" />
-                    </ScrollViewer>
+                            Grid.Column="1"
+                            x:Name="RunnerMetricsLabel"
+                            Text="{x:Bind ViewModel.RunnerMetricsText, Mode=OneWay}"
+                            FontSize="11"
+                            FontFamily="Consolas"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            VerticalAlignment="Center"
+                            TextTrimming="CharacterEllipsis" />
+                        <Button Grid.Column="2" Content="{x:Bind ViewModel.Strings.ClearConsoleButton, Mode=OneWay}" Command="{x:Bind ViewModel.ClearConsoleCommand}" />
+                    </Grid>
+
+                    <!-- View A: Console Output -->
+                    <TextBox
+                        x:Name="ConsoleOutputBox"
+                        Grid.Row="2"
+                        Visibility="{x:Bind ViewModel.ConsoleTabVisibility, Mode=OneWay}"
+                        Text="{x:Bind ViewModel.ConsoleLogText, Mode=OneWay}"
+                        IsReadOnly="True"
+                        AcceptsReturn="True"
+                        TextWrapping="Wrap"
+                        FontFamily="Consolas"
+                        FontSize="12"
+                        ScrollViewer.VerticalScrollBarVisibility="Auto" />
+
+                    <!-- View B: Vertically Split STDIN (Top) & OUTPUT (Bottom) with Draggable Splitter -->
+                    <Grid
+                        x:Name="IoSplitContainer"
+                        Grid.Row="2"
+                        Visibility="{x:Bind ViewModel.IoTabVisibility, Mode=OneWay}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition x:Name="StdinRowDef" Height="*" MinHeight="80" />
+                            <RowDefinition Height="10" />
+                            <RowDefinition x:Name="OutputRowDef" Height="1.3*" MinHeight="90" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Top: STDIN -->
+                        <Grid Grid.Row="0" RowSpacing="4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock
+                                Grid.Row="0"
+                                Text="{x:Bind ViewModel.Strings.StdinHeader, Mode=OneWay}"
+                                FontSize="11"
+                                FontWeight="SemiBold"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox
+                                x:Name="StdinInputBox"
+                                Grid.Row="1"
+                                Text="{x:Bind ViewModel.StdinText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                PlaceholderText="{x:Bind ViewModel.Strings.StdinPlaceholder, Mode=OneWay}"
+                                AcceptsReturn="True"
+                                TextWrapping="NoWrap"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                        </Grid>
+
+                        <!-- Draggable Vertical Splitter -->
+                        <Border
+                            x:Name="IoSplitterThumb"
+                            Grid.Row="1"
+                            Background="Transparent"
+                            ManipulationMode="TranslateY"
+                            ManipulationDelta="IoSplitter_ManipulationDelta">
+                            <Border
+                                Height="4"
+                                Width="56"
+                                CornerRadius="2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource ControlStrokeColorDefaultBrush}" />
+                        </Border>
+
+                        <!-- Bottom: OUTPUT -->
+                        <Grid Grid.Row="2" RowSpacing="4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock
+                                Grid.Row="0"
+                                Text="{x:Bind ViewModel.Strings.OutputHeader, Mode=OneWay}"
+                                FontSize="11"
+                                FontWeight="SemiBold"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBox
+                                x:Name="IoOutputBox"
+                                Grid.Row="1"
+                                Text="{x:Bind ViewModel.IoOutputText, Mode=OneWay}"
+                                IsReadOnly="True"
+                                AcceptsReturn="True"
+                                TextWrapping="NoWrap"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                        </Grid>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>

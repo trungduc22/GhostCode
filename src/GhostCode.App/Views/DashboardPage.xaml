@@ -6,41 +6,144 @@
     xmlns:controls="using:CommunityToolkit.WinUI.Controls"
     xmlns:vm="using:GhostCode.App.ViewModels">
 
-    <ScrollViewer Padding="24,16,24,24">
-        <StackPanel Spacing="16" MaxWidth="1040">
+    <ScrollViewer Padding="24,16,24,24" HorizontalScrollMode="Disabled">
+        <StackPanel Spacing="16" MaxWidth="1080" HorizontalAlignment="Stretch">
 
-            <!-- Active Problem Card -->
-            <controls:SettingsCard
-                Header="{x:Bind ViewModel.Strings.ActiveContextTitle, Mode=OneWay}"
-                Description="{x:Bind ViewModel.Strings.OpenBrowserHint, Mode=OneWay}">
-                <controls:SettingsCard.HeaderIcon>
-                    <FontIcon Glyph="&#xE774;" />
-                </controls:SettingsCard.HeaderIcon>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Border
-                        Padding="10,4"
-                        CornerRadius="6"
-                        Background="{ThemeResource AccentFillColorDefaultBrush}">
+            <!-- 1. Connected Browsers (STRICTLY ABOVE Detected Problem) -->
+            <Border
+                x:Name="ConnectedBrowsersCard"
+                Padding="16"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="10">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="18" VerticalAlignment="Center" />
                         <TextBlock
-                            Text="{x:Bind ViewModel.ActivePlatform, Mode=OneWay}"
-                            Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                            Grid.Column="1"
+                            Text="{x:Bind ViewModel.Strings.ConnectedBrowsersTitle, Mode=OneWay}"
                             FontWeight="SemiBold"
-                            FontSize="12" />
-                    </Border>
-                    <TextBlock
-                        Text="{x:Bind ViewModel.ActiveCode, Mode=OneWay}"
-                        FontWeight="SemiBold"
-                        VerticalAlignment="Center" />
-                    <TextBlock
-                        Text="{x:Bind ViewModel.ActiveTitle, Mode=OneWay}"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        VerticalAlignment="Center"
-                        MaxWidth="280"
-                        TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-            </controls:SettingsCard>
+                            FontSize="15"
+                            VerticalAlignment="Center" />
+                        <Button
+                            Grid.Column="2"
+                            Content="{x:Bind ViewModel.Strings.RefreshDiscoveryButton, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
+                    </Grid>
 
-            <!-- Summary Metrics Grid -->
+                    <!-- Clean Empty State when 0 browsers have live extension heartbeats -->
+                    <TextBlock
+                        x:Name="NoConnectedBrowsersText"
+                        Visibility="{x:Bind ViewModel.NoConnectedBrowsersVisibility, Mode=OneWay}"
+                        Text="{x:Bind ViewModel.Strings.NoConnectedBrowsers, Mode=OneWay}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        FontStyle="Italic" />
+
+                    <!-- Live Connected Browser Badges ONLY -->
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.ConnectedBrowsers}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="8" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:BrowserStatusRow">
+                                <Border
+                                    Padding="10,6"
+                                    CornerRadius="6"
+                                    Background="{ThemeResource SystemFillColorSuccessBackgroundBrush}"
+                                    BorderBrush="{ThemeResource SystemFillColorSuccessBrush}"
+                                    BorderThickness="1">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="{ThemeResource SystemFillColorSuccessBrush}" VerticalAlignment="Center" />
+                                        <TextBlock Text="{x:Bind StateBadge}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
+                                        <TextBlock Text="{x:Bind VersionText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- 2. Detected Problem Card (IMMEDIATELY UNDERNEATH Connected Browsers) -->
+            <Border
+                x:Name="DetectedProblemCard"
+                Padding="16"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="10">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Grid.Column="0" Glyph="&#xE943;" FontSize="18" VerticalAlignment="Center" />
+                        <TextBlock
+                            Grid.Column="1"
+                            Text="{x:Bind ViewModel.Strings.ActiveContextTitle, Mode=OneWay}"
+                            FontWeight="SemiBold"
+                            FontSize="15"
+                            VerticalAlignment="Center" />
+                        <Border
+                            Grid.Column="2"
+                            Padding="8,3"
+                            CornerRadius="6"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1">
+                            <TextBlock Text="{x:Bind ViewModel.ActiveContextStateBadge, Mode=OneWay}" FontSize="12" FontWeight="SemiBold" />
+                        </Border>
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border Padding="10,4" CornerRadius="6" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.ActivePlatform, Mode=OneWay}"
+                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                FontWeight="SemiBold"
+                                FontSize="12" />
+                        </Border>
+                        <TextBlock Text="{x:Bind ViewModel.ActiveCode, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Text="—" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                        <TextBlock Text="{x:Bind ViewModel.ActiveTitle, Mode=OneWay}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <Grid ColumnSpacing="16" RowSpacing="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{x:Bind ViewModel.Strings.FilenamePreviewLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="FilenamePreviewText" Text="{x:Bind ViewModel.ActiveFilenamePreview, Mode=OneWay}" FontFamily="Consolas" FontWeight="SemiBold" FontSize="12" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{x:Bind ViewModel.Strings.BrowserSourceLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.ActiveBrowserName, Mode=OneWay}" FontSize="12" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="URL" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.ActiveUrl, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" />
+                    </Grid>
+
+                    <TextBlock Text="{x:Bind ViewModel.Strings.OpenBrowserHint, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- 3. Summary Metrics Grid -->
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -78,28 +181,72 @@
                 </Border>
             </Grid>
 
-            <!-- Running IDEs & Browsers + Actions -->
-            <controls:SettingsCard
-                Header="{x:Bind ViewModel.Strings.RunningIdesTitle, Mode=OneWay}"
-                Description="{x:Bind ViewModel.BrowserStatusSummary, Mode=OneWay}">
-                <controls:SettingsCard.HeaderIcon>
-                    <FontIcon Glyph="&#xE943;" />
-                </controls:SettingsCard.HeaderIcon>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="{x:Bind ViewModel.IdeStatusSummary, Mode=OneWay}" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
-                    <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />
-                </StackPanel>
-            </controls:SettingsCard>
-
-            <!-- Quick Open Directories -->
+            <!-- 4. Quick Actions -->
             <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
+                <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />
+                <Button Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}" Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.OpenReadyButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenReadyFolderCommand}" />
-                <Button Content="Refresh" Command="{x:Bind ViewModel.RefreshAllCommand}" />
             </StackPanel>
 
-            <!-- Monitoring Health & Diagnostics -->
+            <!-- 5. Discovered IDEs & Compilers Side-by-Side -->
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="{x:Bind ViewModel.Strings.RunningIdesTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.IdeStatuses}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:IdeStatusRow">
+                                    <Grid Padding="0,6" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{x:Bind ToolchainText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <Border Grid.Column="1" Padding="8,2" CornerRadius="4" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                            <TextBlock Text="{x:Bind StatusBadge}" FontSize="11" FontWeight="SemiBold" />
+                                        </Border>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="{x:Bind ViewModel.Strings.DiscoveredToolchainsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.Toolchains}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ToolchainRow">
+                                    <Grid Padding="0,6" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{x:Bind DetailText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind StatusBadge}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- 6. Monitoring Health & Diagnostics -->
             <Border Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                 <Grid ColumnSpacing="16" RowSpacing="8">
                     <Grid.ColumnDefinitions>
@@ -133,7 +280,7 @@
                 </Grid>
             </Border>
 
-            <!-- Watched Folders & Recent Events Side-by-Side -->
+            <!-- 7. Watched Folders & Persistent Archive History Side-by-Side -->
             <Grid ColumnSpacing="16">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -143,35 +290,35 @@
                 <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                     <StackPanel Spacing="8">
                         <TextBlock Text="{x:Bind ViewModel.Strings.ActiveWatchesTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ListView ItemsSource="{x:Bind ViewModel.ActiveWatches}" SelectionMode="None" MaxHeight="260">
-                            <ListView.ItemTemplate>
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.ActiveWatches}">
+                            <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="vm:ActiveWatchRow">
                                     <StackPanel Padding="0,6">
                                         <TextBlock Text="{x:Bind FolderPath}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Text="{x:Bind StatusText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
                                 </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </Border>
 
                 <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                     <StackPanel Spacing="8">
                         <TextBlock Text="{x:Bind ViewModel.Strings.RecentEventsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ListView ItemsSource="{x:Bind ViewModel.RecentEvents}" SelectionMode="None" MaxHeight="260">
+                        <ListView ItemsSource="{x:Bind ViewModel.HistoryEvents}" SelectionMode="None" MaxHeight="240">
                             <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="vm:MonitorEventRow">
+                                <DataTemplate x:DataType="vm:ArchiveHistoryEventRow">
                                     <Grid Padding="0,6" ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0">
-                                            <TextBlock Text="{x:Bind Header}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{x:Bind Detail}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{x:Bind EventType}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{x:Bind Summary}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                         </StackPanel>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind TimeText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind TimeText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>

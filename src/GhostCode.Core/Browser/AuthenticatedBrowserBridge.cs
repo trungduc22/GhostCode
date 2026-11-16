@@ -15,12 +15,19 @@ public sealed record BrowserContextPayload(
     string? platform,
     string? url,
     bool tab_active = true,
-    long timestamp = 0);
+    long timestamp = 0,
+    string? browser_name = null);
+
+internal sealed record ActiveBrowserSession(
+    BrowserKind Kind,
+    string ExtensionVersion,
+    long LastHeartbeatUnixMs);
 
 /// <summary>
 /// Authenticated loopback HTTP bridge + Win32 browser title scanner.
 /// - Requires HMAC-SHA256 pairing proof via POST /handshake (rejects unauthenticated GET or spoofed Origin).
 /// - Issues short-lived rotatable session tokens via X-GhostCode-Token.
+/// - Tracks per-browser extension heartbeats accurately (Connected ONLY when heartbeat is fresh).
 /// - Strictly validates supported problem URLs and active-tab status.
 /// - Never emits Access-Control-Allow-Origin: * and never logs auth secrets.
 /// </summary>
@@ -29,9 +36,11 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
     public const string DefaultPairingId = "ghostcode-local-ext";
 
     private readonly GhostCodeConfig _config;
+    private readonly BrowserIntegrationService _browserIntegration;
     private readonly object _ctxLock = new();
     private readonly object _authLock = new();
     private readonly Dictionary<string, long> _seenNonces = new(StringComparer.Ordinal);
+    private readonly Dictionary<BrowserKind, ActiveBrowserSession> _browserSessions = new();
 
     private string _sessionToken = string.Empty;
     private long _sessionExpiresAtMs;
@@ -45,14 +54,16 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
     private Task? _acceptTask;
     private Task? _win32Task;
 
-    public AuthenticatedBrowserBridge(GhostCodeConfig config)
+    public AuthenticatedBrowserBridge(GhostCodeConfig config, BrowserIntegrationService? browserIntegration = null)
     {
         _config = config;
+        _browserIntegration = browserIntegration ?? new BrowserIntegrationService();
         if (string.IsNullOrWhiteSpace(_config.BridgeAuthToken))
             _config.BridgeAuthToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         RotateSessionToken();
     }
 
+    public int HeartbeatTimeoutMs { get; set; } = 15_000;
     public int ListeningPort { get; private set; }
     public string PairingSecret => _config.BridgeAuthToken;
     public string BridgeToken => _config.BridgeAuthToken;
@@ -67,6 +78,7 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
     }
 
     public event Action<ProblemContext?>? ContextChanged;
+    public event Action? BrowserConnectionsChanged;
 
     public string RotateSessionToken()
     {
@@ -413,6 +425,8 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                 headers.TryGetValue("X-GhostCode-Nonce", out var nonce);
                 headers.TryGetValue("X-GhostCode-Timestamp", out var tsStr);
                 headers.TryGetValue("X-GhostCode-Proof", out var proof);
+                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
+                headers.TryGetValue("X-GhostCode-Ext-Version", out var extVerHdr);
 
                 if (!long.TryParse(tsStr, out var tsMs)
                     || !TryPairAndIssueSessionToken(pairingId, nonce, tsMs, proof, out var issuedToken, out var expiresIn))
@@ -421,8 +435,35 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     return;
                 }
 
+                if (TryParseBrowserKind(browserHdr, out var hsBrowser))
+                    RecordBrowserHeartbeat(hsBrowser, extVerHdr);
+
                 var tokJson = JsonSerializer.Serialize(new { session_token = issuedToken, expires_in = expiresIn });
                 await WriteHttpResponseAsync(stream, 200, tokJson, allowedOrigin, ct);
+                return;
+            }
+
+            if (method == "POST" && path.StartsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                if (isWebOrigin)
+                {
+                    await WriteHttpResponseAsync(stream, 403, """{"error":"web origin forbidden"}""", null, ct);
+                    return;
+                }
+
+                headers.TryGetValue("X-GhostCode-Token", out var suppliedToken);
+                if (!ValidateSessionToken(suppliedToken))
+                {
+                    await WriteHttpResponseAsync(stream, 401, """{"error":"unauthorized"}""", allowedOrigin, ct);
+                    return;
+                }
+
+                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
+                headers.TryGetValue("X-GhostCode-Ext-Version", out var extVerHdr);
+                if (TryParseBrowserKind(browserHdr, out var hbBrowser))
+                    RecordBrowserHeartbeat(hbBrowser, extVerHdr);
+
+                await WriteHttpResponseAsync(stream, 200, """{"ok":true}""", allowedOrigin, ct);
                 return;
             }
 
@@ -433,7 +474,8 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                 {
                     ok = true,
                     context = ctx,
-                    browser_titles = GetDetectedBrowserTitles()
+                    browser_titles = GetDetectedBrowserTitles(),
+                    browsers = GetBrowserConnectionStates()
                 });
                 await WriteHttpResponseAsync(stream, 200, json, allowedOrigin, ct);
                 return;
@@ -447,6 +489,10 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     await WriteHttpResponseAsync(stream, 401, """{"error":"unauthorized"}""", allowedOrigin, ct);
                     return;
                 }
+
+                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
+                if (TryParseBrowserKind(browserHdr, out var clrBrowser))
+                    RecordBrowserHeartbeat(clrBrowser, null);
 
                 ClearActiveContext();
                 await WriteHttpResponseAsync(stream, 200, """{"ok":true,"cleared":true}""", allowedOrigin, ct);
@@ -478,6 +524,15 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     await WriteHttpResponseAsync(stream, 400, """{"error":"invalid json"}""", allowedOrigin, ct);
                     return;
                 }
+
+                headers.TryGetValue("X-GhostCode-Browser", out var browserHdr);
+                headers.TryGetValue("X-GhostCode-Ext-Version", out var extVerHdr);
+                var effectiveBrowser = !string.IsNullOrWhiteSpace(payload?.browser_name) ? payload!.browser_name : browserHdr;
+                if (TryParseBrowserKind(effectiveBrowser, out var ctxBrowser))
+                    RecordBrowserHeartbeat(ctxBrowser, extVerHdr);
+
+                if (payload is not null && string.IsNullOrWhiteSpace(payload.browser_name) && !string.IsNullOrWhiteSpace(browserHdr))
+                    payload = payload with { browser_name = browserHdr };
 
                 var (status, responseBody) = ApplyContextPayload(payload);
                 await WriteHttpResponseAsync(stream, status, responseBody, allowedOrigin, ct);
@@ -520,10 +575,13 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         if (parsed is null)
             return (400, """{"error":"unrecognized or unsupported problem url"}""");
 
+        if (!string.IsNullOrWhiteSpace(payload.browser_name))
+            parsed = parsed with { BrowserName = payload.browser_name.Trim() };
+
         bool updated;
         lock (_ctxLock)
         {
-            var key = $"{parsed.Platform}|{parsed.Code}|{parsed.Title}";
+            var key = $"{parsed.Platform}|{parsed.Code}|{parsed.Title}|{parsed.BrowserName}";
             if (key == _lastDedupKey && nowMs - _lastDedupAtMs < 5_000)
             {
                 _activeContext = parsed with { SeenAtUnixMs = nowMs };
@@ -544,6 +602,87 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         return (200, """{"ok":true}""");
     }
 
+    public static bool TryParseBrowserKind(string? raw, out BrowserKind kind)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            kind = default;
+            return false;
+        }
+        var norm = raw.Trim().ToLowerInvariant();
+        if (norm.Contains("thorium")) { kind = BrowserKind.Thorium; return true; }
+        if (norm.Contains("edge") || norm.Contains("msedge")) { kind = BrowserKind.Edge; return true; }
+        if (norm.Contains("firefox")) { kind = BrowserKind.Firefox; return true; }
+        if (norm.Contains("chrome")) { kind = BrowserKind.Chrome; return true; }
+        kind = default;
+        return false;
+    }
+
+    public void RecordBrowserHeartbeat(BrowserKind kind, string? extensionVersion)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        bool changed;
+        lock (_authLock)
+        {
+            changed = !_browserSessions.TryGetValue(kind, out var existing)
+                || nowMs - existing.LastHeartbeatUnixMs > HeartbeatTimeoutMs;
+            _browserSessions[kind] = new ActiveBrowserSession(kind, extensionVersion ?? existing?.ExtensionVersion ?? "1.4.0", nowMs);
+        }
+        if (changed)
+            BrowserConnectionsChanged?.Invoke();
+    }
+
+    public List<BrowserStatusInfo> GetBrowserConnectionStates()
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var discovered = _browserIntegration.DiscoverInstalledBrowsers(_config);
+        var list = new List<BrowserStatusInfo>();
+
+        foreach (var (kind, name, installed, isRunning, exe, ver) in discovered)
+        {
+            ActiveBrowserSession? sess;
+            lock (_authLock)
+            {
+                _browserSessions.TryGetValue(kind, out sess);
+            }
+
+            bool heartbeatFresh = sess is not null && nowMs - sess.LastHeartbeatUnixMs <= HeartbeatTimeoutMs;
+            BrowserConnectionState state;
+            string detail;
+            if (heartbeatFresh)
+            {
+                state = BrowserConnectionState.ExtensionConnected;
+                detail = $"Authenticated extension active (v{sess!.ExtensionVersion})";
+            }
+            else if (sess is not null)
+            {
+                state = BrowserConnectionState.ExtensionDisconnected;
+                detail = "Extension heartbeat expired / browser closed";
+            }
+            else if (isRunning)
+            {
+                state = BrowserConnectionState.Running;
+                detail = "Browser running without active GhostCode extension";
+            }
+            else if (installed)
+            {
+                state = BrowserConnectionState.Installed;
+                detail = "Browser installed";
+            }
+            else
+            {
+                state = BrowserConnectionState.NotInstalled;
+                detail = "Not detected on this PC";
+            }
+
+            list.Add(new BrowserStatusInfo(
+                kind, name, installed, isRunning, exe, ver,
+                state, sess?.ExtensionVersion, sess?.LastHeartbeatUnixMs, detail));
+        }
+
+        return list;
+    }
+
     private static bool ContainsControlChars(string? s) =>
         !string.IsNullOrEmpty(s) && s.Any(ch => char.IsControl(ch) && ch != '\t');
 
@@ -552,7 +691,8 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(origin) || ContainsControlChars(origin))
             return null;
         if (origin.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase)
-            || origin.StartsWith("extension://", StringComparison.OrdinalIgnoreCase))
+            || origin.StartsWith("extension://", StringComparison.OrdinalIgnoreCase)
+            || origin.StartsWith("moz-extension://", StringComparison.OrdinalIgnoreCase))
         {
             return origin;
         }
@@ -584,7 +724,7 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             sb.Append("Vary: Origin\r\n");
         }
         sb.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
-        sb.Append("Access-Control-Allow-Headers: Content-Type, X-GhostCode-Token, X-GhostCode-Pairing-Id, X-GhostCode-Nonce, X-GhostCode-Timestamp, X-GhostCode-Proof\r\n");
+        sb.Append("Access-Control-Allow-Headers: Content-Type, X-GhostCode-Token, X-GhostCode-Pairing-Id, X-GhostCode-Nonce, X-GhostCode-Timestamp, X-GhostCode-Proof, X-GhostCode-Browser, X-GhostCode-Ext-Version\r\n");
         sb.Append("Connection: close\r\n\r\n");
 
         await stream.WriteAsync(Encoding.ASCII.GetBytes(sb.ToString()), ct);

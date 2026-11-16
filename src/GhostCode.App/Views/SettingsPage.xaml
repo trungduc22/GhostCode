@@ -6,12 +6,62 @@
     xmlns:controls="using:CommunityToolkit.WinUI.Controls"
     xmlns:vm="using:GhostCode.App.ViewModels">
 
-    <ScrollViewer Padding="24,16,24,24">
-        <StackPanel Spacing="20" MaxWidth="960">
+    <ScrollViewer
+        x:Name="SettingsScrollViewer"
+        Padding="24,16,24,24"
+        VerticalScrollBarVisibility="Auto"
+        HorizontalScrollMode="Disabled"
+        HorizontalScrollBarVisibility="Disabled">
+        <StackPanel
+            x:Name="SettingsRootPanel"
+            Spacing="18"
+            MaxWidth="1040"
+            HorizontalAlignment="Stretch">
 
-            <!-- Watched Directories Section -->
+            <!-- 1. General & Appearance + Paths -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsGeneralTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.LanguageLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox SelectedIndex="{x:Bind ViewModel.SelectedLanguageIndex, Mode=TwoWay}" MinWidth="180">
+                        <ComboBoxItem Content="Tiếng Việt" />
+                        <ComboBoxItem Content="English" />
+                    </ComboBox>
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ThemeLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox
+                        ItemsSource="{x:Bind ViewModel.ThemeChoices, Mode=OneWay}"
+                        SelectedIndex="{x:Bind ViewModel.SelectedThemeIndex, Mode=TwoWay}"
+                        MinWidth="180" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MinimizeToTrayLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ToggleSwitch
+                        IsOn="{x:Bind ViewModel.MinimizeToTrayOnClose, Mode=TwoWay}"
+                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
+                        OffContent="Off" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.AutoCopyReadyLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ToggleSwitch
+                        IsOn="{x:Bind ViewModel.AutoCopyReadyPath, Mode=TwoWay}"
+                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
+                        OffContent="Off" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ArchiveDirLabel, Mode=OneWay}" Description="{x:Bind ViewModel.ArchiveDir, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <Button Content="{x:Bind ViewModel.Strings.BrowseButton, Mode=OneWay}" Click="BrowseArchiveDir_Click" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ReadyDirLabel, Mode=OneWay}" Description="{x:Bind ViewModel.ReadyDir, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <Button Content="{x:Bind ViewModel.Strings.BrowseButton, Mode=OneWay}" Click="BrowseReadyDir_Click" />
+                </controls:SettingsCard>
+            </StackPanel>
+
+            <!-- 2. Monitored Folders (No nested ListView - stretches smoothly) -->
             <StackPanel Spacing="8">
-                <Grid>
+                <Grid ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -20,10 +70,27 @@
                     <Button Grid.Column="1" Content="{x:Bind ViewModel.Strings.AddFolderButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Click="AddFolder_Click" />
                 </Grid>
 
-                <ListView ItemsSource="{x:Bind ViewModel.WatchedFolders}" SelectionMode="None">
-                    <ListView.ItemTemplate>
+                <Border
+                    Padding="14"
+                    CornerRadius="8"
+                    Visibility="{x:Bind ViewModel.NoFoldersVisible, Mode=OneWay}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <TextBlock Text="{x:Bind ViewModel.Strings.EmptyFoldersMessage, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                </Border>
+
+                <ItemsControl x:Name="MonitoredFoldersItems" ItemsSource="{x:Bind ViewModel.WatchedFolders}" HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:WatchedFolderItem">
-                            <Border Margin="0,0,0,8" Padding="14,10" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                            <Border
+                                Margin="0,0,0,8"
+                                Padding="12"
+                                CornerRadius="8"
+                                HorizontalAlignment="Stretch"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
                                 <Grid ColumnSpacing="12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -31,90 +98,143 @@
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-
                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                        <TextBlock Text="{x:Bind Label}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind Label}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Text="{x:Bind Path}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
-
-                                    <ToggleSwitch Grid.Column="1" OnContent="Enabled" OffContent="Paused" IsOn="{x:Bind IsEnabled, Mode=TwoWay}" MinWidth="110" />
-                                    <ToggleSwitch Grid.Column="2" OnContent="Recursive" OffContent="Top-Only" IsOn="{x:Bind IsRecursive, Mode=TwoWay}" MinWidth="120" />
-                                    <Button Grid.Column="3" Content="Remove" Tag="{x:Bind}" Click="RemoveFolder_Click" VerticalAlignment="Center" />
+                                    <ToggleSwitch
+                                        Grid.Column="1"
+                                        MinWidth="0"
+                                        IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
+                                        OnContent="{x:Bind Label}"
+                                        OffContent="Off"
+                                        VerticalAlignment="Center" />
+                                    <CheckBox
+                                        Grid.Column="2"
+                                        MinWidth="0"
+                                        IsChecked="{x:Bind IsRecursive, Mode=TwoWay}"
+                                        Content="Recursive"
+                                        VerticalAlignment="Center" />
+                                    <Button
+                                        Grid.Column="3"
+                                        Tag="{x:Bind}"
+                                        Click="RemoveFolder_Click"
+                                        VerticalAlignment="Center">
+                                        <FontIcon Glyph="&#xE74D;" FontSize="14" />
+                                    </Button>
                                 </Grid>
                             </Border>
                         </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
             </StackPanel>
 
-            <!-- Output Paths Section -->
+            <!-- 3. Browsers & Extensions -->
             <StackPanel Spacing="8">
-                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsPathsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{x:Bind ViewModel.Strings.SettingsBrowsersTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="{x:Bind ViewModel.Strings.RefreshDiscoveryButton, Mode=OneWay}" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
+                </Grid>
 
-                <controls:SettingsCard
-                    Header="{x:Bind ViewModel.Strings.ArchiveDirLabel, Mode=OneWay}"
-                    Description="{x:Bind ViewModel.ArchiveDir, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE8B7;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <Button Content="{x:Bind ViewModel.Strings.BrowseButton, Mode=OneWay}" Click="BrowseArchiveDir_Click" />
+                <ItemsControl ItemsSource="{x:Bind ViewModel.BrowserStatuses}" HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:BrowserStatusRow">
+                            <Border
+                                Margin="0,0,0,6"
+                                Padding="12"
+                                CornerRadius="8"
+                                HorizontalAlignment="Stretch"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind DetailText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Padding="8,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <TextBlock Text="{x:Bind StateBadge}" FontSize="12" FontWeight="SemiBold" />
+                                    </Border>
+                                    <Button
+                                        Grid.Column="2"
+                                        Content="Stage / Repair"
+                                        Tag="{x:Bind KindKey}"
+                                        Click="PrepareBrowser_Click" />
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+
+            <!-- 4. IDEs & Compilers / Toolchains -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsToolchainsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <TextBox Width="320" Text="{x:Bind ViewModel.CCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (gcc / clang)" />
                 </controls:SettingsCard>
 
-                <controls:SettingsCard
-                    Header="{x:Bind ViewModel.Strings.ReadyDirLabel, Mode=OneWay}"
-                    Description="{x:Bind ViewModel.ReadyDir, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE8F1;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <Button Content="{x:Bind ViewModel.Strings.BrowseButton, Mode=OneWay}" Click="BrowseReadyDir_Click" />
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <TextBox Width="320" Text="{x:Bind ViewModel.CppCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (g++ / clang++)" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.PythonPathLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <TextBox Width="320" Text="{x:Bind ViewModel.PythonInterpreterPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (python.exe)" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.CStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCStandard, Mode=TwoWay}" MinWidth="140" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.CppStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCppStandard, Mode=TwoWay}" MinWidth="140" />
                 </controls:SettingsCard>
             </StackPanel>
 
-            <!-- General UI & Behavior Settings -->
-            <StackPanel Spacing="8">
-                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsGeneralTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+            <!-- 5. Code Runner Execution Limits -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsRunnerTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
 
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.LanguageLabel, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xF2B7;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <ComboBox SelectedIndex="{x:Bind ViewModel.SelectedLanguageIndex, Mode=TwoWay}" Width="180">
-                        <ComboBoxItem Content="Tiếng Việt" />
-                        <ComboBoxItem Content="English" />
-                    </ComboBox>
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.TimeoutMsLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <NumberBox Value="{x:Bind ViewModel.ExecutionTimeoutMs, Mode=TwoWay}" Minimum="500" Maximum="60000" SmallChange="500" SpinButtonPlacementMode="Inline" MinWidth="160" />
                 </controls:SettingsCard>
 
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ThemeLabel, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE790;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <ComboBox SelectedIndex="{x:Bind ViewModel.SelectedThemeIndex, Mode=TwoWay}" Width="180">
-                        <ComboBoxItem Content="System (Default)" />
-                        <ComboBoxItem Content="Dark" />
-                        <ComboBoxItem Content="Light" />
-                    </ComboBox>
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MemoryLimitMbLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <NumberBox Value="{x:Bind ViewModel.ExecutionMemoryLimitMb, Mode=TwoWay}" Minimum="32" Maximum="4096" SmallChange="32" SpinButtonPlacementMode="Inline" MinWidth="160" />
+                </controls:SettingsCard>
+            </StackPanel>
+
+            <!-- 6. Google Drive Sync & Conflict Policy -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsCloudSyncTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <controls:SettingsCard Header="Google Drive Auto Sync" Description="{x:Bind ViewModel.DriveConnectionStatusText, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ToggleSwitch
+                        IsOn="{x:Bind ViewModel.DriveEnabled, Mode=TwoWay}"
+                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
+                        OffContent="Off" />
                 </controls:SettingsCard>
 
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MinimizeToTrayLabel, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE944;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.MinimizeToTrayOnClose, Mode=TwoWay}" />
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ConflictPolicyLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.ConflictPolicyChoices}" SelectedIndex="{x:Bind ViewModel.SelectedConflictPolicyIndex, Mode=TwoWay}" MinWidth="260" />
                 </controls:SettingsCard>
+            </StackPanel>
 
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.AutoCopyReadyLabel, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE8C8;" />
-                    </controls:SettingsCard.HeaderIcon>
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.AutoCopyReadyPath, Mode=TwoWay}" />
-                </controls:SettingsCard>
+            <!-- 7. Advanced & Diagnostics -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsAdvancedTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
 
-                <controls:SettingsCard
-                    Header="{x:Bind ViewModel.Strings.BridgeTokenLabel, Mode=OneWay}"
-                    Description="{x:Bind ViewModel.BridgeInfoText, Mode=OneWay}">
-                    <controls:SettingsCard.HeaderIcon>
-                        <FontIcon Glyph="&#xE72E;" />
-                    </controls:SettingsCard.HeaderIcon>
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.BridgeTokenLabel, Mode=OneWay}" Description="{x:Bind ViewModel.BridgeInfoText, Mode=OneWay}" HorizontalAlignment="Stretch">
                     <Button Content="{x:Bind ViewModel.Strings.ExportConfigButton, Mode=OneWay}" Click="ExportConfig_Click" />
                 </controls:SettingsCard>
             </StackPanel>

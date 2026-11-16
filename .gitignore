@@ -21,4 +21,7 @@ BenchmarkDotNet.Artifacts/
 credentials.dpapi
 client_secret.dpapi
 browser-extension/pairing.generated.json
+browser-extension-firefox/pairing.generated.json
 *.corrupt.*.bak
+artifacts/Release/
+artifacts/*.zip

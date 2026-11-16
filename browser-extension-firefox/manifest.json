@@ -1,0 +1,42 @@
+{
+  "manifest_version": 2,
+  "name": "GhostCode Bridge (Firefox)",
+  "version": "1.4.0",
+  "description": "HMAC-authenticated active-tab context bridge for Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank on Mozilla Firefox.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ghostcode-bridge@trungduc22.github.io",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "nativeMessaging",
+    "*://code.ptit.edu.vn/*",
+    "*://*.codeforces.com/*",
+    "*://oj.vnoi.info/*",
+    "*://*.leetcode.com/*",
+    "*://*.leetcode.cn/*",
+    "*://*.hackerrank.com/*",
+    "http://127.0.0.1:48123/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://code.ptit.edu.vn/*",
+        "*://*.codeforces.com/*",
+        "*://oj.vnoi.info/*",
+        "*://*.leetcode.com/*",
+        "*://*.leetcode.cn/*",
+        "*://*.hackerrank.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

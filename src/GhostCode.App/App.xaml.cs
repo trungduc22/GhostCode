@@ -3,9 +3,11 @@ using GhostCode.App.ViewModels;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
+using GhostCode.Core.Execution;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Storage;
+using GhostCode.Core.Toolchains;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -55,7 +57,14 @@ public partial class App : Application
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<DpapiCredentialStore>(),
             sp.GetRequiredService<HttpClient>()));
+        services.AddSingleton(_ => new BrowserIntegrationService());
         services.AddSingleton(_ => new AuthenticatedBrowserBridge(config));
+        services.AddSingleton(_ => new ToolchainDiscoveryService());
+        services.AddSingleton(sp => new CodeExecutionService(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<LosslessArchiver>(),
+            sp.GetRequiredService<ToolchainDiscoveryService>()));
         services.AddSingleton(sp => new MultiDirectoryMonitor(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
@@ -69,7 +78,10 @@ public partial class App : Application
             sp.GetRequiredService<MultiDirectoryMonitor>(),
             sp.GetRequiredService<AuthenticatedBrowserBridge>(),
             sp.GetRequiredService<GoogleDriveService>(),
-            sp.GetRequiredService<DpapiCredentialStore>()));
+            sp.GetRequiredService<DpapiCredentialStore>(),
+            sp.GetRequiredService<BrowserIntegrationService>(),
+            sp.GetRequiredService<ToolchainDiscoveryService>(),
+            sp.GetRequiredService<CodeExecutionService>()));
         services.AddSingleton<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();

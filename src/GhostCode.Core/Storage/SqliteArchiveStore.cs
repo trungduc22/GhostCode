@@ -1,7 +1,12 @@
+using GhostCode.Core.Analysis;
 using GhostCode.Core.Models;
 using Microsoft.Data.Sqlite;
 
 namespace GhostCode.Core.Storage;
+
+public sealed record ArchiveSearchResult(
+    ArchiveVersionRecord Version,
+    string MatchKind);
 
 /// <summary>
 /// Thread-safe, transactional SQLite WAL store for Last-Known-Good snapshots,
@@ -114,7 +119,10 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 problem_code TEXT,
                 problem_title TEXT,
                 platform TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                is_local_available INTEGER NOT NULL DEFAULT 1,
+                drive_file_id TEXT,
+                is_conflict INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_versions_source ON archive_versions(source_path, version_num DESC);
@@ -141,12 +149,49 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 occurred_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS archive_history_events (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                version_id TEXT,
+                summary TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                device_name TEXT NOT NULL
+            );
+
             UPDATE upload_queue
             SET status = 'Pending', updated_at = $now
             WHERE status = 'Uploading';
             """;
         cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await cmd.ExecuteNonQueryAsync(ct);
+
+        await EnsureArchiveVersionColumnsAsync(conn, ct);
+    }
+
+    private static async Task EnsureArchiveVersionColumnsAsync(SqliteConnection conn, CancellationToken ct)
+    {
+        var cols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var infoCmd = conn.CreateCommand())
+        {
+            infoCmd.CommandText = "PRAGMA table_info(archive_versions);";
+            await using var reader = await infoCmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                cols.Add(reader.GetString(1));
+        }
+
+        string[] migrations =
+        {
+            cols.Contains("is_local_available") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_local_available INTEGER NOT NULL DEFAULT 1;",
+            cols.Contains("drive_file_id") ? "" : "ALTER TABLE archive_versions ADD COLUMN drive_file_id TEXT;",
+            cols.Contains("is_conflict") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_conflict INTEGER NOT NULL DEFAULT 0;"
+        };
+        foreach (var sql in migrations.Where(s => !string.IsNullOrEmpty(s)))
+        {
+            await using var alt = conn.CreateCommand();
+            alt.CommandText = sql;
+            await alt.ExecuteNonQueryAsync(ct);
+        }
     }
 
     public async Task<FileSnapshotRecord?> GetSnapshotAsync(string sourcePath, CancellationToken ct = default)
@@ -180,7 +225,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
             WHERE source_path = $p COLLATE NOCASE
             ORDER BY version_num DESC LIMIT 1;
@@ -235,8 +280,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             {
                 verCmd.Transaction = tx;
                 verCmd.CommandText = """
-                    INSERT INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at)
-                    VALUES ($id, $vn, $sp, $ap, $rp, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts);
+                    INSERT INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict)
+                    VALUES ($id, $vn, $sp, $ap, $rp, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts, $loc, $did, $conf);
                     """;
                 verCmd.Parameters.AddWithValue("$id", version.Id);
                 verCmd.Parameters.AddWithValue("$vn", version.VersionNum);
@@ -251,6 +296,9 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 verCmd.Parameters.AddWithValue("$title", (object?)version.ProblemTitle ?? DBNull.Value);
                 verCmd.Parameters.AddWithValue("$plat", version.Platform);
                 verCmd.Parameters.AddWithValue("$ts", version.CreatedAtUnixMs);
+                verCmd.Parameters.AddWithValue("$loc", version.IsLocalAvailable ? 1 : 0);
+                verCmd.Parameters.AddWithValue("$did", (object?)version.DriveFileId ?? DBNull.Value);
+                verCmd.Parameters.AddWithValue("$conf", version.IsConflictBranch ? 1 : 0);
                 await verCmd.ExecuteNonQueryAsync(ct);
             }
 
@@ -278,6 +326,15 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 await qCmd.ExecuteNonQueryAsync(ct);
             }
 
+            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                Guid.NewGuid().ToString("N"),
+                "VersionCreated",
+                version.SourcePath,
+                version.Id,
+                $"Archived v{version.VersionNum} ({version.FileName})",
+                version.CreatedAtUnixMs,
+                Environment.MachineName), ct);
+
             await tx.CommitAsync(ct);
         }
         finally
@@ -292,7 +349,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
             WHERE source_path = $p COLLATE NOCASE
             ORDER BY version_num DESC;
@@ -311,7 +368,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions WHERE id = $id;
             """;
         cmd.Parameters.AddWithValue("$id", versionId);
@@ -325,7 +382,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$ap", archivePath);
@@ -349,8 +406,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             {
                 verCmd.Transaction = tx;
                 verCmd.CommandText = """
-                    INSERT OR IGNORE INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at)
-                    VALUES ($id, $vn, $sp, $ap, $rp, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts);
+                    INSERT OR IGNORE INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict)
+                    VALUES ($id, $vn, $sp, $ap, $rp, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts, $loc, $did, $conf);
                     """;
                 verCmd.Parameters.AddWithValue("$id", version.Id);
                 verCmd.Parameters.AddWithValue("$vn", version.VersionNum);
@@ -365,6 +422,9 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 verCmd.Parameters.AddWithValue("$title", (object?)version.ProblemTitle ?? DBNull.Value);
                 verCmd.Parameters.AddWithValue("$plat", version.Platform);
                 verCmd.Parameters.AddWithValue("$ts", version.CreatedAtUnixMs);
+                verCmd.Parameters.AddWithValue("$loc", version.IsLocalAvailable ? 1 : 0);
+                verCmd.Parameters.AddWithValue("$did", (object?)version.DriveFileId ?? DBNull.Value);
+                verCmd.Parameters.AddWithValue("$conf", version.IsConflictBranch ? 1 : 0);
                 await verCmd.ExecuteNonQueryAsync(ct);
             }
 
@@ -462,7 +522,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
             WHERE ($plat IS NULL OR $plat = '' OR $plat = 'All' OR platform = $plat)
               AND ($q IS NULL OR $q = '' OR file_name LIKE '%' || $q || '%' OR source_path LIKE '%' || $q || '%' OR IFNULL(problem_code,'') LIKE '%' || $q || '%' OR IFNULL(problem_title,'') LIKE '%' || $q || '%')
@@ -486,10 +546,11 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT q.version_id, q.status, q.attempt_count, q.next_retry_at, q.drive_file_id, q.last_error, q.updated_at,
-                   v.id, v.version_num, v.source_path, v.archive_path, v.ready_path, v.file_name, v.sha256, v.norm_hash, v.size_bytes, v.problem_code, v.problem_title, v.platform, v.created_at
+                   v.id, v.version_num, v.source_path, v.archive_path, v.ready_path, v.file_name, v.sha256, v.norm_hash, v.size_bytes, v.problem_code, v.problem_title, v.platform, v.created_at, v.is_local_available, v.drive_file_id, v.is_conflict
             FROM upload_queue q
             JOIN archive_versions v ON v.id = q.version_id
             WHERE (q.status = 'Pending' OR (q.status = 'Failed' AND q.next_retry_at <= $now))
+              AND v.is_local_available = 1
             ORDER BY v.created_at ASC;
             """;
         cmd.Parameters.AddWithValue("$now", nowUnixMs);
@@ -503,7 +564,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT q.version_id, q.status, q.attempt_count, q.next_retry_at, q.drive_file_id, q.last_error, q.updated_at,
-                   v.id, v.version_num, v.source_path, v.archive_path, v.ready_path, v.file_name, v.sha256, v.norm_hash, v.size_bytes, v.problem_code, v.problem_title, v.platform, v.created_at
+                   v.id, v.version_num, v.source_path, v.archive_path, v.ready_path, v.file_name, v.sha256, v.norm_hash, v.size_bytes, v.problem_code, v.problem_title, v.platform, v.created_at, v.is_local_available, v.drive_file_id, v.is_conflict
             FROM upload_queue q
             JOIN archive_versions v ON v.id = q.version_id
             ORDER BY q.updated_at DESC
@@ -526,24 +587,41 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         {
             await using var conn = new SqliteConnection(_connectionString);
             await conn.OpenAsync(ct);
-            await using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
-                UPDATE upload_queue
-                SET status = $st,
-                    attempt_count = CASE WHEN $st = 'Failed' THEN attempt_count + 1 ELSE attempt_count END,
-                    next_retry_at = $next,
-                    drive_file_id = COALESCE($did, drive_file_id),
-                    last_error = $err,
-                    updated_at = $ts
-                WHERE version_id = $vid;
-                """;
-            cmd.Parameters.AddWithValue("$st", status.ToString());
-            cmd.Parameters.AddWithValue("$next", nextRetryAtUnixMs);
-            cmd.Parameters.AddWithValue("$did", (object?)driveFileId ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$err", (object?)error ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            cmd.Parameters.AddWithValue("$vid", versionId);
-            await cmd.ExecuteNonQueryAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    UPDATE upload_queue
+                    SET status = $st,
+                        attempt_count = CASE WHEN $st = 'Failed' THEN attempt_count + 1 ELSE attempt_count END,
+                        next_retry_at = $next,
+                        drive_file_id = COALESCE($did, drive_file_id),
+                        last_error = $err,
+                        updated_at = $ts
+                    WHERE version_id = $vid;
+                    """;
+                cmd.Parameters.AddWithValue("$st", status.ToString());
+                cmd.Parameters.AddWithValue("$next", nextRetryAtUnixMs);
+                cmd.Parameters.AddWithValue("$did", (object?)driveFileId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$err", (object?)error ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                cmd.Parameters.AddWithValue("$vid", versionId);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            if (!string.IsNullOrEmpty(driveFileId))
+            {
+                await using var vCmd = conn.CreateCommand();
+                vCmd.Transaction = tx;
+                vCmd.CommandText = "UPDATE archive_versions SET drive_file_id = COALESCE($did, drive_file_id) WHERE id = $vid;";
+                vCmd.Parameters.AddWithValue("$did", driveFileId);
+                vCmd.Parameters.AddWithValue("$vid", versionId);
+                await vCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await tx.CommitAsync(ct);
         }
         finally
         {
@@ -644,6 +722,272 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             reader.IsDBNull(4) ? null : reader.GetInt64(4));
     }
 
+    public async Task RecordArchiveHistoryEventAsync(ArchiveHistoryEvent ev, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+            await InsertHistoryEventInTxAsync(conn, tx, ev, ct);
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<List<ArchiveHistoryEvent>> GetArchiveHistoryEventsAsync(int limit = 200, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, event_type, source_path, version_id, summary, occurred_at, device_name
+            FROM archive_history_events
+            ORDER BY occurred_at DESC
+            LIMIT $lim;
+            """;
+        cmd.Parameters.AddWithValue("$lim", limit);
+        var list = new List<ArchiveHistoryEvent>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            list.Add(new ArchiveHistoryEvent(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetString(2),
+                r.IsDBNull(3) ? null : r.GetString(3),
+                r.GetString(4),
+                r.GetInt64(5),
+                r.GetString(6)));
+        }
+        return list;
+    }
+
+    public async Task UpsertRemoteVersionMetadataAsync(ArchiveVersionRecord remoteVer, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            // 1. Exact ID or (source_path + sha256) match -> link DriveFileId without duplicating
+            string? existingId = null;
+            await using (var findCmd = conn.CreateCommand())
+            {
+                findCmd.Transaction = tx;
+                findCmd.CommandText = """
+                    SELECT id FROM archive_versions
+                    WHERE id = $id OR (sha256 = $sha AND (source_path = $sp COLLATE NOCASE OR file_name = $fn COLLATE NOCASE))
+                    LIMIT 1;
+                    """;
+                findCmd.Parameters.AddWithValue("$id", remoteVer.Id);
+                findCmd.Parameters.AddWithValue("$sha", remoteVer.Sha256);
+                findCmd.Parameters.AddWithValue("$sp", remoteVer.SourcePath);
+                findCmd.Parameters.AddWithValue("$fn", remoteVer.FileName);
+                existingId = Convert.ToString(await findCmd.ExecuteScalarAsync(ct));
+            }
+
+            if (!string.IsNullOrEmpty(existingId))
+            {
+                await using var upd = conn.CreateCommand();
+                upd.Transaction = tx;
+                upd.CommandText = "UPDATE archive_versions SET drive_file_id = COALESCE($did, drive_file_id) WHERE id = $id;";
+                upd.Parameters.AddWithValue("$did", (object?)remoteVer.DriveFileId ?? DBNull.Value);
+                upd.Parameters.AddWithValue("$id", existingId);
+                await upd.ExecuteNonQueryAsync(ct);
+                await tx.CommitAsync(ct);
+                return;
+            }
+
+            // 2. Two-device offline edit conflict detection on same (source_path, version_num) with different SHA-256
+            int versionNum = remoteVer.VersionNum;
+            bool isConflict = false;
+            await using (var confCmd = conn.CreateCommand())
+            {
+                confCmd.Transaction = tx;
+                confCmd.CommandText = "SELECT COUNT(*) FROM archive_versions WHERE source_path = $sp COLLATE NOCASE AND version_num = $vn;";
+                confCmd.Parameters.AddWithValue("$sp", remoteVer.SourcePath);
+                confCmd.Parameters.AddWithValue("$vn", versionNum);
+                if (Convert.ToInt64(await confCmd.ExecuteScalarAsync(ct)) > 0)
+                {
+                    isConflict = true;
+                    await using var maxCmd = conn.CreateCommand();
+                    maxCmd.Transaction = tx;
+                    maxCmd.CommandText = "SELECT COALESCE(MAX(version_num), 0) FROM archive_versions WHERE source_path = $sp COLLATE NOCASE;";
+                    maxCmd.Parameters.AddWithValue("$sp", remoteVer.SourcePath);
+                    versionNum = Convert.ToInt32(await maxCmd.ExecuteScalarAsync(ct)) + 1;
+                }
+            }
+
+            var cloudPath = $"cloud://{remoteVer.DriveFileId ?? remoteVer.Id}";
+            await using (var insCmd = conn.CreateCommand())
+            {
+                insCmd.Transaction = tx;
+                insCmd.CommandText = """
+                    INSERT OR IGNORE INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict)
+                    VALUES ($id, $vn, $sp, $ap, NULL, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts, 0, $did, $conf);
+                    """;
+                insCmd.Parameters.AddWithValue("$id", remoteVer.Id);
+                insCmd.Parameters.AddWithValue("$vn", versionNum);
+                insCmd.Parameters.AddWithValue("$sp", remoteVer.SourcePath);
+                insCmd.Parameters.AddWithValue("$ap", cloudPath);
+                insCmd.Parameters.AddWithValue("$fn", remoteVer.FileName);
+                insCmd.Parameters.AddWithValue("$sha", remoteVer.Sha256);
+                insCmd.Parameters.AddWithValue("$nh", remoteVer.NormHash);
+                insCmd.Parameters.AddWithValue("$sz", remoteVer.SizeBytes);
+                insCmd.Parameters.AddWithValue("$code", (object?)remoteVer.ProblemCode ?? DBNull.Value);
+                insCmd.Parameters.AddWithValue("$title", (object?)remoteVer.ProblemTitle ?? DBNull.Value);
+                insCmd.Parameters.AddWithValue("$plat", remoteVer.Platform);
+                insCmd.Parameters.AddWithValue("$ts", remoteVer.CreatedAtUnixMs);
+                insCmd.Parameters.AddWithValue("$did", (object?)remoteVer.DriveFileId ?? DBNull.Value);
+                insCmd.Parameters.AddWithValue("$conf", isConflict ? 1 : 0);
+                await insCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                Guid.NewGuid().ToString("N"),
+                isConflict ? "ConflictDetected" : "RemoteVersionDiscovered",
+                remoteVer.SourcePath,
+                remoteVer.Id,
+                isConflict
+                    ? $"Preserved divergent cloud version v{remoteVer.VersionNum} as conflict branch v{versionNum} ({remoteVer.FileName})"
+                    : $"Discovered remote cloud version v{versionNum} ({remoteVer.FileName})",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Environment.MachineName), ct);
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task MarkVersionDownloadedLocallyAsync(string versionId, string localArchivePath, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            await using (var upd = conn.CreateCommand())
+            {
+                upd.Transaction = tx;
+                upd.CommandText = "UPDATE archive_versions SET is_local_available = 1, archive_path = $ap WHERE id = $id;";
+                upd.Parameters.AddWithValue("$ap", Path.GetFullPath(localArchivePath));
+                upd.Parameters.AddWithValue("$id", versionId);
+                await upd.ExecuteNonQueryAsync(ct);
+            }
+
+            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                Guid.NewGuid().ToString("N"),
+                "VersionDownloaded",
+                localArchivePath,
+                versionId,
+                $"Downloaded verified cloud archive copy to {Path.GetFileName(localArchivePath)}",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Environment.MachineName), ct);
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<List<ArchiveSearchResult>> SearchArchiveAsync(string query, int limit = 60, CancellationToken ct = default)
+    {
+        var all = await QueryVersionsAsync(limit: 2000, ct: ct);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return all.Take(limit)
+                .Select(v => new ArchiveSearchResult(v, v.IsLocalAvailable ? "Metadata" : "Cloud Metadata"))
+                .ToList();
+        }
+
+        var normQuery = SourceAnalyzer.StripDiacritics(query).Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(normQuery))
+            return new List<ArchiveSearchResult>();
+
+        var results = new List<ArchiveSearchResult>();
+        foreach (var v in all)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ext = Path.GetExtension(v.FileName).TrimStart('.').ToLowerInvariant();
+            var langHint = ext switch
+            {
+                "cpp" or "cc" or "cxx" => "cpp c++",
+                "c" => "c",
+                "py" => "python py",
+                _ => ext
+            };
+            var combinedMeta = SourceAnalyzer.StripDiacritics(
+                $"{v.FileName} {v.ProblemCode} {v.ProblemTitle} {v.Platform} {v.SourcePath} v{v.VersionNum} {langHint}")
+                .ToLowerInvariant();
+
+            if (combinedMeta.Contains(normQuery, StringComparison.Ordinal))
+            {
+                results.Add(new ArchiveSearchResult(v, v.IsLocalAvailable ? "Metadata" : "Cloud Metadata"));
+                if (results.Count >= limit)
+                    break;
+                continue;
+            }
+
+            if (v.IsLocalAvailable && File.Exists(v.ArchivePath))
+            {
+                try
+                {
+                    var fi = new FileInfo(v.ArchivePath);
+                    if (fi.Length <= 512 * 1024)
+                    {
+                        var text = await File.ReadAllTextAsync(v.ArchivePath, ct);
+                        var normBody = SourceAnalyzer.StripDiacritics(text).ToLowerInvariant();
+                        if (normBody.Contains(normQuery, StringComparison.Ordinal))
+                        {
+                            results.Add(new ArchiveSearchResult(v, "Source Content"));
+                            if (results.Count >= limit)
+                                break;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        return results;
+    }
+
+    private static async Task InsertHistoryEventInTxAsync(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        ArchiveHistoryEvent ev,
+        CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO archive_history_events (id, event_type, source_path, version_id, summary, occurred_at, device_name)
+            VALUES ($id, $et, $sp, $vid, $sum, $ts, $dev);
+            """;
+        cmd.Parameters.AddWithValue("$id", ev.Id);
+        cmd.Parameters.AddWithValue("$et", ev.EventType);
+        cmd.Parameters.AddWithValue("$sp", ev.SourcePath);
+        cmd.Parameters.AddWithValue("$vid", (object?)ev.VersionId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$sum", ev.Summary);
+        cmd.Parameters.AddWithValue("$ts", ev.OccurredAtUnixMs);
+        cmd.Parameters.AddWithValue("$dev", ev.DeviceName);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     private static ArchiveVersionRecord ReadVersion(SqliteDataReader r, int offset = 0) =>
         new(
             r.GetString(offset + 0),
@@ -658,7 +1002,10 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             r.IsDBNull(offset + 9) ? null : r.GetString(offset + 9),
             r.IsDBNull(offset + 10) ? null : r.GetString(offset + 10),
             r.GetString(offset + 11),
-            r.GetInt64(offset + 12));
+            r.GetInt64(offset + 12),
+            r.GetInt64(offset + 13) != 0,
+            r.IsDBNull(offset + 14) ? null : r.GetString(offset + 14),
+            r.GetInt64(offset + 15) != 0);
 
     private static async Task<List<UploadQueueView>> ReadQueueViewsAsync(SqliteCommand cmd, CancellationToken ct)
     {

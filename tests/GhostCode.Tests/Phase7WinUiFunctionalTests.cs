@@ -23,7 +23,7 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
     }
 
     [Fact]
-    public async Task WinUI3App_ExercisesAllPagesControlsTrayThemesAndIntegrityChecksOnLiveUiThread()
+    public async Task WinUI3App_ExercisesAllPagesTitleBarSearchRunnerSettingsTrayAndCapturesScreenshots()
     {
         var repoRoot = FindRepoRoot();
         var releaseExe = Path.Combine(repoRoot, "src", "GhostCode.App", "bin", "x64", "Release", "net10.0-windows10.0.19041.0", "win-x64", "GhostCode.App.exe");
@@ -45,6 +45,9 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
 
         var cfgPath = Path.Combine(_root, "selftest_config.json");
         var reportPath = Path.Combine(_root, "selftest_report.json");
+        var screenshotDir = Path.Combine(repoRoot, "artifacts", "screenshots");
+        Directory.CreateDirectory(screenshotDir);
+
         var archiveDir = Path.Combine(_root, "Archive");
         var readyDir = Path.Combine(_root, "Ready");
         Directory.CreateDirectory(archiveDir);
@@ -72,9 +75,10 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
         };
         psi.Environment["GHOSTCODE_CONFIG_PATH"] = cfgPath;
         psi.Environment["GHOSTCODE_SELF_TEST_REPORT"] = reportPath;
+        psi.Environment["GHOSTCODE_SCREENSHOT_DIR"] = screenshotDir;
 
         using var proc = Process.Start(psi)!;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         try
         {
             await proc.WaitForExitAsync(cts.Token);
@@ -96,14 +100,18 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
         string[] expectedChecks =
         {
             "MicaBackdropAttached",
+            "SingleRowTitleBarGeometry",
             "NavigationViewPages",
+            "DashboardBrowsersAboveProblem",
+            "RepairedSettingsLayout",
             "LightDarkThemeSwitch",
             "BilingualSwitch",
             "ArchiveAndReadyPathControls",
             "DiagnosticButton",
-            "ArchiveSearchAndVersions",
+            "GlobalSearchCtrlKAndArchive",
             "SourcePreviewAndDiagnostics",
             "CopyCodeCommand",
+            "LiveCodeRunnerSplitIo",
             "RestoreAndIntegrityCheck",
             "RemoveWatchedFolder",
             "CloudControlsAndDpapi",
@@ -113,6 +121,20 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
         {
             Assert.True(checks.TryGetProperty(key, out var item), $"Missing check '{key}' in report");
             Assert.True(item.GetProperty("passed").GetBoolean(), $"Check '{key}' failed: {item}");
+        }
+
+        string[] expectedScreenshots =
+        {
+            "01_dashboard.png",
+            "02_archive_runner.png",
+            "03_settings.png",
+            "04_cloud.png",
+            "05_dark_dashboard.png"
+        };
+        foreach (var file in expectedScreenshots)
+        {
+            var full = Path.Combine(screenshotDir, file);
+            Assert.True(File.Exists(full) && new FileInfo(full).Length > 1000, $"Screenshot missing or empty: {full}");
         }
     }
 

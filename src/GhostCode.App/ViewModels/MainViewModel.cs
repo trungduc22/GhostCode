@@ -7,29 +7,50 @@ using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
+using GhostCode.Core.Execution;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Storage;
+using GhostCode.Core.Toolchains;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
 namespace GhostCode.App.ViewModels;
 
-public sealed record ArchiveVersionRow(ArchiveVersionRecord Record)
+public sealed record ArchiveVersionRow(ArchiveVersionRecord Record, UiLanguage Language = UiLanguage.Vi)
 {
     public string Id => Record.Id;
+    public int VersionNum => Record.VersionNum;
     public string VersionBadge => $"v{Record.VersionNum}";
     public string FileName => Record.FileName;
     public string SourcePath => Record.SourcePath;
     public string ArchivePath => Record.ArchivePath;
     public string? ReadyPath => Record.ReadyPath;
     public string Platform => Record.Platform;
+    public bool IsLocalAvailable => Record.IsLocalAvailable;
+    public bool IsConflictBranch => Record.IsConflictBranch;
+    public string? DriveFileId => Record.DriveFileId;
+    public VersionAvailability Availability => Record.Availability;
+    public string AvailabilityBadge => UiStrings.ForAvailability(Record.Availability, Language);
     public string ProblemSummary => string.IsNullOrWhiteSpace(Record.ProblemCode)
         ? $"{Record.Platform} • {Record.SizeBytes} B"
         : $"{Record.Platform} • {Record.ProblemCode} — {Record.ProblemTitle}";
     public string ShortSha => Record.Sha256.Length >= 8 ? Record.Sha256[..8] : Record.Sha256;
     public string TimestampText => DateTimeOffset.FromUnixTimeMilliseconds(Record.CreatedAtUnixMs)
         .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    public string SelectorLabel => $"{VersionBadge} • {TimestampText} • {ShortSha} [{AvailabilityBadge}]";
+}
+
+public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int VersionCount, UiLanguage Language = UiLanguage.Vi)
+{
+    public string Id => Latest.Id;
+    public string FileName => Latest.FileName;
+    public string SourcePath => Latest.SourcePath;
+    public string LatestVersionBadge => $"v{Latest.VersionNum} ({VersionCount})";
+    public string AvailabilityBadge => UiStrings.ForAvailability(Latest.Availability, Language);
+    public string Subtitle => string.IsNullOrWhiteSpace(Latest.ProblemCode)
+        ? $"{Latest.Platform} • {AvailabilityBadge}"
+        : $"{Latest.Platform} • {Latest.ProblemCode} • {AvailabilityBadge}";
 }
 
 public sealed record UploadQueueRow(UploadQueueView View)
@@ -54,12 +75,74 @@ public sealed record MonitorEventRow(MonitorEventRecord Event)
         .ToLocalTime().ToString("HH:mm:ss");
 }
 
+public sealed record ArchiveHistoryEventRow(ArchiveHistoryEvent Event)
+{
+    public string EventType => Event.EventType;
+    public string Summary => Event.Summary;
+    public string DeviceName => Event.DeviceName;
+    public string TimeText => DateTimeOffset.FromUnixTimeMilliseconds(Event.OccurredAtUnixMs)
+        .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+}
+
 public sealed record ActiveWatchRow(ActiveWatchInfo Info)
 {
     public string FolderPath => Info.FolderPath;
     public string StatusText => Info.IsWatching
         ? (Info.Recursive ? "Watching (Recursive)" : "Watching (Top-Level)")
         : $"Error: {Info.Error}";
+}
+
+public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Language)
+{
+    public string KindKey => Info.Kind.ToString();
+    public string Name => Info.DisplayName;
+    public bool IsConnected => Info.ConnectionState == BrowserConnectionState.ExtensionConnected;
+    public bool IsInstalled => Info.IsInstalled;
+    public string StateBadge => Info.ConnectionState switch
+    {
+        BrowserConnectionState.ExtensionConnected => $"{Info.DisplayName} — {UiStrings.For(Language).BrowserConnectedBadge}",
+        BrowserConnectionState.ExtensionDisconnected => "Disconnected",
+        BrowserConnectionState.Running => "Running (No Extension)",
+        BrowserConnectionState.Installed => "Installed",
+        _ => "Not Installed"
+    };
+    public string VersionText => string.IsNullOrWhiteSpace(Info.ExtensionVersion)
+        ? (Info.Version ?? string.Empty)
+        : $"Ext v{Info.ExtensionVersion}";
+    public string DetailText => string.IsNullOrWhiteSpace(Info.ExecutablePath)
+        ? Info.StatusDetail
+        : $"{Info.StatusDetail} • {Info.ExecutablePath}";
+}
+
+public sealed record IdeStatusRow(IdeStatusInfo Info)
+{
+    public string Name => Info.Name;
+    public string StatusBadge => Info.IsRunning
+        ? "Running"
+        : Info.IsInstalled ? "Installed" : "Not Installed";
+    public string VersionText => Info.Version ?? string.Empty;
+    public string ToolchainText => string.IsNullOrWhiteSpace(Info.ToolchainSummary)
+        ? Info.ExecutablePath ?? "Not detected"
+        : $"{Info.ToolchainSummary} • {Info.ExecutablePath}";
+}
+
+public sealed record ToolchainRow(ToolchainInfo Info)
+{
+    public string Name => Info.DisplayName;
+    public string StatusBadge => Info.IsAvailable ? "Ready" : "Unavailable";
+    public string VersionText => Info.Version ?? string.Empty;
+    public string DetailText => Info.IsAvailable
+        ? $"{Info.ExecutablePath} ({Info.DefaultFlags})"
+        : Info.StatusDetail;
+}
+
+public sealed record GlobalSearchSuggestion(ArchiveVersionRecord Record, string MatchKind, UiLanguage Language)
+{
+    public string Id => Record.Id;
+    public string DisplayTitle => string.IsNullOrWhiteSpace(Record.ProblemCode)
+        ? $"{Record.FileName} (v{Record.VersionNum})"
+        : $"[{Record.ProblemCode}] {Record.ProblemTitle} — {Record.FileName} (v{Record.VersionNum})";
+    public string Subtitle => $"{Record.Platform} • {MatchKind} • {UiStrings.ForAvailability(Record.Availability, Language)}";
 }
 
 public sealed class WatchedFolderItem : ObservableObject
@@ -104,7 +187,7 @@ public sealed class WatchedFolderItem : ObservableObject
 }
 
 /// <summary>
-/// Central MVVM ViewModel bridging WinUI 3 pages with GhostCode.Core services.
+/// Central MVVM ViewModel bridging WinUI 3 views with GhostCode.Core services.
 /// </summary>
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
@@ -116,17 +199,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AuthenticatedBrowserBridge _bridge;
     private readonly GoogleDriveService _drive;
     private readonly DpapiCredentialStore _credentialStore;
+    private readonly BrowserIntegrationService _browserIntegration;
+    private readonly ToolchainDiscoveryService _toolchains;
+    private readonly CodeExecutionService _runner;
 
     private Func<Action, bool> _dispatch = action => { action(); return true; };
     private Action<ElementTheme>? _applyThemeCallback;
     private Action<string>? _clipboardCopyCallback;
+    private CancellationTokenSource? _execCts;
+    private Timer? _discoveryRefreshTimer;
 
     private UiTextBundle _strings;
-    private string _activeCode = string.Empty;
+    private string _activeCode = "-";
     private string _activeTitle = string.Empty;
     private string _activePlatform = "Offline";
     private string _activeUrl = string.Empty;
+    private string _activeBrowserName = string.Empty;
+    private string _activeFilenamePreview = string.Empty;
+    private string _activeContextStateBadge = "Offline";
     private bool _hasActiveContext;
+
     private string _ideStatusSummary = "Detecting...";
     private string _browserStatusSummary = "Checking...";
     private int _totalVersions;
@@ -137,8 +229,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private string _searchQuery = string.Empty;
     private string _selectedPlatformFilter = "All";
+    private int _selectedAvailabilityFilterIndex;
+    private ArchiveFileGroupRow? _selectedFileGroup;
     private ArchiveVersionRow? _selectedVersion;
     private string _selectedVersionSource = string.Empty;
+
+    private string _stdinText = string.Empty;
+    private string _stdoutText = string.Empty;
+    private string _stderrText = string.Empty;
+    private string _consoleLogText = string.Empty;
+    private string _runnerStatusText = string.Empty;
+    private string _runnerMetricsText = string.Empty;
+    private int _runnerTabIndex = 1; // Default to I/O split view or toggleable Console/I/O
+    private bool _isExecuting;
 
     private bool _isDriveConnected;
     private string _connectedEmail = string.Empty;
@@ -155,6 +258,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _minimizeToTrayOnClose;
     private bool _autoCopyReadyPath;
     private bool _driveEnabled;
+    private string _cCompilerPath = string.Empty;
+    private string _cppCompilerPath = string.Empty;
+    private string _pythonInterpreterPath = string.Empty;
+    private string _selectedCStandard = "c11";
+    private string _selectedCppStandard = "auto";
+    private double _executionTimeoutMs = 5000;
+    private double _executionMemoryLimitMb = 256;
+    private int _selectedConflictPolicyIndex;
 
     private string _lastDetectedFileText = "None";
     private string _lastSuccessfulBackupText = "None";
@@ -177,7 +288,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         MultiDirectoryMonitor monitor,
         AuthenticatedBrowserBridge bridge,
         GoogleDriveService drive,
-        DpapiCredentialStore credentialStore)
+        DpapiCredentialStore credentialStore,
+        BrowserIntegrationService? browserIntegration = null,
+        ToolchainDiscoveryService? toolchains = null,
+        CodeExecutionService? runner = null)
     {
         _config = config;
         _configPath = configPath;
@@ -187,17 +301,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _bridge = bridge;
         _drive = drive;
         _credentialStore = credentialStore;
+        _browserIntegration = browserIntegration ?? new BrowserIntegrationService();
+        _toolchains = toolchains ?? new ToolchainDiscoveryService();
+        _runner = runner ?? new CodeExecutionService(_config, _store, _archiver, _toolchains);
         _strings = UiStrings.For(config.Language);
+        _runnerStatusText = _strings.StatusReady;
+        _consoleLogText = _strings.ConsoleOutputEmpty;
 
         LoadFieldsFromConfig();
 
         RefreshAllCommand = new AsyncRelayCommand(RefreshAllAsync);
+        RefreshDiscoveryCommand = new RelayCommand(RefreshProcessesAndWatches);
         RunDiagnosticCommand = new AsyncRelayCommand(RunDiagnosticTestAsync);
         SyncNowCommand = new AsyncRelayCommand(SyncNowAsync);
+        PullCloudArchiveCommand = new AsyncRelayCommand(PullCloudArchiveAsync);
+        DownloadAllCloudCommand = new AsyncRelayCommand(DownloadAllCloudAsync);
+        DownloadSelectedVersionCommand = new AsyncRelayCommand(DownloadSelectedVersionAsync);
         RetryFailedCommand = new AsyncRelayCommand(RetryFailedAsync);
         ConnectGoogleCommand = new AsyncRelayCommand(ConnectGoogleAsync);
         DisconnectGoogleCommand = new AsyncRelayCommand(DisconnectGoogleAsync);
         SearchArchiveCommand = new AsyncRelayCommand(RefreshArchiveAsync);
+        RunCodeCommand = new AsyncRelayCommand(RunSelectedVersionAsync, () => CanRunSelectedVersion);
+        StopExecutionCommand = new RelayCommand(StopExecution, () => IsExecuting);
+        ClearConsoleCommand = new RelayCommand(ClearConsole);
+        PrepareBrowserIntegrationCommand = new AsyncRelayCommand<string?>(PrepareBrowserIntegrationAsync);
         OpenArchiveFolderCommand = new RelayCommand(() => OpenFolder(_config.ArchiveDir));
         OpenReadyFolderCommand = new RelayCommand(() => OpenFolder(_config.ReadyDir));
         CopySelectedCodeCommand = new RelayCommand(CopySelectedCode);
@@ -205,26 +332,74 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
         _bridge.ContextChanged += OnContextChanged;
+        _bridge.BrowserConnectionsChanged += OnBrowserConnectionsChanged;
         _drive.SyncCompleted += OnDriveSyncCompleted;
         _drive.AuthStageChanged += OnAuthStageChanged;
+
+        _discoveryRefreshTimer = new Timer(_ => _dispatch(RefreshBrowserAndIdeDiscovery), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
     public ObservableCollection<ActiveWatchRow> ActiveWatches { get; } = new();
     public ObservableCollection<MonitorEventRow> RecentEvents { get; } = new();
+    public ObservableCollection<ArchiveHistoryEventRow> HistoryEvents { get; } = new();
     public ObservableCollection<ArchiveVersionRow> ArchiveVersions { get; } = new();
+    public ObservableCollection<ArchiveFileGroupRow> ArchiveFileGroups { get; } = new();
+    public ObservableCollection<ArchiveVersionRow> SelectedFileVersions { get; } = new();
     public ObservableCollection<UploadQueueRow> UploadQueue { get; } = new();
     public ObservableCollection<WatchedFolderItem> WatchedFolders { get; } = new();
+    public ObservableCollection<BrowserStatusRow> BrowserStatuses { get; } = new();
+    public ObservableCollection<BrowserStatusRow> ConnectedBrowsers { get; } = new();
+    public ObservableCollection<IdeStatusRow> IdeStatuses { get; } = new();
+    public ObservableCollection<ToolchainRow> Toolchains { get; } = new();
+    public ObservableCollection<GlobalSearchSuggestion> GlobalSearchSuggestions { get; } = new();
 
     public IReadOnlyList<string> PlatformFilters { get; } =
         new[] { "All", "Ptit", "Codeforces", "Vnoj", "LeetCode", "HackerRank", "Offline", "Other" };
 
+    public IReadOnlyList<string> CStandardChoices { get; } =
+        new[] { "c11", "c17", "c99", "gnu11" };
+
+    public IReadOnlyList<string> CppStandardChoices { get; } =
+        new[] { "auto", "c++17", "c++14", "c++11", "c++20" };
+
+    public IReadOnlyList<string> AvailabilityFilterLabels => new[]
+    {
+        Strings.AvailabilityAll,
+        Strings.AvailabilityLocalOnly,
+        Strings.AvailabilitySynced,
+        Strings.AvailabilityCloudOnly,
+        Strings.AvailabilityConflict
+    };
+
+    public IReadOnlyList<string> ThemeChoices => new[]
+    {
+        Strings.ThemeSystem,
+        Strings.ThemeLight,
+        Strings.ThemeDark
+    };
+
+    public IReadOnlyList<string> ConflictPolicyChoices { get; } = new[]
+    {
+        "PreserveBothBranches (Never Overwrite)",
+        "PreferLocal",
+        "PreferRemote"
+    };
+
     public IAsyncRelayCommand RefreshAllCommand { get; }
+    public IRelayCommand RefreshDiscoveryCommand { get; }
     public IAsyncRelayCommand RunDiagnosticCommand { get; }
     public IAsyncRelayCommand SyncNowCommand { get; }
+    public IAsyncRelayCommand PullCloudArchiveCommand { get; }
+    public IAsyncRelayCommand DownloadAllCloudCommand { get; }
+    public IAsyncRelayCommand DownloadSelectedVersionCommand { get; }
     public IAsyncRelayCommand RetryFailedCommand { get; }
     public IAsyncRelayCommand ConnectGoogleCommand { get; }
     public IAsyncRelayCommand DisconnectGoogleCommand { get; }
     public IAsyncRelayCommand SearchArchiveCommand { get; }
+    public IAsyncRelayCommand RunCodeCommand { get; }
+    public IRelayCommand StopExecutionCommand { get; }
+    public IRelayCommand ClearConsoleCommand { get; }
+    public IAsyncRelayCommand<string?> PrepareBrowserIntegrationCommand { get; }
     public IRelayCommand OpenArchiveFolderCommand { get; }
     public IRelayCommand OpenReadyFolderCommand { get; }
     public IRelayCommand CopySelectedCodeCommand { get; }
@@ -232,19 +407,71 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public UiTextBundle Strings
     {
         get => _strings;
-        private set => SetProperty(ref _strings, value);
+        private set
+        {
+            if (SetProperty(ref _strings, value))
+            {
+                OnPropertyChanged(nameof(AvailabilityFilterLabels));
+                OnPropertyChanged(nameof(ThemeChoices));
+                OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+                OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+                OnPropertyChanged(nameof(DriveConnectionStatusText));
+                OnPropertyChanged(nameof(NoFoldersVisible));
+            }
+        }
     }
 
     public string ActiveCode { get => _activeCode; private set => SetProperty(ref _activeCode, value); }
     public string ActiveTitle { get => _activeTitle; private set => SetProperty(ref _activeTitle, value); }
     public string ActivePlatform { get => _activePlatform; private set => SetProperty(ref _activePlatform, value); }
     public string ActiveUrl { get => _activeUrl; private set => SetProperty(ref _activeUrl, value); }
-    public bool HasActiveContext { get => _hasActiveContext; private set => SetProperty(ref _hasActiveContext, value); }
+    public string ActiveBrowserName { get => _activeBrowserName; private set => SetProperty(ref _activeBrowserName, value); }
+    public string ActiveFilenamePreview { get => _activeFilenamePreview; private set => SetProperty(ref _activeFilenamePreview, value); }
+    public string ActiveContextStateBadge { get => _activeContextStateBadge; private set => SetProperty(ref _activeContextStateBadge, value); }
+
+    public bool HasActiveContext
+    {
+        get => _hasActiveContext;
+        private set
+        {
+            if (SetProperty(ref _hasActiveContext, value))
+                OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+        }
+    }
+
+    public bool HasConnectedBrowser => ConnectedBrowsers.Count > 0;
+    public Visibility NoConnectedBrowsersVisibility => HasConnectedBrowser ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility NoFoldersVisible => WatchedFolders.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public string TitleBarBrowserBadgeText
+    {
+        get
+        {
+            if (HasConnectedBrowser && HasActiveContext)
+                return $"{ConnectedBrowsers[0].Name} • {ActiveCode}";
+            if (HasConnectedBrowser)
+                return $"{ConnectedBrowsers.Count} {Strings.BrowserConnectedBadge}";
+            return HasActiveContext ? ActiveCode : "0 Browsers";
+        }
+    }
+
+    public string TitleBarDriveBadgeText => IsDriveConnected
+        ? $"Drive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}"
+        : "Drive: Local";
+
     public string IdeStatusSummary { get => _ideStatusSummary; private set => SetProperty(ref _ideStatusSummary, value); }
     public string BrowserStatusSummary { get => _browserStatusSummary; private set => SetProperty(ref _browserStatusSummary, value); }
 
     public int TotalVersions { get => _totalVersions; private set => SetProperty(ref _totalVersions, value); }
-    public int PendingUploads { get => _pendingUploads; private set => SetProperty(ref _pendingUploads, value); }
+    public int PendingUploads
+    {
+        get => _pendingUploads;
+        private set
+        {
+            if (SetProperty(ref _pendingUploads, value))
+                OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+        }
+    }
     public int SyncedUploads { get => _syncedUploads; private set => SetProperty(ref _syncedUploads, value); }
     public int FailedUploads { get => _failedUploads; private set => SetProperty(ref _failedUploads, value); }
     public string LastSyncTimeText { get => _lastSyncTimeText; private set => SetProperty(ref _lastSyncTimeText, value); }
@@ -265,13 +492,39 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public int SelectedAvailabilityFilterIndex
+    {
+        get => _selectedAvailabilityFilterIndex;
+        set
+        {
+            if (SetProperty(ref _selectedAvailabilityFilterIndex, value))
+                _ = RefreshArchiveAsync();
+        }
+    }
+
+    public ArchiveFileGroupRow? SelectedFileGroup
+    {
+        get => _selectedFileGroup;
+        set
+        {
+            if (SetProperty(ref _selectedFileGroup, value) && value is not null)
+                _ = LoadVersionsForFileGroupAsync(value.SourcePath, preferredVersionId: null);
+        }
+    }
+
     public ArchiveVersionRow? SelectedVersion
     {
         get => _selectedVersion;
         set
         {
             if (SetProperty(ref _selectedVersion, value))
+            {
+                OnPropertyChanged(nameof(SelectedVersionIsCloudOnly));
+                OnPropertyChanged(nameof(CanRunSelectedVersion));
+                OnPropertyChanged(nameof(SelectedVersionHeaderText));
+                RunCodeCommand.NotifyCanExecuteChanged();
                 _ = LoadSelectedVersionSourceAsync(value);
+            }
         }
     }
 
@@ -281,13 +534,87 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _selectedVersionSource, value);
     }
 
+    public string SelectedVersionHeaderText => SelectedVersion is null
+        ? Strings.NoVersionSelected
+        : $"{SelectedVersion.FileName} ({SelectedVersion.VersionBadge}) • SHA: {SelectedVersion.ShortSha} • {SelectedVersion.AvailabilityBadge}";
+
+    public bool SelectedVersionIsCloudOnly => SelectedVersion is not null && !SelectedVersion.IsLocalAvailable;
+    public bool CanRunSelectedVersion => SelectedVersion is not null && SelectedVersion.IsLocalAvailable && !IsExecuting;
+
+    public string StdinText { get => _stdinText; set => SetProperty(ref _stdinText, value); }
+    public string StdoutText
+    {
+        get => _stdoutText;
+        private set
+        {
+            if (SetProperty(ref _stdoutText, value))
+                OnPropertyChanged(nameof(IoOutputText));
+        }
+    }
+    public string StderrText
+    {
+        get => _stderrText;
+        private set
+        {
+            if (SetProperty(ref _stderrText, value))
+                OnPropertyChanged(nameof(IoOutputText));
+        }
+    }
+    public string IoOutputText
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(StderrText))
+                return StdoutText;
+            if (string.IsNullOrEmpty(StdoutText))
+                return $"[STDERR]\n{StderrText}";
+            return $"{StdoutText}\n[STDERR]\n{StderrText}";
+        }
+    }
+    public string ConsoleLogText { get => _consoleLogText; private set => SetProperty(ref _consoleLogText, value); }
+    public string RunnerStatusText { get => _runnerStatusText; private set => SetProperty(ref _runnerStatusText, value); }
+    public string RunnerMetricsText { get => _runnerMetricsText; private set => SetProperty(ref _runnerMetricsText, value); }
+
+    public int RunnerTabIndex
+    {
+        get => _runnerTabIndex;
+        set
+        {
+            if (SetProperty(ref _runnerTabIndex, value))
+            {
+                OnPropertyChanged(nameof(ConsoleTabVisibility));
+                OnPropertyChanged(nameof(IoTabVisibility));
+            }
+        }
+    }
+
+    public Visibility ConsoleTabVisibility => RunnerTabIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility IoTabVisibility => RunnerTabIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool IsExecuting
+    {
+        get => _isExecuting;
+        private set
+        {
+            if (SetProperty(ref _isExecuting, value))
+            {
+                OnPropertyChanged(nameof(CanRunSelectedVersion));
+                RunCodeCommand.NotifyCanExecuteChanged();
+                StopExecutionCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
     public bool IsDriveConnected
     {
         get => _isDriveConnected;
         private set
         {
             if (SetProperty(ref _isDriveConnected, value))
+            {
                 OnPropertyChanged(nameof(DriveConnectionStatusText));
+                OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+            }
         }
     }
 
@@ -334,8 +661,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 _config.Language = lang;
                 Strings = UiStrings.For(lang);
-                OnPropertyChanged(nameof(DriveConnectionStatusText));
+                RunnerStatusText = Strings.StatusReady;
                 SaveConfigSafe();
+                UpdateContext(_bridge.GetActiveContext());
+                RefreshBrowserAndIdeDiscovery();
+                _ = RefreshArchiveAsync();
             }
         }
     }
@@ -396,6 +726,115 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string CCompilerPath
+    {
+        get => _cCompilerPath;
+        set
+        {
+            if (SetProperty(ref _cCompilerPath, value))
+            {
+                _config.CCompilerPath = value?.Trim() ?? string.Empty;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string CppCompilerPath
+    {
+        get => _cppCompilerPath;
+        set
+        {
+            if (SetProperty(ref _cppCompilerPath, value))
+            {
+                _config.CppCompilerPath = value?.Trim() ?? string.Empty;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string PythonInterpreterPath
+    {
+        get => _pythonInterpreterPath;
+        set
+        {
+            if (SetProperty(ref _pythonInterpreterPath, value))
+            {
+                _config.PythonInterpreterPath = value?.Trim() ?? string.Empty;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string SelectedCStandard
+    {
+        get => _selectedCStandard;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && SetProperty(ref _selectedCStandard, value) && _config.CStandard != value)
+            {
+                _config.CStandard = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string SelectedCppStandard
+    {
+        get => _selectedCppStandard;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && SetProperty(ref _selectedCppStandard, value) && _config.CppStandard != value)
+            {
+                _config.CppStandard = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public double ExecutionTimeoutMs
+    {
+        get => _executionTimeoutMs;
+        set
+        {
+            var clamped = Math.Clamp(value, 500, 60_000);
+            if (SetProperty(ref _executionTimeoutMs, clamped) && _config.ExecutionTimeoutMs != (int)clamped)
+            {
+                _config.ExecutionTimeoutMs = (int)clamped;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public double ExecutionMemoryLimitMb
+    {
+        get => _executionMemoryLimitMb;
+        set
+        {
+            var clamped = Math.Clamp(value, 32, 4096);
+            if (SetProperty(ref _executionMemoryLimitMb, clamped) && _config.ExecutionMemoryLimitMb != (int)clamped)
+            {
+                _config.ExecutionMemoryLimitMb = (int)clamped;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public int SelectedConflictPolicyIndex
+    {
+        get => _selectedConflictPolicyIndex;
+        set
+        {
+            if (value < 0 || value > 2 || !SetProperty(ref _selectedConflictPolicyIndex, value))
+                return;
+            var policy = (ConflictResolutionPolicy)value;
+            if (_config.ConflictPolicy != policy)
+            {
+                _config.ConflictPolicy = policy;
+                SaveConfigSafe();
+            }
+        }
+    }
+
     public bool InfoBarOpen { get => _infoBarOpen; set => SetProperty(ref _infoBarOpen, value); }
     public string InfoBarTitle { get => _infoBarTitle; private set => SetProperty(ref _infoBarTitle, value); }
     public string InfoBarMessage { get => _infoBarMessage; private set => SetProperty(ref _infoBarMessage, value); }
@@ -437,16 +876,52 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await RefreshCloudStateAsync();
     }
 
+    public void RefreshBrowserAndIdeDiscovery()
+    {
+        var browserStates = _bridge.GetBrowserConnectionStates();
+        BrowserStatuses.Clear();
+        ConnectedBrowsers.Clear();
+        foreach (var b in browserStates)
+        {
+            var row = new BrowserStatusRow(b, _config.Language);
+            BrowserStatuses.Add(row);
+            if (row.IsConnected)
+                ConnectedBrowsers.Add(row);
+        }
+
+        OnPropertyChanged(nameof(HasConnectedBrowser));
+        OnPropertyChanged(nameof(NoConnectedBrowsersVisibility));
+        OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+
+        var connectedNames = ConnectedBrowsers.Select(x => x.Name).ToList();
+        var runningNames = browserStates.Where(b => b.IsRunning).Select(b => b.DisplayName).ToList();
+        BrowserStatusSummary = connectedNames.Count > 0
+            ? $"{string.Join(", ", connectedNames)} • Ext Connected"
+            : runningNames.Count > 0
+                ? $"{string.Join(", ", runningNames)} Running (Ext Not Connected)"
+                : Strings.NoConnectedBrowsers;
+
+        var (ides, toolchains) = _toolchains.DiscoverAll(_config);
+        IdeStatuses.Clear();
+        foreach (var i in ides)
+            IdeStatuses.Add(new IdeStatusRow(i));
+
+        Toolchains.Clear();
+        foreach (var t in toolchains)
+            Toolchains.Add(new ToolchainRow(t));
+
+        var runningIdes = ides.Where(i => i.IsRunning).Select(i => i.Name).ToList();
+        var installedIdes = ides.Where(i => i.IsInstalled).Select(i => i.Name).ToList();
+        IdeStatusSummary = runningIdes.Count > 0
+            ? $"Running: {string.Join(", ", runningIdes)}"
+            : installedIdes.Count > 0
+                ? $"Installed: {string.Join(", ", installedIdes)}"
+                : "No IDE detected";
+    }
+
     public void RefreshProcessesAndWatches()
     {
-        var ide = IdeProcessDetector.Detect();
-        IdeStatusSummary = ide.ActiveIdeSummary;
-        var browsers = new List<string>();
-        if (ide.Edge) browsers.Add("Edge");
-        if (ide.Thorium) browsers.Add("Thorium");
-        BrowserStatusSummary = browsers.Count == 0
-            ? "No supported browser running"
-            : $"{string.Join(", ", browsers)} • Port {_bridge.ListeningPort}";
+        RefreshBrowserAndIdeDiscovery();
 
         LastDetectedFileText = _monitor.LastDetectedFile;
         LastSuccessfulBackupText = _monitor.LastSuccessfulBackup;
@@ -474,18 +949,114 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RecentEvents.Clear();
         foreach (var ev in events)
             RecentEvents.Add(new MonitorEventRow(ev));
+
+        var history = await _store.GetArchiveHistoryEventsAsync(80);
+        HistoryEvents.Clear();
+        foreach (var h in history)
+            HistoryEvents.Add(new ArchiveHistoryEventRow(h));
     }
 
     public async Task RefreshArchiveAsync()
     {
-        var list = await _store.QueryVersionsAsync(SearchQuery, SelectedPlatformFilter, 250);
+        List<ArchiveVersionRecord> list;
+        if (string.IsNullOrWhiteSpace(SearchQuery))
+        {
+            list = await _store.QueryVersionsAsync(null, SelectedPlatformFilter, 500);
+        }
+        else
+        {
+            var found = await _store.SearchArchiveAsync(SearchQuery, 500);
+            list = found.Select(f => f.Version)
+                .Where(v => SelectedPlatformFilter == "All" || string.Equals(v.Platform, SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        VersionAvailability? availFilter = SelectedAvailabilityFilterIndex switch
+        {
+            1 => VersionAvailability.LocalOnly,
+            2 => VersionAvailability.Synced,
+            3 => VersionAvailability.CloudOnly,
+            4 => VersionAvailability.Conflict,
+            _ => null
+        };
+        if (availFilter is VersionAvailability f)
+            list = list.Where(v => v.Availability == f).ToList();
+
         var selectedId = SelectedVersion?.Id;
+        var selectedPath = SelectedFileGroup?.SourcePath;
+
         ArchiveVersions.Clear();
         foreach (var v in list)
-            ArchiveVersions.Add(new ArchiveVersionRow(v));
+            ArchiveVersions.Add(new ArchiveVersionRow(v, _config.Language));
+
+        ArchiveFileGroups.Clear();
+        foreach (var grp in list.GroupBy(v => v.SourcePath, StringComparer.OrdinalIgnoreCase))
+        {
+            var latest = grp.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First();
+            ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language));
+        }
 
         if (!string.IsNullOrEmpty(selectedId))
-            SelectedVersion = ArchiveVersions.FirstOrDefault(x => x.Id == selectedId);
+        {
+            var foundVer = ArchiveVersions.FirstOrDefault(x => x.Id == selectedId);
+            if (foundVer is not null)
+            {
+                await LoadVersionsForFileGroupAsync(foundVer.SourcePath, foundVer.Id);
+                return;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(selectedPath))
+        {
+            var matchGrp = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.SourcePath, selectedPath, StringComparison.OrdinalIgnoreCase));
+            if (matchGrp is not null)
+                SelectedFileGroup = matchGrp;
+        }
+    }
+
+    public async Task<IReadOnlyList<GlobalSearchSuggestion>> UpdateGlobalSearchSuggestionsAsync(string query, CancellationToken ct = default)
+    {
+        var results = await _store.SearchArchiveAsync(query, 20, ct);
+        var mapped = results.Select(r => new GlobalSearchSuggestion(r.Version, r.MatchKind, _config.Language)).ToList();
+        GlobalSearchSuggestions.Clear();
+        foreach (var item in mapped)
+            GlobalSearchSuggestions.Add(item);
+        return mapped;
+    }
+
+    public async Task SelectArchiveVersionByIdAsync(string versionId)
+    {
+        var target = await _store.GetVersionByIdAsync(versionId);
+        if (target is null)
+            return;
+
+        SelectedPlatformFilter = "All";
+        SelectedAvailabilityFilterIndex = 0;
+        SearchQuery = string.Empty;
+        await RefreshArchiveAsync();
+        await LoadVersionsForFileGroupAsync(target.SourcePath, target.Id);
+    }
+
+    private async Task LoadVersionsForFileGroupAsync(string sourcePath, string? preferredVersionId)
+    {
+        var groupMatch = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase));
+        if (groupMatch is not null && _selectedFileGroup?.SourcePath != groupMatch.SourcePath)
+        {
+            _selectedFileGroup = groupMatch;
+            OnPropertyChanged(nameof(SelectedFileGroup));
+        }
+
+        var versions = await _store.GetVersionsBySourceAsync(sourcePath);
+        SelectedFileVersions.Clear();
+        foreach (var v in versions.OrderByDescending(x => x.VersionNum))
+            SelectedFileVersions.Add(new ArchiveVersionRow(v, _config.Language));
+
+        var pick = preferredVersionId is not null
+            ? SelectedFileVersions.FirstOrDefault(v => v.Id == preferredVersionId)
+            : SelectedFileVersions.FirstOrDefault();
+
+        if (pick is not null)
+            SelectedVersion = pick;
     }
 
     public async Task RefreshCloudStateAsync()
@@ -498,6 +1069,74 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UploadQueue.Clear();
         foreach (var q in queue)
             UploadQueue.Add(new UploadQueueRow(q));
+    }
+
+    public async Task RunSelectedVersionAsync()
+    {
+        if (SelectedVersion is null || IsExecuting)
+            return;
+
+        if (!SelectedVersion.IsLocalAvailable)
+        {
+            ShowInfoBar("Cloud-Only Version", Strings.CloudOnlyNotice, InfoBarSeverity.Warning);
+            return;
+        }
+
+        _execCts?.Dispose();
+        _execCts = new CancellationTokenSource();
+        IsExecuting = true;
+        StdoutText = string.Empty;
+        StderrText = string.Empty;
+        ConsoleLogText = $"[{DateTime.Now:HH:mm:ss}] Compiling & running {SelectedVersion.FileName} ({SelectedVersion.VersionBadge})...\n";
+        RunnerStatusText = Strings.StatusCompiling;
+        RunnerMetricsText = string.Empty;
+
+        try
+        {
+            var res = await _runner.ExecuteArchivedVersionAsync(
+                new CodeExecutionRequest(SelectedVersion.Id, StdinText, _config.ExecutionTimeoutMs, _config.ExecutionMemoryLimitMb),
+                chunk => _dispatch(() => ConsoleLogText += chunk),
+                _execCts.Token);
+
+            StdoutText = res.Stdout;
+            StderrText = string.IsNullOrWhiteSpace(res.CompilerOutput)
+                ? res.Stderr
+                : string.IsNullOrWhiteSpace(res.Stderr)
+                    ? res.CompilerOutput
+                    : $"{res.CompilerOutput}\n{res.Stderr}";
+            if (!string.IsNullOrWhiteSpace(res.CompilerOutput))
+                ConsoleLogText += $"\n[COMPILER]\n{res.CompilerOutput}\n";
+            if (!string.IsNullOrWhiteSpace(res.Stderr))
+                ConsoleLogText += $"\n[STDERR]\n{res.Stderr}";
+            ConsoleLogText += $"\n--- {res.StatusBadgeText} • Exit {res.ExitCode?.ToString() ?? "-"} • {res.ElapsedMs} ms • PeakMem: {(res.PeakMemoryMb ?? 0):F2} MB ---\n";
+
+            RunnerMetricsText = $"Exit {res.ExitCode?.ToString() ?? "-"} • {res.ElapsedMs} ms • {(res.PeakMemoryMb ?? 0):F2} MB";
+            RunnerStatusText = res.Status == ExecutionStatus.Finished && res.ExitCode == 0 ? Strings.StatusPassed : res.StatusBadgeText;
+        }
+        catch (OperationCanceledException)
+        {
+            RunnerStatusText = Strings.StatusFailed;
+            RunnerMetricsText = "Stopped by user";
+            ConsoleLogText += "\n[STOPPED BY USER]\n";
+        }
+        finally
+        {
+            IsExecuting = false;
+        }
+    }
+
+    public void StopExecution()
+    {
+        try { _execCts?.Cancel(); } catch { }
+    }
+
+    public void ClearConsole()
+    {
+        StdoutText = string.Empty;
+        StderrText = string.Empty;
+        ConsoleLogText = Strings.ConsoleOutputEmpty;
+        RunnerMetricsText = string.Empty;
+        RunnerStatusText = Strings.StatusReady;
     }
 
     public async Task RunDiagnosticTestAsync()
@@ -530,6 +1169,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             await _archiver.RestoreVersionAsync(SelectedVersion.Id, destinationPath);
+            await RefreshStatsAndEventsAsync();
             ShowInfoBar(
                 "Version Restored",
                 $"Restored {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) -> {destinationPath}",
@@ -541,6 +1181,104 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ShowInfoBar("Restore Failed (Integrity Check)", ex.Message, InfoBarSeverity.Error);
             return false;
         }
+    }
+
+    public async Task DownloadSelectedVersionAsync()
+    {
+        if (SelectedVersion is null)
+            return;
+
+        IsSyncing = true;
+        try
+        {
+            var targetId = SelectedVersion.Id;
+            var res = await _drive.DownloadVersionAsync(targetId);
+            await RefreshArchiveAsync();
+            if (res.Success)
+            {
+                await LoadVersionsForFileGroupAsync(SelectedVersion?.SourcePath ?? string.Empty, targetId);
+                ShowInfoBar("Downloaded & Verified", $"Saved SHA-256 verified archive locally at {res.LocalArchivePath}", InfoBarSeverity.Success);
+            }
+            else
+            {
+                ShowInfoBar("Download Failed", res.Error ?? "Unknown error", InfoBarSeverity.Error);
+            }
+        }
+        finally
+        {
+            IsSyncing = false;
+        }
+    }
+
+    public async Task PullCloudArchiveAsync()
+    {
+        IsSyncing = true;
+        SyncProgressPercent = 0;
+        SyncProgressText = "Pulling cloud index...";
+        try
+        {
+            var progress = new Progress<DriveSyncProgress>(p =>
+            {
+                SyncProgressPercent = p.PercentComplete;
+                SyncProgressText = p.Total > 0 ? $"Pull {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
+            });
+            var pull = await _drive.PullAndReconcileFromDriveAsync(progress);
+            SaveConfigSafe();
+            await RefreshAllAsync();
+
+            if (!pull.Connected)
+                ShowInfoBar("Cloud Pull Paused", pull.Error ?? "Not connected", InfoBarSeverity.Warning);
+            else if (!string.IsNullOrEmpty(pull.Error))
+                ShowInfoBar("Cloud Pull Error", pull.Error, InfoBarSeverity.Error);
+            else
+                ShowInfoBar("Cloud Archive Reconciled",
+                    $"Discovered {pull.DiscoveredRemoteVersions} remote versions • New Cloud-Only: {pull.NewCloudOnlyCount} • Conflicts preserved: {pull.ConflictBranchCount}",
+                    InfoBarSeverity.Success);
+        }
+        finally
+        {
+            IsSyncing = false;
+        }
+    }
+
+    public async Task DownloadAllCloudAsync()
+    {
+        IsSyncing = true;
+        try
+        {
+            var progress = new Progress<DriveSyncProgress>(p =>
+            {
+                SyncProgressPercent = p.PercentComplete;
+                SyncProgressText = p.Total > 0 ? $"Download {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
+            });
+            var (ok, failed, err) = await _drive.DownloadAllCloudOnlyVersionsAsync(progress);
+            await RefreshAllAsync();
+            ShowInfoBar(
+                failed > 0 ? "Download Partial" : "All Cloud Files Downloaded",
+                $"Downloaded & verified: {ok}, Failed: {failed}. {err}".Trim(),
+                failed > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+        }
+        finally
+        {
+            IsSyncing = false;
+        }
+    }
+
+    public async Task PrepareBrowserIntegrationAsync(string? kindArg)
+    {
+        var kind = Enum.TryParse<BrowserKind>(kindArg, ignoreCase: true, out var parsed)
+            ? parsed
+            : BrowserKind.Edge;
+
+        await Task.Run(() =>
+        {
+            var result = _browserIntegration.PrepareIntegration(kind, _config, _bridge.ListeningPort);
+            _dispatch(() =>
+            {
+                RefreshBrowserAndIdeDiscovery();
+                ShowInfoBar($"{kind} Extension Bridge Ready", result.Message, InfoBarSeverity.Success);
+            });
+        });
     }
 
     public async Task SaveOAuthClientAsync(string clientId, string clientSecret)
@@ -591,13 +1329,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             SaveConfigSafe();
             await RefreshCloudStateAsync();
             if (res.RemoteRevocationSucceeded)
-            {
                 ShowInfoBar("Disconnected", "Google OAuth tokens revoked remotely and wiped from DPAPI store.", InfoBarSeverity.Informational);
-            }
             else
-            {
                 ShowInfoBar("Disconnected Locally", $"DPAPI tokens cleared, but remote revocation failed: {res.RemoteError}", InfoBarSeverity.Warning);
-            }
         }
         finally
         {
@@ -609,7 +1343,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         IsSyncing = true;
         SyncProgressPercent = 0;
-        SyncProgressText = "Starting upload...";
+        SyncProgressText = "Starting bidirectional sync...";
         try
         {
             var progress = new Progress<DriveSyncProgress>(p =>
@@ -617,16 +1351,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SyncProgressPercent = p.PercentComplete;
                 SyncProgressText = p.Total > 0 ? $"{p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
             });
-            var report = await _drive.SyncPendingAsync(progress);
-            SaveConfigSafe(); // Persist cached DriveRootFolderId if created
+            var (report, pull) = await _drive.SyncBidirectionalAsync(progress);
+            SaveConfigSafe();
             await RefreshAllAsync();
 
             if (!report.Connected)
                 ShowInfoBar("Cloud Sync Paused", report.LastError ?? "Not connected", InfoBarSeverity.Warning);
-            else if (report.FailedCount > 0)
-                ShowInfoBar("Sync Completed With Errors", $"Uploaded: {report.UploadedCount}, Failed: {report.FailedCount}. {report.LastError}", InfoBarSeverity.Warning);
+            else if (report.FailedCount > 0 || !string.IsNullOrEmpty(pull.Error))
+                ShowInfoBar("Sync Completed With Errors", $"Uploaded: {report.UploadedCount}, Failed: {report.FailedCount}. {report.LastError ?? pull.Error}", InfoBarSeverity.Warning);
             else
-                ShowInfoBar("Cloud Sync Complete", $"Uploaded: {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount})", InfoBarSeverity.Success);
+                ShowInfoBar("Bidirectional Sync Complete",
+                    $"Uploaded: {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
+                    InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
@@ -668,6 +1404,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         WatchedFolders.Add(new WatchedFolderItem(new WatchedFolderConfig(folderPath, true, true, Path.GetFileName(folderPath)), SyncWatchedFoldersToConfigAndReload));
         _suppressFolderSync = false;
         SyncWatchedFoldersToConfigAndReload();
+        OnPropertyChanged(nameof(NoFoldersVisible));
         ShowInfoBar("Folder Added", $"Now monitoring: {folderPath}", InfoBarSeverity.Success);
     }
 
@@ -677,6 +1414,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         WatchedFolders.Remove(item);
         _suppressFolderSync = false;
         SyncWatchedFoldersToConfigAndReload();
+        OnPropertyChanged(nameof(NoFoldersVisible));
         ShowInfoBar("Folder Removed", item.Path, InfoBarSeverity.Informational);
     }
 
@@ -728,6 +1466,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _minimizeToTrayOnClose = _config.MinimizeToTrayOnClose;
         _autoCopyReadyPath = _config.AutoCopyReadyPath;
         _driveEnabled = _config.DriveEnabled;
+        _cCompilerPath = _config.CCompilerPath ?? string.Empty;
+        _cppCompilerPath = _config.CppCompilerPath ?? string.Empty;
+        _pythonInterpreterPath = _config.PythonInterpreterPath ?? string.Empty;
+        _selectedCStandard = _config.CStandard;
+        _selectedCppStandard = _config.CppStandard;
+        _executionTimeoutMs = _config.ExecutionTimeoutMs;
+        _executionMemoryLimitMb = _config.ExecutionMemoryLimitMb;
+        _selectedConflictPolicyIndex = (int)_config.ConflictPolicy;
 
         _suppressFolderSync = true;
         WatchedFolders.Clear();
@@ -772,6 +1518,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (!row.IsLocalAvailable)
+        {
+            SelectedVersionSource = $"// [CLOUD ONLY]\n// {Strings.CloudOnlyNotice}\n// File: {row.FileName}\n// SHA-256: {row.Record.Sha256}\n// Problem: {row.ProblemSummary}";
+            return;
+        }
+
         try
         {
             var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Id);
@@ -794,20 +1546,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ActiveTitle = Strings.NoActiveContext;
             ActivePlatform = "Offline";
             ActiveUrl = string.Empty;
+            ActiveBrowserName = string.Empty;
+            ActiveFilenamePreview = string.Empty;
+            ActiveContextStateBadge = "Offline";
             return;
         }
 
+        var ageMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ctx.SeenAtUnixMs;
+        var isFresh = ageMs <= _config.ContextExpirationSeconds * 1000L;
         HasActiveContext = true;
         ActiveCode = ctx.Code;
         ActiveTitle = ctx.Title;
         ActivePlatform = ctx.Platform.ToString();
         ActiveUrl = ctx.Url;
+        ActiveBrowserName = ctx.BrowserName ?? string.Empty;
+        ActiveFilenamePreview = ctx.FilenamePreview;
+        ActiveContextStateBadge = isFresh ? Strings.ProblemActiveBadge : Strings.ProblemStaleBadge;
     }
 
-    private void OnContextChanged(ProblemContext? ctx)
-    {
-        _dispatch(() => UpdateContext(ctx));
-    }
+    private void OnContextChanged(ProblemContext? ctx) => _dispatch(() => UpdateContext(ctx));
+
+    private void OnBrowserConnectionsChanged() => _dispatch(RefreshBrowserAndIdeDiscovery);
 
     private void OnVersionArchived(ArchiveVersionRecord version)
     {
@@ -830,15 +1589,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnDriveSyncCompleted(DriveSyncReport report)
-    {
-        _dispatch(() => { _ = RefreshAllAsync(); });
-    }
+    private void OnDriveSyncCompleted(DriveSyncReport report) => _dispatch(() => { _ = RefreshAllAsync(); });
 
-    private void OnAuthStageChanged(OAuthConnectionStage stage, string message)
-    {
-        _dispatch(() => { OAuthStageText = $"{stage}: {message}"; });
-    }
+    private void OnAuthStageChanged(OAuthConnectionStage stage, string message) => _dispatch(() => { OAuthStageText = $"{stage}: {message}"; });
 
     private static void OpenFolder(string path)
     {
@@ -850,9 +1603,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _discoveryRefreshTimer?.Dispose();
+        _discoveryRefreshTimer = null;
+        _execCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;
         _monitor.EventRecorded -= OnMonitorEventRecorded;
         _bridge.ContextChanged -= OnContextChanged;
+        _bridge.BrowserConnectionsChanged -= OnBrowserConnectionsChanged;
         _drive.SyncCompleted -= OnDriveSyncCompleted;
         _drive.AuthStageChanged -= OnAuthStageChanged;
     }

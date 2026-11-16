@@ -22,20 +22,13 @@
                 <FontIcon Glyph="&#xE753;" />
             </controls:SettingsCard.HeaderIcon>
             <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button
-                    Content="{x:Bind ViewModel.Strings.ConfigureOAuthButton, Mode=OneWay}"
-                    Click="ConfigureOAuth_Click" />
-                <Button
-                    Content="{x:Bind ViewModel.Strings.ConnectGoogleButton, Mode=OneWay}"
-                    Style="{ThemeResource AccentButtonStyle}"
-                    Command="{x:Bind ViewModel.ConnectGoogleCommand}" />
-                <Button
-                    Content="{x:Bind ViewModel.Strings.DisconnectGoogleButton, Mode=OneWay}"
-                    Command="{x:Bind ViewModel.DisconnectGoogleCommand}" />
+                <Button Content="{x:Bind ViewModel.Strings.ConfigureOAuthButton, Mode=OneWay}" Click="ConfigureOAuth_Click" />
+                <Button Content="{x:Bind ViewModel.Strings.ConnectGoogleButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.ConnectGoogleCommand}" />
+                <Button Content="{x:Bind ViewModel.Strings.DisconnectGoogleButton, Mode=OneWay}" Command="{x:Bind ViewModel.DisconnectGoogleCommand}" />
             </StackPanel>
         </controls:SettingsCard>
 
-        <!-- Sync Controls & Progress -->
+        <!-- Bidirectional Sync Controls & Progress -->
         <Border Grid.Row="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
             <StackPanel Spacing="10">
                 <Grid>
@@ -51,13 +44,12 @@
                             <Run Text="  •  " />
                             <Run Text="{x:Bind ViewModel.SyncProgressText, Mode=OneWay}" />
                         </TextBlock>
-                        <TextBlock
-                            Text="{x:Bind ViewModel.OAuthStageText, Mode=OneWay}"
-                            FontSize="12"
-                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.OAuthStageText, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                         <ProgressRing IsActive="{x:Bind ViewModel.IsSyncing, Mode=OneWay}" Width="24" Height="24" />
+                        <Button Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}" Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
+                        <Button Content="{x:Bind ViewModel.Strings.DownloadAllCloudButton, Mode=OneWay}" Command="{x:Bind ViewModel.DownloadAllCloudCommand}" />
                         <Button Content="{x:Bind ViewModel.Strings.RetryFailedButton, Mode=OneWay}" Command="{x:Bind ViewModel.RetryFailedCommand}" />
                         <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />
                     </StackPanel>
@@ -67,28 +59,62 @@
             </StackPanel>
         </Border>
 
-        <!-- Persistent Queue Table -->
-        <Border Grid.Row="2" Padding="12" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-            <ListView ItemsSource="{x:Bind ViewModel.UploadQueue}" SelectionMode="None">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="vm:UploadQueueRow">
-                        <Grid Padding="4,8" ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="100" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Text="{x:Bind DetailText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                            </StackPanel>
-                            <TextBlock Grid.Column="1" Text="{x:Bind StatusText}" VerticalAlignment="Center" FontWeight="SemiBold" />
-                            <TextBlock Grid.Column="2" Text="{x:Bind UpdatedText}" VerticalAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </Grid>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
-        </Border>
+        <!-- Persistent Queue & Cloud Sync History -->
+        <Grid Grid.Row="2" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Padding="12" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <ListView ItemsSource="{x:Bind ViewModel.UploadQueue}" SelectionMode="None">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="vm:UploadQueueRow">
+                            <Grid Padding="4,8" ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="90" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{x:Bind DetailText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{x:Bind StatusText}" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                <TextBlock Grid.Column="2" Text="{x:Bind UpdatedText}" VerticalAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Border>
+
+            <Border Grid.Column="1" Padding="12" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="{x:Bind ViewModel.Strings.ArchiveHistoryTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="14" />
+                    <ListView Grid.Row="1" ItemsSource="{x:Bind ViewModel.HistoryEvents}" SelectionMode="None">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ArchiveHistoryEventRow">
+                                <Grid Padding="4,6" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{x:Bind EventType}" FontWeight="SemiBold" FontSize="12" />
+                                        <TextBlock Text="{x:Bind Summary}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="{x:Bind TimeText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
+            </Border>
+        </Grid>
 
     </Grid>
 </Page>

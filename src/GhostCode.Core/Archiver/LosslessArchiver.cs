@@ -171,6 +171,13 @@ public sealed class LosslessArchiver
         var version = await _store.GetVersionByIdAsync(versionId, ct)
             ?? throw new InvalidOperationException($"Archive version '{versionId}' was not found in the database.");
 
+        if (!version.IsLocalAvailable || version.ArchivePath.StartsWith("cloud://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FileNotFoundException(
+                $"Version v{version.VersionNum} ('{version.FileName}') exists only on Google Drive (Cloud-Only). Download it first before previewing, restoring, or running.",
+                version.FileName);
+        }
+
         var archiveFullPath = Path.GetFullPath(version.ArchivePath);
         if (!File.Exists(archiveFullPath))
         {
@@ -192,8 +199,18 @@ public sealed class LosslessArchiver
 
     public async Task RestoreVersionAsync(string versionId, string destinationPath, CancellationToken ct = default)
     {
+        var version = await _store.GetVersionByIdAsync(versionId, ct)
+            ?? throw new InvalidOperationException($"Archive version '{versionId}' was not found in the database.");
         var bytes = await ReadAndVerifyVersionBytesAsync(versionId, ct);
         await WriteReplaceableCopyAtomicallyAsync(destinationPath, bytes, ct);
+        await _store.RecordArchiveHistoryEventAsync(new ArchiveHistoryEvent(
+            Guid.NewGuid().ToString("N"),
+            "VersionRestored",
+            version.SourcePath,
+            version.Id,
+            $"Restored v{version.VersionNum} ({version.FileName}) -> {destinationPath}",
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Environment.MachineName), ct);
     }
 
     /// <summary>

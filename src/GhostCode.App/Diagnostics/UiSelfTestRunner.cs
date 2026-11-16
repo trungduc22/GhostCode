@@ -3,8 +3,10 @@ using System.Text.Json;
 using GhostCode.App.ViewModels;
 using GhostCode.App.Views;
 using GhostCode.Core.Archiver;
+using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
 using GhostCode.Core.Models;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -12,9 +14,9 @@ using Microsoft.UI.Xaml.Media;
 namespace GhostCode.App.Diagnostics;
 
 /// <summary>
-/// Executes live UI-thread verification across all WinUI 3 pages, controls, commands,
-/// theme/language toggles, integrity handling, and System Tray hide/restore when
-/// GHOSTCODE_SELF_TEST_REPORT is specified.
+/// Executes live UI-thread verification across all WinUI 3 pages, integrated custom title bar geometry,
+/// Ctrl+K search, Dashboard browser/problem ordering, 3-pane Archive + live Code Runner execution,
+/// repaired Settings layout, Cloud controls, System Tray hide/restore, and optional PNG screenshot capture.
 /// </summary>
 public static class UiSelfTestRunner
 {
@@ -29,6 +31,8 @@ public static class UiSelfTestRunner
     {
         var results = new Dictionary<string, object>();
         bool allPassed = true;
+        var screenshotDir = Environment.GetEnvironmentVariable("GHOSTCODE_SCREENSHOT_DIR");
+        var capturedScreenshots = new List<string>();
 
         void Record(string name, bool passed, string detail = "")
         {
@@ -37,13 +41,37 @@ public static class UiSelfTestRunner
                 allPassed = false;
         }
 
+        async Task CaptureAsync(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(screenshotDir) || window.Content is null)
+                return;
+            await Task.Delay(350);
+            var outPath = Path.Combine(screenshotDir, fileName);
+            var theme = (window.Content as FrameworkElement)?.ActualTheme ?? ElementTheme.Light;
+            var ok = await WindowScreenshotCapture.CaptureElementToPngAsync(window.Content, theme, outPath);
+            if (ok)
+                capturedScreenshots.Add(outPath);
+        }
+
         try
         {
-            await Task.Delay(300);
+            await Task.Delay(350);
 
             Record("MicaBackdropAttached", window.SystemBackdrop is MicaBackdrop, window.SystemBackdrop?.GetType().Name ?? "null");
 
-            // 1. Navigate across all 4 NavigationView pages
+            // 1. Single-row integrated custom title bar geometry check
+            var geo = window.GetTitleBarGeometrySnapshot();
+            bool titleRowOk = geo.ExtendsContentIntoTitleBar
+                && geo.TitleBarBottom > 0
+                && geo.TitleBarBottom <= 58
+                && geo.SearchBoxTop >= geo.TitleBarTop
+                && geo.SearchBoxBottom <= geo.TitleBarBottom + 1
+                && geo.SearchBoxRight > geo.SearchBoxLeft
+                && Math.Abs(geo.SearchBoxTop - geo.LogoTop) < 20;
+            Record("SingleRowTitleBarGeometry", titleRowOk,
+                $"Extends={geo.ExtendsContentIntoTitleBar}, TitleBar=[{geo.TitleBarTop:F1}..{geo.TitleBarBottom:F1}], Search=[{geo.SearchBoxLeft:F1}..{geo.SearchBoxRight:F1}, Y={geo.SearchBoxTop:F1}..{geo.SearchBoxBottom:F1}], LogoY=[{geo.LogoTop:F1}..{geo.LogoBottom:F1}]");
+
+            // 2. Navigate across all 4 NavigationView pages
             var navOk = window.NavigateToTag("Archive") && window.CurrentPageType == typeof(ArchivePage);
             await Task.Delay(120);
             navOk &= window.NavigateToTag("Cloud") && window.CurrentPageType == typeof(CloudPage);
@@ -53,7 +81,68 @@ public static class UiSelfTestRunner
             navOk &= window.NavigateToTag("Dashboard") && window.CurrentPageType == typeof(DashboardPage);
             Record("NavigationViewPages", navOk, window.CurrentPageType?.Name ?? "null");
 
-            // 2. Settings: add folder, toggle recursive, refuse ArchiveDir, remove folder
+            // 3. Dashboard: Empty Connected Browsers -> Authenticated Edge Heartbeat + Active Problem Card Ordering
+            bool initialEmptyOk = vm.ConnectedBrowsers.Count == 0 && vm.NoConnectedBrowsersVisibility == Visibility.Visible;
+            var bridge = App.Services.GetRequiredService<AuthenticatedBrowserBridge>();
+            using var http = new HttpClient();
+            var baseUrl = $"http://127.0.0.1:{bridge.ListeningPort}";
+            var nonce = Guid.NewGuid().ToString("N");
+            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var hsReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/handshake");
+            hsReq.Headers.Add("Origin", "chrome-extension://bifmfiolmohcdfknnicfikhhpipkokbc");
+            hsReq.Headers.Add("X-GhostCode-Browser", "Edge");
+            hsReq.Headers.Add("X-GhostCode-Ext-Version", "1.4.0");
+            hsReq.Headers.Add("X-GhostCode-Pairing-Id", AuthenticatedBrowserBridge.DefaultPairingId);
+            hsReq.Headers.Add("X-GhostCode-Nonce", nonce);
+            hsReq.Headers.Add("X-GhostCode-Timestamp", ts.ToString());
+            hsReq.Headers.Add("X-GhostCode-Proof", AuthenticatedBrowserBridge.ComputeHandshakeProof(config.BridgeAuthToken, nonce, ts));
+            var hsResp = await http.SendAsync(hsReq);
+            string sessionToken = string.Empty;
+            if (hsResp.IsSuccessStatusCode)
+            {
+                using var hsDoc = JsonDocument.Parse(await hsResp.Content.ReadAsStringAsync());
+                sessionToken = hsDoc.RootElement.GetProperty("session_token").GetString() ?? string.Empty;
+            }
+
+            if (!string.IsNullOrEmpty(sessionToken))
+            {
+                var ctxReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
+                ctxReq.Headers.Add("X-GhostCode-Token", sessionToken);
+                ctxReq.Headers.Add("X-GhostCode-Browser", "Edge");
+                ctxReq.Content = new StringContent(
+                    """{"problem_code":"CPP0101","problem_title":"Tính Tổng Hai Số","platform":"PTIT","url":"https://code.ptit.edu.vn/student/question/CPP0101","tab_active":true,"browser_name":"Edge"}""",
+                    Encoding.UTF8,
+                    "application/json");
+                await http.SendAsync(ctxReq);
+            }
+
+            var waitDeadline = Environment.TickCount64 + 3000;
+            while (Environment.TickCount64 < waitDeadline && (vm.ConnectedBrowsers.Count == 0 || vm.ActiveCode != "CPP0101"))
+                await Task.Delay(100);
+
+            bool cardOrderOk = false;
+            if (window.CurrentPageContent is DashboardPage dashPage
+                && dashPage.FindName("ConnectedBrowsersCard") is FrameworkElement browsersCard
+                && dashPage.FindName("DetectedProblemCard") is FrameworkElement problemCard)
+            {
+                dashPage.UpdateLayout();
+                var bPt = browsersCard.TransformToVisual(dashPage).TransformPoint(new Windows.Foundation.Point(0, 0));
+                var pPt = problemCard.TransformToVisual(dashPage).TransformPoint(new Windows.Foundation.Point(0, 0));
+                cardOrderOk = bPt.Y < pPt.Y;
+            }
+
+            bool dashOk = initialEmptyOk
+                && vm.ConnectedBrowsers.Count >= 1
+                && vm.ActiveCode == "CPP0101"
+                && vm.ActiveFilenamePreview == "CPP0101_Tinh_Tong_Hai_So.cpp"
+                && cardOrderOk;
+            Record("DashboardBrowsersAboveProblem", dashOk,
+                $"emptyInit={initialEmptyOk}, connected={vm.ConnectedBrowsers.Count}, preview={vm.ActiveFilenamePreview}, cardOrder={cardOrderOk}");
+            await CaptureAsync("01_dashboard.png");
+
+            // 4. Settings: add folder, toggle recursive, refuse ArchiveDir, verify non-squeezed layout
+            window.NavigateToTag("Settings");
+            await Task.Delay(200);
             var tempWatchDir = Path.Combine(testWorkspaceRoot, "SelfTestWatched");
             Directory.CreateDirectory(tempWatchDir);
             vm.AddWatchedFolder(tempWatchDir);
@@ -71,9 +160,18 @@ public static class UiSelfTestRunner
             vm.AddWatchedFolder(config.ArchiveDir);
             bool excludedGuardOk = vm.InfoBarSeverity == InfoBarSeverity.Error;
 
-            // Keep tempWatchDir temporarily for archive test below, remove after
+            bool settingsLayoutOk = false;
+            if (window.CurrentPageContent is SettingsPage sp
+                && sp.FindName("SettingsScrollViewer") is ScrollViewer sv
+                && sp.FindName("MonitoredFoldersItems") is ItemsControl ic)
+            {
+                sp.UpdateLayout();
+                settingsLayoutOk = sv.ViewportWidth > 400 && ic.ActualWidth >= 200 && ic.ActualWidth <= sv.ViewportWidth + 2;
+            }
+            Record("RepairedSettingsLayout", settingsLayoutOk, $"settingsLayoutOk={settingsLayoutOk}");
+            await CaptureAsync("03_settings.png");
 
-            // 3. Language & Theme switching
+            // 5. Language & Theme switching
             vm.SelectedThemeIndex = 1; // Dark
             bool darkOk = window.CurrentRootTheme == ElementTheme.Dark;
             vm.SelectedThemeIndex = 2; // Light
@@ -88,53 +186,60 @@ public static class UiSelfTestRunner
             bool viOk = vm.Strings.NavDashboard == "Tổng quan";
             Record("BilingualSwitch", enOk && viOk);
 
-            // 4. Archive & Ready path updates
+            // 6. Archive & Ready path updates
             var newReady = Path.Combine(testWorkspaceRoot, "SelfTestReady");
             Directory.CreateDirectory(newReady);
             vm.SetReadyDirectory(newReady);
             bool pathsOk = string.Equals(vm.ReadyDir, newReady, StringComparison.OrdinalIgnoreCase);
             Record("ArchiveAndReadyPathControls", pathsOk && folderAddOk && recursiveToggleOk && excludedGuardOk);
 
-            // 5. Diagnostic button
+            // 7. Diagnostic button
             await vm.RunDiagnosticCommand.ExecuteAsync(null);
             Record("DiagnosticButton", vm.LastDiagnosticResultText.Contains("PASS", StringComparison.Ordinal), vm.LastDiagnosticResultText);
 
-            // 6. Save a file -> monitor archives -> SearchArchive -> Preview -> CopyCode -> RestoreVersion -> Corrupt Integrity Fail
-            window.NavigateToTag("Archive");
-            var srcFile = Path.Combine(tempWatchDir, "selftest_sol.cpp");
-            const string srcCode = "#include <iostream>\nint main(){ std::cout << \"WINUI_SELFTEST\"; return 0; }\n";
+            // 8. Save a real C++ source -> Ctrl+K Global Search -> Archive 3-pane -> Live Split I/O Execution
+            var srcFile = Path.Combine(tempWatchDir, "selftest_sum.cpp");
+            const string srcCode = "#include <iostream>\nint main(){ long long a, b; if (std::cin >> a >> b) std::cout << (a + b) << \"\\n\"; return 0; }\n";
             await File.WriteAllBytesAsync(srcFile, Encoding.UTF8.GetBytes(srcCode));
 
             var deadline = Environment.TickCount64 + 6000;
             while (Environment.TickCount64 < deadline)
             {
                 await vm.RefreshAllAsync();
-                if (vm.ArchiveVersions.Count > 0)
+                if (vm.ArchiveVersions.Any(v => v.FileName.Contains("CPP0101", StringComparison.OrdinalIgnoreCase) || v.FileName.Contains("selftest_sum", StringComparison.OrdinalIgnoreCase)))
                     break;
                 await Task.Delay(120);
             }
 
-            vm.SearchQuery = "selftest_sol";
-            await vm.SearchArchiveCommand.ExecuteAsync(null);
-            bool searchOk = vm.ArchiveVersions.Count >= 1;
-            Record("ArchiveSearchAndVersions", searchOk, $"count={vm.ArchiveVersions.Count}");
+            await window.TriggerGlobalSearchQueryAsync("selftest_sum");
+            await Task.Delay(250);
+            bool globalSearchNavOk = window.CurrentPageType == typeof(ArchivePage)
+                && vm.SelectedVersion is not null
+                && vm.SelectedVersionSource.Contains("std::cin >> a >> b", StringComparison.Ordinal);
+            Record("GlobalSearchCtrlKAndArchive", globalSearchNavOk, $"page={window.CurrentPageType?.Name}, sel={vm.SelectedVersion?.FileName}");
 
-            if (searchOk)
+            if (vm.SelectedVersion is not null)
             {
-                vm.SelectedVersion = vm.ArchiveVersions[0];
-                await Task.Delay(250);
-                bool previewOk = vm.SelectedVersionSource.Contains("WINUI_SELFTEST", StringComparison.Ordinal);
-                Record("SourcePreviewAndDiagnostics", previewOk && vm.LastDetectedFileText.Contains("selftest_sol.cpp", StringComparison.Ordinal), vm.LastDetectedFileText);
+                bool previewOk = vm.SelectedVersionSource.Contains("std::cin >> a >> b", StringComparison.Ordinal);
+                Record("SourcePreviewAndDiagnostics", previewOk && vm.LastDetectedFileText.Contains("selftest_sum.cpp", StringComparison.Ordinal), vm.LastDetectedFileText);
 
                 vm.CopySelectedCodeCommand.Execute(null);
                 Record("CopyCodeCommand", vm.InfoBarSeverity == InfoBarSeverity.Success);
 
+                // Live execution in split I/O panel
+                vm.RunnerTabIndex = 1;
+                vm.StdinText = "123 456\n";
+                await vm.RunCodeCommand.ExecuteAsync(null);
+                bool runnerOk = vm.StdoutText.Trim() == "579" && vm.IoOutputText.Trim() == "579";
+                Record("LiveCodeRunnerSplitIo", runnerOk, $"stdout='{vm.StdoutText.Trim()}', status='{vm.RunnerStatusText}'");
+                await CaptureAsync("02_archive_runner.png");
+
                 var restoredPath = Path.Combine(testWorkspaceRoot, "restored_selftest.cpp");
                 bool restoreOk = await vm.RestoreSelectedVersionAsync(restoredPath)
                     && File.Exists(restoredPath)
-                    && (await File.ReadAllTextAsync(restoredPath)).Contains("WINUI_SELFTEST", StringComparison.Ordinal);
+                    && (await File.ReadAllTextAsync(restoredPath)).Contains("std::cin >> a >> b", StringComparison.Ordinal);
 
-                // Tamper archive file and verify restore refuses with InfoBar Error without crashing
+                // Tamper archive file AFTER capturing screenshots and verify integrity check blocks restore
                 var verArchivePath = vm.SelectedVersion.ArchivePath;
                 await File.WriteAllTextAsync(verArchivePath, "// CORRUPTED");
                 bool corruptBlocked = !(await vm.RestoreSelectedVersionAsync(Path.Combine(testWorkspaceRoot, "bad_restore.cpp")))
@@ -146,6 +251,7 @@ public static class UiSelfTestRunner
             {
                 Record("SourcePreviewAndDiagnostics", false, "No version archived");
                 Record("CopyCodeCommand", false, "Skipped");
+                Record("LiveCodeRunnerSplitIo", false, "Skipped");
                 Record("RestoreAndIntegrityCheck", false, "Skipped");
             }
 
@@ -159,7 +265,7 @@ public static class UiSelfTestRunner
                 Record("RemoveWatchedFolder", false);
             }
 
-            // 7. Cloud controls (Configure OAuth -> DPAPI secret -> Connect/Sync/Retry/Disconnect)
+            // 9. Cloud controls + Screenshot
             window.NavigateToTag("Cloud");
             await vm.ConnectGoogleCommand.ExecuteAsync(null);
             bool connectGuardOk = vm.InfoBarSeverity == InfoBarSeverity.Warning;
@@ -171,11 +277,19 @@ public static class UiSelfTestRunner
                 && await credStore.LoadClientSecretAsync() == "secret-never-in-config";
 
             await vm.SyncNowCommand.ExecuteAsync(null);
+            await vm.PullCloudArchiveCommand.ExecuteAsync(null);
             await vm.RetryFailedCommand.ExecuteAsync(null);
             await vm.DisconnectGoogleCommand.ExecuteAsync(null);
             Record("CloudControlsAndDpapi", connectGuardOk && dpapiSecretOk && !vm.IsDriveConnected);
+            await CaptureAsync("04_cloud.png");
 
-            // 8. System Tray hide / restore
+            // 10. Dark Theme Dashboard screenshot
+            window.NavigateToTag("Dashboard");
+            vm.SelectedThemeIndex = 1; // Dark
+            await CaptureAsync("05_dark_dashboard.png");
+            vm.SelectedThemeIndex = 0; // Restore System
+
+            // 11. System Tray hide / restore
             bool taskbarPresent = GhostCode.App.Interop.TrayIconManager.IsTaskbarPresent;
             bool iconLoaded = window.TrayManager?.HasValidIcon ?? false;
             bool trayRegOk = !taskbarPresent || (window.TrayManager?.IsIconAdded ?? false);
@@ -201,6 +315,7 @@ public static class UiSelfTestRunner
         var reportJson = JsonSerializer.Serialize(new
         {
             all_passed = allPassed,
+            screenshots = capturedScreenshots,
             checks = results
         }, new JsonSerializerOptions { WriteIndented = true });
 
