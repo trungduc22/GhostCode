@@ -181,7 +181,29 @@
                 </Border>
             </Grid>
 
-            <!-- 4. Quick Actions -->
+            <!-- 4. Backup Health & Protection Status + Quick Actions -->
+            <Border Padding="14" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Padding="10,4" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                        <TextBlock Text="{x:Bind ViewModel.BackupProtectionBadge, Mode=OneWay}" FontWeight="SemiBold" FontSize="12" />
+                    </Border>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                        <TextBlock Text="{x:Bind ViewModel.ExpStrings.BackupHealthTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
+                        <TextBlock Text="{x:Bind ViewModel.BackupHealthSummary, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <Button Content="{x:Bind ViewModel.ExpStrings.RunRecoveryCheckButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunRecoveryCheckCommand}" />
+                        <Button Content="{x:Bind ViewModel.SyncPauseButtonText, Mode=OneWay}" Command="{x:Bind ViewModel.ToggleSyncPauseCommand}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- 5. Quick Actions -->
             <StackPanel Orientation="Horizontal" Spacing="10">
                 <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />

@@ -110,6 +110,12 @@
                         FontSize="11"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </Border>
+                <Button
+                    x:Name="QuickActionsTitleBarButton"
+                    Padding="8,2"
+                    FontSize="11"
+                    Content="{x:Bind ViewModel.ExpStrings.QuickActionsButton, Mode=OneWay}"
+                    Command="{x:Bind ViewModel.ToggleQuickActionsCommand}" />
             </StackPanel>
 
             <!-- Reserved Native Caption Buttons Inset -->
@@ -159,5 +165,83 @@
 
             <Frame x:Name="ContentFrame" />
         </NavigationView>
+
+        <!-- Lightweight Global Quick Actions Overlay (Ctrl+Shift+F9 or Title Bar Trigger) -->
+        <Grid
+            x:Name="QuickActionsOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="3"
+            Visibility="{x:Bind ViewModel.QuickActionsVisibility, Mode=OneWay}"
+            Background="#88000000"
+            Padding="32">
+            <Border
+                MaxWidth="640"
+                MaxHeight="540"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Padding="20"
+                CornerRadius="12"
+                Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Text="{x:Bind ViewModel.ExpStrings.QuickActionsTitle, Mode=OneWay}" FontSize="17" FontWeight="SemiBold" />
+                            <TextBlock Text="{x:Bind ViewModel.GlobalHotkeyStatusText, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="{x:Bind ViewModel.ExpStrings.QuickActionsClose, Mode=OneWay}" Command="{x:Bind ViewModel.CloseQuickActionsCommand}" />
+                    </Grid>
+
+                    <!-- Detected Problem + Cloud Sync Summary -->
+                    <Border Padding="10" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Text="{x:Bind ViewModel.ActiveCode, Mode=OneWay}" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind ViewModel.ActiveTitle, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <Border Grid.Column="1" Padding="8,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                <TextBlock Text="{x:Bind ViewModel.TitleBarDriveBadgeText, Mode=OneWay}" FontSize="11" />
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <!-- Explicit Target Selector (never guesses silently when ambiguous) -->
+                    <StackPanel Spacing="4">
+                        <ComboBox
+                            x:Name="QuickActionsTargetCombo"
+                            HorizontalAlignment="Stretch"
+                            Header="{x:Bind ViewModel.QuickActionsAmbiguityNote, Mode=OneWay}"
+                            ItemsSource="{x:Bind ViewModel.QuickActionsCandidates}"
+                            SelectedItem="{x:Bind ViewModel.SelectedQuickActionTarget, Mode=TwoWay}"
+                            DisplayMemberPath="FileName" />
+                        <TextBox
+                            Text="{x:Bind ViewModel.QuickActionsLatestPreview, Mode=OneWay}"
+                            IsReadOnly="True"
+                            AcceptsReturn="True"
+                            FontFamily="Consolas"
+                            FontSize="12"
+                            MaxHeight="160"
+                            PlaceholderText="Select an archived file above to preview &amp; copy..." />
+                    </StackPanel>
+
+                    <!-- Quick Actions Row -->
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="{x:Bind ViewModel.ExpStrings.CopyLatestCode, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.CopyLatestProblemCodeCommand}" />
+                        <Button Content="{x:Bind ViewModel.ExpStrings.CopySampleInput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleInputCommand}" />
+                        <Button Content="{x:Bind ViewModel.ExpStrings.OpenVersionHistory, Mode=OneWay}" Click="QuickActionsOpenHistory_Click" />
+                        <Button Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenQuickActionsInIdeCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

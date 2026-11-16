@@ -1,4 +1,5 @@
 using GhostCode.App.Diagnostics;
+using GhostCode.App.Interop;
 using GhostCode.App.ViewModels;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
@@ -6,6 +7,7 @@ using GhostCode.Core.Cloud;
 using GhostCode.Core.Execution;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
+using GhostCode.Core.Notifications;
 using GhostCode.Core.Storage;
 using GhostCode.Core.Toolchains;
 using Microsoft.Extensions.DependencyInjection;
@@ -52,14 +54,24 @@ public partial class App : Application
         services.AddSingleton(sp => new LosslessArchiver(config, sp.GetRequiredService<SqliteArchiveStore>()));
         services.AddSingleton(_ => new DpapiCredentialStore(credPath));
         services.AddSingleton<HttpClient>(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
+        services.AddSingleton<INativeNotificationPresenter, WindowsAppNotificationPresenter>();
+        services.AddSingleton(sp => new NotificationCoordinator(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<INativeNotificationPresenter>()));
         services.AddSingleton(sp => new GoogleDriveService(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<DpapiCredentialStore>(),
-            sp.GetRequiredService<HttpClient>()));
+            sp.GetRequiredService<HttpClient>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton(_ => new BrowserIntegrationService());
         services.AddSingleton(_ => new AuthenticatedBrowserBridge(config));
         services.AddSingleton(_ => new ToolchainDiscoveryService());
+        services.AddSingleton(sp => new IdeLauncherService(
+            config,
+            sp.GetRequiredService<ToolchainDiscoveryService>(),
+            sp.GetRequiredService<LosslessArchiver>()));
         services.AddSingleton(sp => new CodeExecutionService(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
@@ -70,6 +82,11 @@ public partial class App : Application
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<LosslessArchiver>(),
             () => sp.GetRequiredService<AuthenticatedBrowserBridge>().GetActiveContext()));
+        services.AddSingleton(sp => new BackupHealthAndRecoveryService(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<MultiDirectoryMonitor>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton(sp => new MainViewModel(
             config,
             configPath,
@@ -81,7 +98,10 @@ public partial class App : Application
             sp.GetRequiredService<DpapiCredentialStore>(),
             sp.GetRequiredService<BrowserIntegrationService>(),
             sp.GetRequiredService<ToolchainDiscoveryService>(),
-            sp.GetRequiredService<CodeExecutionService>()));
+            sp.GetRequiredService<CodeExecutionService>(),
+            sp.GetRequiredService<BackupHealthAndRecoveryService>(),
+            sp.GetRequiredService<IdeLauncherService>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();

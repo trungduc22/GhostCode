@@ -337,6 +337,67 @@ public static class UiStrings
     public static UiTextBundle For(UiLanguage language) =>
         language == UiLanguage.Vi ? Vietnamese : English;
 
+    public static ExpansionTextBundle ExpansionFor(UiLanguage language) =>
+        language == UiLanguage.Vi ? ExpansionVietnamese : ExpansionEnglish;
+
+    public static readonly ExpansionTextBundle ExpansionVietnamese = new(
+        QuickActionsButton: "Tác vụ nhanh",
+        QuickActionsTitle: "Bảng tác vụ nhanh GhostCode",
+        QuickActionsClose: "Đóng (Esc)",
+        CopyLatestCode: "Chép code mới nhất",
+        CopySampleInput: "Chép Input mẫu",
+        CopySampleOutput: "Chép Output mẫu",
+        CopyProblemUrl: "Chép URL đề bài",
+        CopySourcePath: "Chép đường dẫn file",
+        OpenVersionHistory: "Mở lịch sử phiên bản",
+        OpenInIde: "Mở trong IDE",
+        OpenWorkingCopyInIde: "Mở bản nháp trong IDE",
+        CompareDiffButton: "So sánh / Diff",
+        DiffSideBySide: "Song song",
+        DiffUnified: "Unified Diff",
+        BackupHealthTitle: "Sức khỏe sao lưu & Khôi phục",
+        RunRecoveryCheckButton: "Kiểm tra khôi phục",
+        SyncPauseButton: "Tạm dừng đồng bộ",
+        SyncResumeButton: "Tiếp tục đồng bộ",
+        CloudProviderTitle: "Nhà cung cấp lưu trữ đám mây",
+        MigrateCloudButton: "Chuyển đổi nhà cung cấp...",
+        SamplesTabLabel: "Samples",
+        TimelineTabLabel: "Timeline",
+        RunSampleButton: "Chạy mẫu",
+        RunAllSamplesButton: "Chạy tất cả mẫu",
+        AddCustomTestButton: "Thêm test riêng",
+        SamplePassedBadge: "Sample Passed (Đạt mẫu)",
+        JudgeAcceptedBadge: "Judge Accepted (AC)");
+
+    public static readonly ExpansionTextBundle ExpansionEnglish = new(
+        QuickActionsButton: "Quick Actions",
+        QuickActionsTitle: "GhostCode Quick Actions",
+        QuickActionsClose: "Close (Esc)",
+        CopyLatestCode: "Copy Latest Code",
+        CopySampleInput: "Copy Sample Input",
+        CopySampleOutput: "Copy Sample Output",
+        CopyProblemUrl: "Copy Problem URL",
+        CopySourcePath: "Copy Original Path",
+        OpenVersionHistory: "Open Version History",
+        OpenInIde: "Open in IDE",
+        OpenWorkingCopyInIde: "Open Working Copy in IDE",
+        CompareDiffButton: "Compare / Diff",
+        DiffSideBySide: "Side-by-Side",
+        DiffUnified: "Unified Diff",
+        BackupHealthTitle: "Backup Health & Recovery",
+        RunRecoveryCheckButton: "Run Recovery Check",
+        SyncPauseButton: "Pause Sync",
+        SyncResumeButton: "Resume Sync",
+        CloudProviderTitle: "Cloud Storage Provider",
+        MigrateCloudButton: "Migrate Provider...",
+        SamplesTabLabel: "Samples",
+        TimelineTabLabel: "Timeline",
+        RunSampleButton: "Run Sample",
+        RunAllSamplesButton: "Run All Samples",
+        AddCustomTestButton: "Add Custom Test",
+        SamplePassedBadge: "Sample Passed",
+        JudgeAcceptedBadge: "Judge Accepted (AC)");
+
     public static string ForAvailability(VersionAvailability availability, UiLanguage language)
     {
         var b = For(language);
@@ -350,3 +411,32 @@ public static class UiStrings
         };
     }
 }
+
+public sealed record ExpansionTextBundle(
+    string QuickActionsButton,
+    string QuickActionsTitle,
+    string QuickActionsClose,
+    string CopyLatestCode,
+    string CopySampleInput,
+    string CopySampleOutput,
+    string CopyProblemUrl,
+    string CopySourcePath,
+    string OpenVersionHistory,
+    string OpenInIde,
+    string OpenWorkingCopyInIde,
+    string CompareDiffButton,
+    string DiffSideBySide,
+    string DiffUnified,
+    string BackupHealthTitle,
+    string RunRecoveryCheckButton,
+    string SyncPauseButton,
+    string SyncResumeButton,
+    string CloudProviderTitle,
+    string MigrateCloudButton,
+    string SamplesTabLabel,
+    string TimelineTabLabel,
+    string RunSampleButton,
+    string RunAllSamplesButton,
+    string AddCustomTestButton,
+    string SamplePassedBadge,
+    string JudgeAcceptedBadge);

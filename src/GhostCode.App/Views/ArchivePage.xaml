@@ -126,9 +126,32 @@
                             DisplayMemberPath="SelectorLabel" />
 
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Bottom">
-                            <Button
+                            <SplitButton
                                 Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.CopySelectedCodeCommand}" />
+                                Command="{x:Bind ViewModel.CopySelectedCodeCommand}">
+                                <SplitButton.Flyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyLatestCode, Mode=OneWay}" Command="{x:Bind ViewModel.CopyLatestProblemCodeCommand}" />
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySourcePath, Mode=OneWay}" Command="{x:Bind ViewModel.CopySourcePathCommand}" />
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyProblemUrl, Mode=OneWay}" Command="{x:Bind ViewModel.CopyProblemUrlCommand}" />
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleInput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleInputCommand}" />
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleOutput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleOutputCommand}" />
+                                    </MenuFlyout>
+                                </SplitButton.Flyout>
+                            </SplitButton>
+                            <SplitButton
+                                Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}"
+                                Command="{x:Bind ViewModel.OpenInIdeCommand}">
+                                <SplitButton.Flyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.OpenWorkingCopyInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenInIdeCommand}" />
+                                        <MenuFlyoutItem Text="Open Original Source File" Command="{x:Bind ViewModel.OpenOriginalInIdeCommand}" />
+                                    </MenuFlyout>
+                                </SplitButton.Flyout>
+                            </SplitButton>
+                            <Button
+                                Content="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}"
+                                Command="{x:Bind ViewModel.ToggleDiffModeCommand}" />
                             <Button
                                 Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
                                 Click="RestoreVersion_Click" />
@@ -170,6 +193,7 @@
                     <TextBox
                         x:Name="SourceCodeViewerBox"
                         Grid.Row="3"
+                        Visibility="{x:Bind ViewModel.SourceViewerVisibility, Mode=OneWay}"
                         Text="{x:Bind ViewModel.SelectedVersionSource, Mode=OneWay}"
                         PlaceholderText="{x:Bind ViewModel.Strings.NoVersionSelected, Mode=OneWay}"
                         IsReadOnly="True"
@@ -179,6 +203,82 @@
                         FontSize="13"
                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
                         ScrollViewer.VerticalScrollBarVisibility="Auto" />
+
+                    <!-- Non-Destructive Version Diff Viewer -->
+                    <Grid
+                        x:Name="VersionDiffViewer"
+                        Grid.Row="3"
+                        Visibility="{x:Bind ViewModel.DiffModeVisibility, Mode=OneWay}"
+                        RowSpacing="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox
+                                Grid.Column="0"
+                                HorizontalAlignment="Stretch"
+                                Header="Compare Baseline Version"
+                                ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
+                                SelectedItem="{x:Bind ViewModel.CompareWithVersion, Mode=TwoWay}"
+                                DisplayMemberPath="SelectorLabel" />
+                            <Button
+                                Grid.Column="1"
+                                VerticalAlignment="Bottom"
+                                Content="Side-by-Side / Unified"
+                                Command="{x:Bind ViewModel.ToggleDiffStyleCommand}" />
+                            <TextBlock
+                                Grid.Column="2"
+                                VerticalAlignment="Bottom"
+                                Margin="0,0,0,6"
+                                Text="{x:Bind ViewModel.DiffSummaryText, Mode=OneWay}"
+                                FontSize="12"
+                                FontWeight="SemiBold" />
+                        </Grid>
+
+                        <ListView
+                            Grid.Row="1"
+                            Visibility="{x:Bind ViewModel.DiffSideBySideVisibility, Mode=OneWay}"
+                            ItemsSource="{x:Bind ViewModel.DiffSideBySideLines}"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="vm:DiffLineRow">
+                                    <Grid ColumnSpacing="6" Padding="2,1">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="18" />
+                                            <ColumnDefinition Width="34" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="34" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{x:Bind KindTag}" FontFamily="Consolas" FontWeight="Bold" FontSize="12" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind LeftNumText}" FontFamily="Consolas" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="2" Text="{x:Bind LeftText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="3" Text="{x:Bind RightNumText}" FontFamily="Consolas" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="4" Text="{x:Bind RightText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+
+                        <TextBox
+                            Grid.Row="1"
+                            Visibility="{x:Bind ViewModel.DiffUnifiedVisibility, Mode=OneWay}"
+                            Text="{x:Bind ViewModel.DiffUnifiedText, Mode=OneWay}"
+                            IsReadOnly="True"
+                            AcceptsReturn="True"
+                            TextWrapping="NoWrap"
+                            FontFamily="Consolas"
+                            FontSize="12"
+                            ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                    </Grid>
                 </Grid>
             </Border>
 

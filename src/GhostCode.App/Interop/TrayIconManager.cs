@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using GhostCode.App.ViewModels;
+using GhostCode.Core.Hotkeys;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -41,11 +42,16 @@ public sealed class TrayIconManager : IDisposable
 
     private const int SW_SHOW = 5;
     private const int SW_RESTORE = 9;
+    private const int WM_HOTKEY = 0x0312;
+    private const int GLOBAL_HOTKEY_ID = 0x4743;
+    private const uint MOD_NOREPEAT = 0x4000;
+    private const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
     private static readonly nuint SubclassId = 1001;
 
     private readonly Window _window;
     private readonly MainViewModel _viewModel;
     private readonly Action _onExitRequested;
+    private readonly Action? _onHotkeyPressed;
     private readonly IntPtr _hwnd;
     private readonly AppWindow _appWindow;
     private readonly SubclassProc _subclassDelegate;
@@ -53,14 +59,16 @@ public sealed class TrayIconManager : IDisposable
 
     private IntPtr _hIcon;
     private bool _iconAdded;
+    private bool _hotkeyRegistered;
     private bool _isExiting;
     private bool _disposed;
 
-    public TrayIconManager(Window window, MainViewModel viewModel, Action onExitRequested)
+    public TrayIconManager(Window window, MainViewModel viewModel, Action onExitRequested, Action? onHotkeyPressed = null)
     {
         _window = window;
         _viewModel = viewModel;
         _onExitRequested = onExitRequested;
+        _onHotkeyPressed = onHotkeyPressed;
         _hwnd = WindowNative.GetWindowHandle(window);
 
         var windowId = Win32Interop.GetWindowIdFromWindow(_hwnd);
@@ -79,12 +87,53 @@ public sealed class TrayIconManager : IDisposable
 
         _appWindow.Closing += OnAppWindowClosing;
         AddOrUpdateTrayIcon();
+        ConfigureGlobalHotkey(_viewModel.Config.GlobalHotkeyEnabled, _viewModel.Config.GlobalHotkeyGesture);
     }
 
     public AppWindow AppWindow => _appWindow;
     public bool IsIconAdded => _iconAdded;
     public bool HasValidIcon => _hIcon != IntPtr.Zero;
+    public bool IsGlobalHotkeyRegistered => _hotkeyRegistered;
+    public string GlobalHotkeyStatusText { get; private set; } = "Disabled";
     public static bool IsTaskbarPresent => FindWindowW("Shell_TrayWnd", null) != IntPtr.Zero;
+
+    public (bool Success, string Detail) ConfigureGlobalHotkey(bool enabled, string gesture)
+    {
+        if (_hotkeyRegistered)
+        {
+            UnregisterHotKey(_hwnd, GLOBAL_HOTKEY_ID);
+            _hotkeyRegistered = false;
+        }
+
+        if (!enabled || string.IsNullOrWhiteSpace(gesture))
+        {
+            GlobalHotkeyStatusText = "Disabled";
+            return (true, GlobalHotkeyStatusText);
+        }
+
+        if (!TryParseHotkeyGesture(gesture, out uint mods, out uint vk))
+        {
+            GlobalHotkeyStatusText = $"Invalid hotkey syntax: {gesture}";
+            return (false, GlobalHotkeyStatusText);
+        }
+
+        bool ok = RegisterHotKey(_hwnd, GLOBAL_HOTKEY_ID, mods | MOD_NOREPEAT, vk);
+        if (ok)
+        {
+            _hotkeyRegistered = true;
+            GlobalHotkeyStatusText = $"Active ({gesture})";
+            return (true, GlobalHotkeyStatusText);
+        }
+
+        int err = Marshal.GetLastWin32Error();
+        GlobalHotkeyStatusText = err == ERROR_HOTKEY_ALREADY_REGISTERED
+            ? $"Hotkey conflict ({gesture} is already claimed by another application)"
+            : $"Hotkey registration failed (Win32 {err})";
+        return (false, GlobalHotkeyStatusText);
+    }
+
+    public static bool TryParseHotkeyGesture(string gesture, out uint modifiers, out uint virtualKey) =>
+        GlobalHotkeyParser.TryParse(gesture, out modifiers, out virtualKey);
 
     public void HideToTray()
     {
@@ -167,6 +216,16 @@ public sealed class TrayIconManager : IDisposable
 
     private IntPtr WindowSubclassCallback(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, nuint uIdSubclass, IntPtr dwRefData)
     {
+        if (msg == WM_HOTKEY && wParam.ToInt32() == GLOBAL_HOTKEY_ID)
+        {
+            _window.DispatcherQueue.TryEnqueue(() =>
+            {
+                ShowAndActivateWindow();
+                _onHotkeyPressed?.Invoke();
+            });
+            return IntPtr.Zero;
+        }
+
         if (_taskbarCreatedMsg != 0 && msg == _taskbarCreatedMsg)
         {
             _iconAdded = false;
@@ -229,6 +288,11 @@ public sealed class TrayIconManager : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        if (_hotkeyRegistered)
+        {
+            UnregisterHotKey(_hwnd, GLOBAL_HOTKEY_ID);
+            _hotkeyRegistered = false;
+        }
         _appWindow.Closing -= OnAppWindowClosing;
         RemoveTrayIcon();
         RemoveWindowSubclass(_hwnd, _subclassDelegate, SubclassId);
@@ -328,4 +392,12 @@ public sealed class TrayIconManager : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessageW(string lpString);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 }

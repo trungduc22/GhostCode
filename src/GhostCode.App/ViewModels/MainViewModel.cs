@@ -10,6 +10,7 @@ using GhostCode.Core.Cloud;
 using GhostCode.Core.Execution;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
+using GhostCode.Core.Notifications;
 using GhostCode.Core.Storage;
 using GhostCode.Core.Toolchains;
 using Microsoft.UI.Xaml;
@@ -145,6 +146,21 @@ public sealed record GlobalSearchSuggestion(ArchiveVersionRecord Record, string 
     public string Subtitle => $"{Record.Platform} • {MatchKind} • {UiStrings.ForAvailability(Record.Availability, Language)}";
 }
 
+public sealed record DiffLineRow(DiffLinePair Pair)
+{
+    public string LeftNumText => Pair.LeftLineNumber?.ToString() ?? string.Empty;
+    public string LeftText => Pair.LeftText;
+    public string RightNumText => Pair.RightLineNumber?.ToString() ?? string.Empty;
+    public string RightText => Pair.RightText;
+    public string KindTag => Pair.Kind switch
+    {
+        DiffLineKind.Added => "+",
+        DiffLineKind.Removed => "-",
+        DiffLineKind.Modified => "~",
+        _ => " "
+    };
+}
+
 public sealed class WatchedFolderItem : ObservableObject
 {
     private readonly Action _onChanged;
@@ -202,14 +218,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly BrowserIntegrationService _browserIntegration;
     private readonly ToolchainDiscoveryService _toolchains;
     private readonly CodeExecutionService _runner;
+    private readonly BackupHealthAndRecoveryService _healthService;
+    private readonly IdeLauncherService _ideLauncher;
+    private readonly NotificationCoordinator _notifications;
 
     private Func<Action, bool> _dispatch = action => { action(); return true; };
     private Action<ElementTheme>? _applyThemeCallback;
-    private Action<string>? _clipboardCopyCallback;
+    private Func<string, bool>? _clipboardCopyWithRetry;
     private CancellationTokenSource? _execCts;
     private Timer? _discoveryRefreshTimer;
 
     private UiTextBundle _strings;
+    private ExpansionTextBundle _expStrings;
+    private ArchiveVersionRow? _compareWithVersion;
+    private bool _isDiffModeActive;
+    private bool _diffUseUnifiedMode;
+    private string _diffSummaryText = string.Empty;
+    private string _diffUnifiedText = string.Empty;
+
+    private bool _isQuickActionsOpen;
+    private ArchiveFileGroupRow? _selectedQuickActionTarget;
+    private string _quickActionsLatestPreview = string.Empty;
+    private string _quickActionsAmbiguityNote = string.Empty;
+    private string _activeSampleInputText = string.Empty;
+    private string _activeSampleOutputText = string.Empty;
+
+    private string _backupHealthSummary = "Checking...";
+    private string _backupProtectionBadge = "Checking";
+    private string _recoverySummaryText = "Not run yet";
+    private string _globalHotkeyStatusText = "Ctrl+Shift+F9";
+    private bool _syncPausedManually;
     private string _activeCode = "-";
     private string _activeTitle = string.Empty;
     private string _activePlatform = "Offline";
@@ -291,7 +329,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         DpapiCredentialStore credentialStore,
         BrowserIntegrationService? browserIntegration = null,
         ToolchainDiscoveryService? toolchains = null,
-        CodeExecutionService? runner = null)
+        CodeExecutionService? runner = null,
+        BackupHealthAndRecoveryService? healthService = null,
+        IdeLauncherService? ideLauncher = null,
+        NotificationCoordinator? notifications = null)
     {
         _config = config;
         _configPath = configPath;
@@ -304,7 +345,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _browserIntegration = browserIntegration ?? new BrowserIntegrationService();
         _toolchains = toolchains ?? new ToolchainDiscoveryService();
         _runner = runner ?? new CodeExecutionService(_config, _store, _archiver, _toolchains);
+        _notifications = notifications ?? new NotificationCoordinator(_config, _store);
+        _healthService = healthService ?? new BackupHealthAndRecoveryService(_config, _store, _monitor, _notifications);
+        _ideLauncher = ideLauncher ?? new IdeLauncherService(_config, _toolchains, _archiver);
         _strings = UiStrings.For(config.Language);
+        _expStrings = UiStrings.ExpansionFor(config.Language);
         _runnerStatusText = _strings.StatusReady;
         _consoleLogText = _strings.ConsoleOutputEmpty;
 
@@ -313,6 +358,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshAllCommand = new AsyncRelayCommand(RefreshAllAsync);
         RefreshDiscoveryCommand = new RelayCommand(RefreshProcessesAndWatches);
         RunDiagnosticCommand = new AsyncRelayCommand(RunDiagnosticTestAsync);
+        RunRecoveryCheckCommand = new AsyncRelayCommand(RunRecoveryCheckAsync);
+        ToggleSyncPauseCommand = new RelayCommand(ToggleSyncPause);
         SyncNowCommand = new AsyncRelayCommand(SyncNowAsync);
         PullCloudArchiveCommand = new AsyncRelayCommand(PullCloudArchiveAsync);
         DownloadAllCloudCommand = new AsyncRelayCommand(DownloadAllCloudAsync);
@@ -327,7 +374,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         PrepareBrowserIntegrationCommand = new AsyncRelayCommand<string?>(PrepareBrowserIntegrationAsync);
         OpenArchiveFolderCommand = new RelayCommand(() => OpenFolder(_config.ArchiveDir));
         OpenReadyFolderCommand = new RelayCommand(() => OpenFolder(_config.ReadyDir));
-        CopySelectedCodeCommand = new RelayCommand(CopySelectedCode);
+        CopySelectedCodeCommand = new AsyncRelayCommand(CopySelectedCodeAsync);
+        CopyLatestProblemCodeCommand = new AsyncRelayCommand(CopyLatestProblemCodeAsync);
+        CopySampleInputCommand = new RelayCommand(CopyActiveSampleInput);
+        CopySampleOutputCommand = new RelayCommand(CopyActiveSampleOutput);
+        CopyProblemUrlCommand = new RelayCommand(CopyActiveProblemUrl);
+        CopySourcePathCommand = new RelayCommand(CopySelectedSourcePath);
+        OpenInIdeCommand = new AsyncRelayCommand(OpenSelectedVersionInIdeAsync);
+        OpenOriginalInIdeCommand = new AsyncRelayCommand(OpenOriginalSourceInIdeAsync);
+        ToggleDiffModeCommand = new RelayCommand(ToggleDiffMode);
+        ToggleDiffStyleCommand = new RelayCommand(() => DiffUseUnifiedMode = !DiffUseUnifiedMode);
+        ToggleQuickActionsCommand = new RelayCommand(ToggleQuickActionsPanel);
+        CloseQuickActionsCommand = new RelayCommand(() => IsQuickActionsOpen = false);
+        OpenQuickActionsInIdeCommand = new AsyncRelayCommand(OpenQuickActionsTargetInIdeAsync);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -352,6 +411,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<IdeStatusRow> IdeStatuses { get; } = new();
     public ObservableCollection<ToolchainRow> Toolchains { get; } = new();
     public ObservableCollection<GlobalSearchSuggestion> GlobalSearchSuggestions { get; } = new();
+    public ObservableCollection<DiffLineRow> DiffSideBySideLines { get; } = new();
+    public ObservableCollection<ArchiveFileGroupRow> QuickActionsCandidates { get; } = new();
 
     public IReadOnlyList<string> PlatformFilters { get; } =
         new[] { "All", "Ptit", "Codeforces", "Vnoj", "LeetCode", "HackerRank", "Offline", "Other" };
@@ -402,7 +463,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand<string?> PrepareBrowserIntegrationCommand { get; }
     public IRelayCommand OpenArchiveFolderCommand { get; }
     public IRelayCommand OpenReadyFolderCommand { get; }
-    public IRelayCommand CopySelectedCodeCommand { get; }
+    public IAsyncRelayCommand CopySelectedCodeCommand { get; }
+    public IAsyncRelayCommand CopyLatestProblemCodeCommand { get; }
+    public IRelayCommand CopySampleInputCommand { get; }
+    public IRelayCommand CopySampleOutputCommand { get; }
+    public IRelayCommand CopyProblemUrlCommand { get; }
+    public IRelayCommand CopySourcePathCommand { get; }
+    public IAsyncRelayCommand OpenInIdeCommand { get; }
+    public IAsyncRelayCommand OpenOriginalInIdeCommand { get; }
+    public IRelayCommand ToggleDiffModeCommand { get; }
+    public IRelayCommand ToggleDiffStyleCommand { get; }
+    public IRelayCommand ToggleQuickActionsCommand { get; }
+    public IRelayCommand CloseQuickActionsCommand { get; }
+    public IAsyncRelayCommand OpenQuickActionsInIdeCommand { get; }
+    public IAsyncRelayCommand RunRecoveryCheckCommand { get; }
+    public IRelayCommand ToggleSyncPauseCommand { get; }
+
+    public ExpansionTextBundle ExpStrings
+    {
+        get => _expStrings;
+        private set
+        {
+            if (SetProperty(ref _expStrings, value))
+                OnPropertyChanged(nameof(SyncPauseButtonText));
+        }
+    }
 
     public UiTextBundle Strings
     {
@@ -661,6 +746,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 _config.Language = lang;
                 Strings = UiStrings.For(lang);
+                ExpStrings = UiStrings.ExpansionFor(lang);
                 RunnerStatusText = Strings.StatusReady;
                 SaveConfigSafe();
                 UpdateContext(_bridge.GetActiveContext());
@@ -835,6 +921,101 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public ArchiveVersionRow? CompareWithVersion
+    {
+        get => _compareWithVersion;
+        set
+        {
+            if (SetProperty(ref _compareWithVersion, value) && IsDiffModeActive)
+                _ = RecomputeDiffAsync();
+        }
+    }
+
+    public bool IsDiffModeActive
+    {
+        get => _isDiffModeActive;
+        set
+        {
+            if (SetProperty(ref _isDiffModeActive, value))
+            {
+                OnPropertyChanged(nameof(DiffModeVisibility));
+                OnPropertyChanged(nameof(SourceViewerVisibility));
+                if (value) _ = RecomputeDiffAsync();
+            }
+        }
+    }
+
+    public Visibility DiffModeVisibility => IsDiffModeActive ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility SourceViewerVisibility => IsDiffModeActive ? Visibility.Collapsed : Visibility.Visible;
+
+    public bool DiffUseUnifiedMode
+    {
+        get => _diffUseUnifiedMode;
+        set
+        {
+            if (SetProperty(ref _diffUseUnifiedMode, value))
+            {
+                OnPropertyChanged(nameof(DiffSideBySideVisibility));
+                OnPropertyChanged(nameof(DiffUnifiedVisibility));
+            }
+        }
+    }
+
+    public Visibility DiffSideBySideVisibility => !DiffUseUnifiedMode ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility DiffUnifiedVisibility => DiffUseUnifiedMode ? Visibility.Visible : Visibility.Collapsed;
+    public string DiffSummaryText { get => _diffSummaryText; private set => SetProperty(ref _diffSummaryText, value); }
+    public string DiffUnifiedText { get => _diffUnifiedText; private set => SetProperty(ref _diffUnifiedText, value); }
+
+    public bool IsQuickActionsOpen
+    {
+        get => _isQuickActionsOpen;
+        set
+        {
+            if (SetProperty(ref _isQuickActionsOpen, value))
+            {
+                OnPropertyChanged(nameof(QuickActionsVisibility));
+                if (value) _ = RefreshQuickActionsDataAsync();
+            }
+        }
+    }
+
+    public Visibility QuickActionsVisibility => IsQuickActionsOpen ? Visibility.Visible : Visibility.Collapsed;
+
+    public ArchiveFileGroupRow? SelectedQuickActionTarget
+    {
+        get => _selectedQuickActionTarget;
+        set
+        {
+            if (SetProperty(ref _selectedQuickActionTarget, value))
+                _ = RefreshQuickActionsPreviewAsync();
+        }
+    }
+
+    public string QuickActionsLatestPreview { get => _quickActionsLatestPreview; private set => SetProperty(ref _quickActionsLatestPreview, value); }
+    public string QuickActionsAmbiguityNote { get => _quickActionsAmbiguityNote; private set => SetProperty(ref _quickActionsAmbiguityNote, value); }
+
+    public string BackupHealthSummary { get => _backupHealthSummary; private set => SetProperty(ref _backupHealthSummary, value); }
+    public string BackupProtectionBadge { get => _backupProtectionBadge; private set => SetProperty(ref _backupProtectionBadge, value); }
+    public string RecoverySummaryText { get => _recoverySummaryText; private set => SetProperty(ref _recoverySummaryText, value); }
+    public string GlobalHotkeyStatusText { get => _globalHotkeyStatusText; set => SetProperty(ref _globalHotkeyStatusText, value); }
+
+    public bool SyncPausedManually
+    {
+        get => _syncPausedManually;
+        set
+        {
+            if (SetProperty(ref _syncPausedManually, value))
+            {
+                _config.SyncPausedManually = value;
+                SaveConfigSafe();
+                OnPropertyChanged(nameof(SyncPauseButtonText));
+                _ = RefreshHealthAsync();
+            }
+        }
+    }
+
+    public string SyncPauseButtonText => SyncPausedManually ? ExpStrings.SyncResumeButton : ExpStrings.SyncPauseButton;
+
     public bool InfoBarOpen { get => _infoBarOpen; set => SetProperty(ref _infoBarOpen, value); }
     public string InfoBarTitle { get => _infoBarTitle; private set => SetProperty(ref _infoBarTitle, value); }
     public string InfoBarMessage { get => _infoBarMessage; private set => SetProperty(ref _infoBarMessage, value); }
@@ -846,11 +1027,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void AttachUiHooks(
         Func<Action, bool> dispatcher,
         Action<ElementTheme> applyTheme,
-        Action<string> clipboardCopy)
+        Action<string> clipboardCopy) =>
+        AttachUiHooks(dispatcher, applyTheme, text => { clipboardCopy(text); return true; });
+
+    public void AttachUiHooks(
+        Func<Action, bool> dispatcher,
+        Action<ElementTheme> applyTheme,
+        Func<string, bool> clipboardCopyWithRetry)
     {
         _dispatch = dispatcher;
         _applyThemeCallback = applyTheme;
-        _clipboardCopyCallback = clipboardCopy;
+        _clipboardCopyWithRetry = clipboardCopyWithRetry;
         _applyThemeCallback(ToElementTheme(_config.Theme));
     }
 
@@ -874,6 +1061,41 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await RefreshStatsAndEventsAsync();
         await RefreshArchiveAsync();
         await RefreshCloudStateAsync();
+        await RefreshHealthAsync();
+    }
+
+    public async Task RefreshHealthAsync()
+    {
+        var snap = await _healthService.EvaluateHealthAsync(attemptWatchRecovery: false);
+        BackupProtectionBadge = snap.ProtectionState.ToString();
+        BackupHealthSummary = snap.StatusSummary;
+    }
+
+    public async Task RunRecoveryCheckAsync()
+    {
+        IsBusy = true;
+        try
+        {
+            var rep = await _healthService.RunRecoveryCheckAsync(_drive);
+            RecoverySummaryText = rep.Summary;
+            await RefreshHealthAsync();
+            await RefreshStatsAndEventsAsync();
+            ShowInfoBar("Recovery Check Complete", rep.Summary,
+                (rep.LocalCorruptedCount > 0 || rep.LocalMissingCount > 0) ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private void ToggleSyncPause()
+    {
+        SyncPausedManually = !SyncPausedManually;
+        ShowInfoBar(
+            SyncPausedManually ? "Sync Paused" : "Sync Resumed",
+            SyncPausedManually ? "Local archival remains active; cloud uploads are paused." : "Background cloud synchronization resumed.",
+            InfoBarSeverity.Informational);
     }
 
     public void RefreshBrowserAndIdeDiscovery()
@@ -1474,6 +1696,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _executionTimeoutMs = _config.ExecutionTimeoutMs;
         _executionMemoryLimitMb = _config.ExecutionMemoryLimitMb;
         _selectedConflictPolicyIndex = (int)_config.ConflictPolicy;
+        _syncPausedManually = _config.SyncPausedManually;
 
         _suppressFolderSync = true;
         WatchedFolders.Clear();
@@ -1501,12 +1724,237 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void CopySelectedCode()
+    private bool TryCopyRawTextToClipboard(string text, string successLabel)
     {
-        if (!string.IsNullOrEmpty(SelectedVersionSource))
+        if (_clipboardCopyWithRetry is null)
+            return false;
+
+        bool ok = _clipboardCopyWithRetry(text);
+        if (ok)
+            ShowInfoBar("Copied", successLabel, InfoBarSeverity.Success);
+        else
+            ShowInfoBar("Clipboard Busy", "Windows clipboard is temporarily locked by another application.", InfoBarSeverity.Warning);
+        return ok;
+    }
+
+    private async Task CopySelectedCodeAsync()
+    {
+        if (SelectedVersion is null || !SelectedVersion.IsLocalAvailable)
         {
-            _clipboardCopyCallback?.Invoke(SelectedVersionSource);
-            ShowInfoBar("Copied", "Source code copied to clipboard.", InfoBarSeverity.Success);
+            ShowInfoBar("Cannot Copy", Strings.NoVersionSelected, InfoBarSeverity.Warning);
+            return;
+        }
+
+        // Preserve exact verified historical text cleanly (no Markdown fences, no version change)
+        var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(SelectedVersion.Id);
+        var (exactText, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+        TryCopyRawTextToClipboard(exactText, $"Copied {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) exact source.");
+    }
+
+    private async Task CopyLatestProblemCodeAsync()
+    {
+        var target = await ResolveTargetVersionForQuickCopyAsync();
+        if (target is null)
+        {
+            ShowInfoBar("No Target File", "Select a problem file explicitly before copying.", InfoBarSeverity.Warning);
+            return;
+        }
+
+        var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(target.Id);
+        var (exactText, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+        TryCopyRawTextToClipboard(exactText, $"Copied latest {target.FileName} (v{target.VersionNum}).");
+    }
+
+    private void CopyActiveSampleInput()
+    {
+        if (string.IsNullOrEmpty(_activeSampleInputText))
+        {
+            ShowInfoBar("No Sample Input", "No sample input detected or selected yet.", InfoBarSeverity.Informational);
+            return;
+        }
+        TryCopyRawTextToClipboard(_activeSampleInputText, "Copied sample input.");
+    }
+
+    private void CopyActiveSampleOutput()
+    {
+        if (string.IsNullOrEmpty(_activeSampleOutputText))
+        {
+            ShowInfoBar("No Sample Output", "No expected sample output available yet.", InfoBarSeverity.Informational);
+            return;
+        }
+        TryCopyRawTextToClipboard(_activeSampleOutputText, "Copied sample output.");
+    }
+
+    private void CopyActiveProblemUrl()
+    {
+        var url = !string.IsNullOrWhiteSpace(ActiveUrl) ? ActiveUrl : SelectedVersion?.Record.ProblemCode ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            ShowInfoBar("No Problem URL", "No active problem URL available.", InfoBarSeverity.Informational);
+            return;
+        }
+        TryCopyRawTextToClipboard(url, $"Copied URL: {url}");
+    }
+
+    private void CopySelectedSourcePath()
+    {
+        var path = SelectedVersion?.SourcePath ?? SelectedQuickActionTarget?.SourcePath ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        TryCopyRawTextToClipboard(path, $"Copied source path: {path}");
+    }
+
+    private async Task<ArchiveVersionRecord?> ResolveTargetVersionForQuickCopyAsync()
+    {
+        if (SelectedQuickActionTarget is not null && SelectedQuickActionTarget.Latest.IsLocalAvailable)
+            return SelectedQuickActionTarget.Latest;
+
+        if (SelectedFileVersions.Count > 0 && SelectedFileVersions[0].IsLocalAvailable)
+            return SelectedFileVersions[0].Record;
+
+        if (HasActiveContext)
+        {
+            var all = await _store.QueryVersionsAsync(ActiveCode, limit: 50);
+            var matched = all.Where(v => v.IsLocalAvailable && string.Equals(v.ProblemCode, ActiveCode, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(v => v.CreatedAtUnixMs)
+                .FirstOrDefault();
+            if (matched is not null)
+                return matched;
+        }
+
+        return null;
+    }
+
+    private async Task OpenSelectedVersionInIdeAsync()
+    {
+        if (SelectedVersion is null)
+            return;
+        var res = await _ideLauncher.OpenVersionInIdeAsync(SelectedVersion.Record, preferOriginalSource: false);
+        ShowInfoBar(res.Success ? $"Opened in {res.IdeName}" : "IDE Launch Failed", res.Message,
+            res.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+    }
+
+    private async Task OpenOriginalSourceInIdeAsync()
+    {
+        if (SelectedVersion is null)
+            return;
+        var res = await _ideLauncher.OpenVersionInIdeAsync(SelectedVersion.Record, preferOriginalSource: true);
+        ShowInfoBar(res.Success ? $"Opened Original in {res.IdeName}" : "IDE Launch Failed", res.Message,
+            res.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+    }
+
+    private async Task OpenQuickActionsTargetInIdeAsync()
+    {
+        var target = await ResolveTargetVersionForQuickCopyAsync();
+        if (target is null)
+        {
+            ShowInfoBar("Select File", "Please choose a target file in the Quick Actions selector first.", InfoBarSeverity.Warning);
+            return;
+        }
+        var res = await _ideLauncher.OpenVersionInIdeAsync(target, preferOriginalSource: File.Exists(target.SourcePath));
+        ShowInfoBar(res.Success ? $"Opened in {res.IdeName}" : "IDE Launch Failed", res.Message,
+            res.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+    }
+
+    private void ToggleDiffMode()
+    {
+        if (!IsDiffModeActive && SelectedFileVersions.Count >= 2 && CompareWithVersion is null)
+            CompareWithVersion = SelectedFileVersions.FirstOrDefault(v => v.Id != SelectedVersion?.Id);
+        IsDiffModeActive = !IsDiffModeActive;
+    }
+
+    private async Task RecomputeDiffAsync()
+    {
+        DiffSideBySideLines.Clear();
+        if (SelectedVersion is null || CompareWithVersion is null)
+        {
+            DiffSummaryText = "Select two versions to compare.";
+            DiffUnifiedText = string.Empty;
+            return;
+        }
+
+        if (!SelectedVersion.IsLocalAvailable || !CompareWithVersion.IsLocalAvailable)
+        {
+            DiffSummaryText = "Download both Cloud-Only versions before comparing.";
+            DiffUnifiedText = string.Empty;
+            return;
+        }
+
+        var leftBytes = await _archiver.ReadAndVerifyVersionBytesAsync(CompareWithVersion.Id);
+        var rightBytes = await _archiver.ReadAndVerifyVersionBytesAsync(SelectedVersion.Id);
+        var (leftText, _) = SourceAnalyzer.DecodePreservingInfo(leftBytes);
+        var (rightText, _) = SourceAnalyzer.DecodePreservingInfo(rightBytes);
+
+        var diff = SourceDiffEngine.ComputeDiff(
+            leftText,
+            rightText,
+            $"{CompareWithVersion.FileName} ({CompareWithVersion.VersionBadge})",
+            $"{SelectedVersion.FileName} ({SelectedVersion.VersionBadge})");
+
+        foreach (var line in diff.SideBySideLines)
+            DiffSideBySideLines.Add(new DiffLineRow(line));
+
+        DiffSummaryText = $"+{diff.AddedLines} added • -{diff.RemovedLines} removed • ~{diff.ModifiedLines} modified ({CompareWithVersion.VersionBadge} -> {SelectedVersion.VersionBadge})";
+        DiffUnifiedText = diff.UnifiedDiffText;
+    }
+
+    public void OpenQuickActionsPanel() => IsQuickActionsOpen = true;
+    private void ToggleQuickActionsPanel() => IsQuickActionsOpen = !IsQuickActionsOpen;
+
+    private async Task RefreshQuickActionsDataAsync()
+    {
+        var list = await _store.QueryVersionsAsync(null, "All", 250);
+        QuickActionsCandidates.Clear();
+        var grouped = list.GroupBy(v => v.SourcePath, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new ArchiveFileGroupRow(g.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First(), g.Count(), _config.Language))
+            .ToList();
+        foreach (var g in grouped)
+            QuickActionsCandidates.Add(g);
+
+        ArchiveFileGroupRow? exactMatch = null;
+        if (HasActiveContext)
+        {
+            exactMatch = grouped.FirstOrDefault(g => string.Equals(g.Latest.ProblemCode, ActiveCode, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Never silently pick an unrelated file when active problem cannot be matched
+        if (exactMatch is not null)
+        {
+            SelectedQuickActionTarget = exactMatch;
+            QuickActionsAmbiguityNote = $"Matched active problem {ActiveCode}";
+        }
+        else if (SelectedFileGroup is not null)
+        {
+            SelectedQuickActionTarget = grouped.FirstOrDefault(g => string.Equals(g.SourcePath, SelectedFileGroup.SourcePath, StringComparison.OrdinalIgnoreCase));
+            QuickActionsAmbiguityNote = string.Empty;
+        }
+        else
+        {
+            SelectedQuickActionTarget = null;
+            QuickActionsAmbiguityNote = grouped.Count == 0
+                ? "No archived files yet."
+                : "No exact active-problem match. Please choose a file below explicitly.";
+            QuickActionsLatestPreview = string.Empty;
+        }
+    }
+
+    private async Task RefreshQuickActionsPreviewAsync()
+    {
+        if (SelectedQuickActionTarget is null || !SelectedQuickActionTarget.Latest.IsLocalAvailable)
+        {
+            QuickActionsLatestPreview = string.Empty;
+            return;
+        }
+        try
+        {
+            var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(SelectedQuickActionTarget.Latest.Id);
+            var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+            var lines = text.Replace("\r\n", "\n").Split('\n');
+            QuickActionsLatestPreview = lines.Length > 10 ? string.Join('\n', lines.Take(10)) + "\n..." : text;
+        }
+        catch (Exception ex)
+        {
+            QuickActionsLatestPreview = $"// {ex.Message}";
         }
     }
 
@@ -1529,6 +1977,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Id);
             var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
             SelectedVersionSource = text;
+            if (IsDiffModeActive)
+                await RecomputeDiffAsync();
         }
         catch (Exception ex)
         {
@@ -1573,7 +2023,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatch(() =>
         {
             if (_config.AutoCopyReadyPath && !string.IsNullOrWhiteSpace(version.ReadyPath))
-                _clipboardCopyCallback?.Invoke(version.ReadyPath);
+                _clipboardCopyWithRetry?.Invoke(version.ReadyPath);
             _ = RefreshAllAsync();
         });
     }

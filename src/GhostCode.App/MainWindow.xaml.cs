@@ -64,7 +64,9 @@ public sealed partial class MainWindow : Window
         CustomTitleBarGrid.Loaded += (_, _) => UpdateTitleBarRegions();
         CustomTitleBarGrid.SizeChanged += (_, _) => UpdateTitleBarRegions();
         GlobalSearchBox.SizeChanged += (_, _) => UpdateTitleBarRegions();
+        QuickActionsTitleBarButton.SizeChanged += (_, _) => UpdateTitleBarRegions();
         RootGrid.ActualThemeChanged += (_, _) => ApplyTitleBarThemeColors();
+        RootGrid.PreviewKeyDown += RootGrid_PreviewKeyDown;
 
         ViewModel.AttachUiHooks(
             action =>
@@ -81,7 +83,7 @@ public sealed partial class MainWindow : Window
                 RootGrid.RequestedTheme = theme;
                 ApplyTitleBarThemeColors();
             },
-            CopyTextToClipboard);
+            TryCopyTextToClipboard);
         ViewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(MainViewModel.Strings))
@@ -167,6 +169,10 @@ public sealed partial class MainWindow : Window
             var searchRect = ToPhysicalRect(GlobalSearchBox, scale);
             if (searchRect.Width > 0 && searchRect.Height > 0)
                 passthrough.Add(searchRect);
+
+            var quickActionsBtnRect = ToPhysicalRect(QuickActionsTitleBarButton, scale);
+            if (quickActionsBtnRect.Width > 0 && quickActionsBtnRect.Height > 0)
+                passthrough.Add(quickActionsBtnRect);
 
             nonClient.SetRegionRects(NonClientRegionKind.Passthrough, passthrough.ToArray());
         }
@@ -285,7 +291,8 @@ public sealed partial class MainWindow : Window
     public void AttachTray(Action onExitRequested)
     {
         _tray?.Dispose();
-        _tray = new TrayIconManager(this, ViewModel, onExitRequested);
+        _tray = new TrayIconManager(this, ViewModel, onExitRequested, () => ViewModel.OpenQuickActionsPanel());
+        ViewModel.GlobalHotkeyStatusText = _tray.GlobalHotkeyStatusText;
         _tray.AppWindow.Resize(new SizeInt32(1280, 820));
         UpdateTitleBarRegions();
         ApplyTitleBarThemeColors();
@@ -314,14 +321,46 @@ public sealed partial class MainWindow : Window
             ContentFrame.Navigate(targetType);
     }
 
-    private static void CopyTextToClipboard(string text)
+    private void RootGrid_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        try
+        if (e.Key == VirtualKey.Escape && ViewModel.IsQuickActionsOpen)
         {
-            var pkg = new DataPackage();
-            pkg.SetText(text);
-            Clipboard.SetContent(pkg);
+            ViewModel.IsQuickActionsOpen = false;
+            e.Handled = true;
         }
-        catch { }
+    }
+
+    private void QuickActionsOpenHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var target = ViewModel.SelectedQuickActionTarget;
+        ViewModel.IsQuickActionsOpen = false;
+        if (target is not null)
+        {
+            var matching = ViewModel.ArchiveFileGroups.FirstOrDefault(g =>
+                string.Equals(g.SourcePath, target.SourcePath, StringComparison.OrdinalIgnoreCase));
+            if (matching is not null)
+                ViewModel.SelectedFileGroup = matching;
+        }
+        NavigateToTag("archive");
+    }
+
+    private static bool TryCopyTextToClipboard(string text)
+    {
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                var pkg = new DataPackage();
+                pkg.SetText(text);
+                Clipboard.SetContent(pkg);
+                return true;
+            }
+            catch
+            {
+                if (attempt < 3)
+                    Thread.Sleep(25);
+            }
+        }
+        return false;
     }
 }
