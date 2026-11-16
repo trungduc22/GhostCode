@@ -967,6 +967,25 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         }
     }
 
+    public async Task SetVersionRemoteFileIdAsync(string versionId, string remoteFileId, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE archive_versions SET drive_file_id = $did WHERE id = $vid;";
+            cmd.Parameters.AddWithValue("$did", remoteFileId);
+            cmd.Parameters.AddWithValue("$vid", versionId);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     public async Task<List<ArchiveSearchResult>> SearchArchiveAsync(string query, int limit = 60, CancellationToken ct = default)
     {
         var all = await QueryVersionsAsync(limit: 2000, ct: ct);

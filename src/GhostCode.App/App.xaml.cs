@@ -46,7 +46,8 @@ public partial class App : Application
         }
         config.Save(configPath);
 
-        var credPath = Path.Combine(Path.GetDirectoryName(configPath)!, "credentials.dpapi");
+        var appDataDir = Path.GetDirectoryName(configPath)!;
+        var credPath = Path.Combine(appDataDir, "credentials.dpapi");
 
         var services = new ServiceCollection();
         services.AddSingleton(config);
@@ -64,6 +65,17 @@ public partial class App : Application
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<DpapiCredentialStore>(),
             sp.GetRequiredService<HttpClient>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
+        services.AddSingleton(sp => new OneDriveService(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            new DpapiCredentialStore(appDataDir, "onedrive_oauth_tokens.dpapi"),
+            sp.GetRequiredService<HttpClient>(),
+            sp.GetRequiredService<NotificationCoordinator>()));
+        services.AddSingleton(sp => new CloudMigrationService(
+            config,
+            sp.GetRequiredService<SqliteArchiveStore>(),
+            sp.GetRequiredService<LosslessArchiver>(),
             sp.GetRequiredService<NotificationCoordinator>()));
         services.AddSingleton(_ => new BrowserIntegrationService());
         services.AddSingleton(_ => new AuthenticatedBrowserBridge(config));
@@ -101,7 +113,9 @@ public partial class App : Application
             sp.GetRequiredService<CodeExecutionService>(),
             sp.GetRequiredService<BackupHealthAndRecoveryService>(),
             sp.GetRequiredService<IdeLauncherService>(),
-            sp.GetRequiredService<NotificationCoordinator>()));
+            sp.GetRequiredService<NotificationCoordinator>(),
+            sp.GetRequiredService<OneDriveService>(),
+            sp.GetRequiredService<CloudMigrationService>()));
         services.AddSingleton<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();
@@ -131,6 +145,9 @@ public partial class App : Application
 
             var drive = _serviceProvider.GetRequiredService<GoogleDriveService>();
             drive.StartBackgroundSync();
+
+            var oneDrive = _serviceProvider.GetRequiredService<OneDriveService>();
+            oneDrive.StartBackgroundSync();
 
             var vm = _serviceProvider.GetRequiredService<MainViewModel>();
             await vm.InitializeAsync();
@@ -182,6 +199,7 @@ public partial class App : Application
                 await _serviceProvider.GetRequiredService<MultiDirectoryMonitor>().StopAsync();
                 await _serviceProvider.GetRequiredService<AuthenticatedBrowserBridge>().StopAsync();
                 await _serviceProvider.GetRequiredService<GoogleDriveService>().StopAsync();
+                await _serviceProvider.GetRequiredService<OneDriveService>().StopAsync();
                 _serviceProvider.GetRequiredService<MainViewModel>().Dispose();
                 _window?.DisposeTray();
                 await _serviceProvider.DisposeAsync();

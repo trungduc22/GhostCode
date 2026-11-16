@@ -221,6 +221,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly BackupHealthAndRecoveryService _healthService;
     private readonly IdeLauncherService _ideLauncher;
     private readonly NotificationCoordinator _notifications;
+    private readonly OneDriveService? _oneDrive;
+    private readonly CloudMigrationService? _migrationService;
 
     private Func<Action, bool> _dispatch = action => { action(); return true; };
     private Action<ElementTheme>? _applyThemeCallback;
@@ -283,8 +285,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private bool _isDriveConnected;
     private string _connectedEmail = string.Empty;
+    private bool _isOneDriveConnected;
+    private string _oneDriveEmail = string.Empty;
+    private int _selectedCloudProviderIndex;
     private string _oAuthClientId = string.Empty;
     private string _oAuthClientSecret = string.Empty;
+    private string _oneDriveClientId = string.Empty;
+    private string _oneDriveTenantId = "consumers";
     private bool _isSyncing;
     private double _syncProgressPercent;
     private string _syncProgressText = string.Empty;
@@ -332,7 +339,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CodeExecutionService? runner = null,
         BackupHealthAndRecoveryService? healthService = null,
         IdeLauncherService? ideLauncher = null,
-        NotificationCoordinator? notifications = null)
+        NotificationCoordinator? notifications = null,
+        OneDriveService? oneDrive = null,
+        CloudMigrationService? migrationService = null)
     {
         _config = config;
         _configPath = configPath;
@@ -348,6 +357,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _notifications = notifications ?? new NotificationCoordinator(_config, _store);
         _healthService = healthService ?? new BackupHealthAndRecoveryService(_config, _store, _monitor, _notifications);
         _ideLauncher = ideLauncher ?? new IdeLauncherService(_config, _toolchains, _archiver);
+        _oneDrive = oneDrive;
+        _migrationService = migrationService;
         _strings = UiStrings.For(config.Language);
         _expStrings = UiStrings.ExpansionFor(config.Language);
         _runnerStatusText = _strings.StatusReady;
@@ -387,6 +398,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ToggleQuickActionsCommand = new RelayCommand(ToggleQuickActionsPanel);
         CloseQuickActionsCommand = new RelayCommand(() => IsQuickActionsOpen = false);
         OpenQuickActionsInIdeCommand = new AsyncRelayCommand(OpenQuickActionsTargetInIdeAsync);
+        ConnectOneDriveCommand = new AsyncRelayCommand(ConnectOneDriveAsync);
+        DisconnectOneDriveCommand = new AsyncRelayCommand(DisconnectOneDriveAsync);
+        MigrateToOneDriveCommand = new AsyncRelayCommand(() => MigrateCloudProviderAsync(googleToOneDrive: true));
+        MigrateToGoogleDriveCommand = new AsyncRelayCommand(() => MigrateCloudProviderAsync(googleToOneDrive: false));
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -394,6 +409,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _bridge.BrowserConnectionsChanged += OnBrowserConnectionsChanged;
         _drive.SyncCompleted += OnDriveSyncCompleted;
         _drive.AuthStageChanged += OnAuthStageChanged;
+        if (_oneDrive is not null)
+        {
+            _oneDrive.SyncCompleted += OnDriveSyncCompleted;
+            _oneDrive.AuthStageChanged += OnAuthStageChanged;
+        }
 
         _discoveryRefreshTimer = new Timer(_ => _dispatch(RefreshBrowserAndIdeDiscovery), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
@@ -478,6 +498,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand OpenQuickActionsInIdeCommand { get; }
     public IAsyncRelayCommand RunRecoveryCheckCommand { get; }
     public IRelayCommand ToggleSyncPauseCommand { get; }
+    public IAsyncRelayCommand ConnectOneDriveCommand { get; }
+    public IAsyncRelayCommand DisconnectOneDriveCommand { get; }
+    public IAsyncRelayCommand MigrateToOneDriveCommand { get; }
+    public IAsyncRelayCommand MigrateToGoogleDriveCommand { get; }
 
     public ExpansionTextBundle ExpStrings
     {
@@ -540,9 +564,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public string TitleBarDriveBadgeText => IsDriveConnected
-        ? $"Drive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}"
-        : "Drive: Local";
+    public string TitleBarDriveBadgeText
+    {
+        get
+        {
+            if (_config.PrimaryCloudProvider == CloudProviderKind.LocalOnly)
+                return "Cloud: Local Only";
+            if (_config.SyncPausedManually)
+                return "Cloud: Paused";
+            if (_config.PrimaryCloudProvider == CloudProviderKind.OneDrive)
+                return IsOneDriveConnected ? $"OneDrive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}" : "OneDrive: Offline";
+            return IsDriveConnected ? $"Drive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}" : "Drive: Local";
+        }
+    }
 
     public string IdeStatusSummary { get => _ideStatusSummary; private set => SetProperty(ref _ideStatusSummary, value); }
     public string BrowserStatusSummary { get => _browserStatusSummary; private set => SetProperty(ref _browserStatusSummary, value); }
@@ -716,6 +750,50 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string DriveConnectionStatusText => IsDriveConnected
         ? $"{Strings.ConnectedStatus}: {ConnectedEmail}"
         : Strings.NotConnectedStatus;
+
+    public bool IsOneDriveConnected
+    {
+        get => _isOneDriveConnected;
+        private set
+        {
+            if (SetProperty(ref _isOneDriveConnected, value))
+            {
+                OnPropertyChanged(nameof(OneDriveConnectionStatusText));
+                OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+            }
+        }
+    }
+
+    public string OneDriveEmail
+    {
+        get => _oneDriveEmail;
+        private set
+        {
+            if (SetProperty(ref _oneDriveEmail, value))
+                OnPropertyChanged(nameof(OneDriveConnectionStatusText));
+        }
+    }
+
+    public string OneDriveConnectionStatusText => IsOneDriveConnected
+        ? $"{Strings.ConnectedStatus}: {OneDriveEmail}"
+        : Strings.NotConnectedStatus;
+
+    public int SelectedCloudProviderIndex
+    {
+        get => _selectedCloudProviderIndex;
+        set
+        {
+            if (value < 0 || value > 2 || !SetProperty(ref _selectedCloudProviderIndex, value))
+                return;
+            _config.PrimaryCloudProvider = (CloudProviderKind)value;
+            SaveConfigSafe();
+            OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+            _ = RefreshHealthAsync();
+        }
+    }
+
+    public string OneDriveClientId { get => _oneDriveClientId; set => SetProperty(ref _oneDriveClientId, value); }
+    public string OneDriveTenantId { get => _oneDriveTenantId; set => SetProperty(ref _oneDriveTenantId, value); }
 
     public string OAuthClientId { get => _oAuthClientId; set => SetProperty(ref _oAuthClientId, value); }
     public string OAuthClientSecret { get => _oAuthClientSecret; set => SetProperty(ref _oAuthClientSecret, value); }
@@ -1076,7 +1154,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
-            var rep = await _healthService.RunRecoveryCheckAsync(_drive);
+            var rep = await _healthService.RunRecoveryCheckAsync(ResolveActiveCloudProvider());
             RecoverySummaryText = rep.Summary;
             await RefreshHealthAsync();
             await RefreshStatsAndEventsAsync();
@@ -1287,6 +1365,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsDriveConnected = tokens is not null;
         ConnectedEmail = tokens?.Email ?? string.Empty;
 
+        if (_oneDrive is not null)
+        {
+            var od = await _oneDrive.GetAccountInfoAsync();
+            IsOneDriveConnected = od.IsConnected;
+            OneDriveEmail = od.AccountLabel;
+        }
+
         var queue = await _store.GetAllUploadQueueAsync(150);
         UploadQueue.Clear();
         foreach (var q in queue)
@@ -1405,16 +1490,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private ICloudArchiveProvider? ResolveActiveCloudProvider() => _config.PrimaryCloudProvider switch
+    {
+        CloudProviderKind.GoogleDrive => _drive,
+        CloudProviderKind.OneDrive => _oneDrive,
+        _ => null
+    };
+
     public async Task DownloadSelectedVersionAsync()
     {
         if (SelectedVersion is null)
             return;
 
+        var provider = ResolveActiveCloudProvider();
+        if (provider is null)
+        {
+            ShowInfoBar("Local-Only Mode Active", "Switch Primary Cloud Provider to Google Drive or OneDrive to download remote versions.", InfoBarSeverity.Informational);
+            return;
+        }
+
         IsSyncing = true;
         try
         {
             var targetId = SelectedVersion.Id;
-            var res = await _drive.DownloadVersionAsync(targetId);
+            var res = await provider.DownloadVersionAsync(targetId);
             await RefreshArchiveAsync();
             if (res.Success)
             {
@@ -1434,6 +1533,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task PullCloudArchiveAsync()
     {
+        var provider = ResolveActiveCloudProvider();
+        if (provider is null)
+        {
+            ShowInfoBar("Local-Only Mode", "Cloud pull skipped because Local-Only mode is selected.", InfoBarSeverity.Informational);
+            return;
+        }
+
         IsSyncing = true;
         SyncProgressPercent = 0;
         SyncProgressText = "Pulling cloud index...";
@@ -1444,7 +1550,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SyncProgressPercent = p.PercentComplete;
                 SyncProgressText = p.Total > 0 ? $"Pull {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
             });
-            var pull = await _drive.PullAndReconcileFromDriveAsync(progress);
+            var pull = await provider.PullAndReconcileAsync(progress);
             SaveConfigSafe();
             await RefreshAllAsync();
 
@@ -1465,6 +1571,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task DownloadAllCloudAsync()
     {
+        var provider = ResolveActiveCloudProvider();
+        if (provider is null)
+        {
+            ShowInfoBar("Local-Only Mode", "Cloud download skipped because Local-Only mode is selected.", InfoBarSeverity.Informational);
+            return;
+        }
+
         IsSyncing = true;
         try
         {
@@ -1473,7 +1586,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SyncProgressPercent = p.PercentComplete;
                 SyncProgressText = p.Total > 0 ? $"Download {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
             });
-            var (ok, failed, err) = await _drive.DownloadAllCloudOnlyVersionsAsync(progress);
+            var (ok, failed, err) = await CloudTransferHelpers.DownloadAllCloudOnlyVersionsAsync(provider, _store, progress);
             await RefreshAllAsync();
             ShowInfoBar(
                 failed > 0 ? "Download Partial" : "All Cloud Files Downloaded",
@@ -1561,11 +1674,109 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public async Task SyncNowAsync()
+    public async Task SaveOneDriveClientAsync(string clientId, string tenantId)
     {
+        var cleanTenant = string.IsNullOrWhiteSpace(tenantId) ? "consumers" : tenantId.Trim();
+        _config.OneDriveOAuthClient = new MicrosoftOAuthClientConfig(clientId.Trim(), cleanTenant);
+        OneDriveClientId = _config.OneDriveOAuthClient.ClientId;
+        OneDriveTenantId = _config.OneDriveOAuthClient.TenantId;
+        SaveConfigSafe();
+        ShowInfoBar("OneDrive Client Saved", "Microsoft Entra App Client ID saved cleanly.", InfoBarSeverity.Success);
+        await Task.CompletedTask;
+    }
+
+    public async Task ConnectOneDriveAsync()
+    {
+        if (_oneDrive is null || !_oneDrive.IsConfigured)
+        {
+            ShowInfoBar(
+                "OneDrive Client ID Required",
+                "Click 'Configure OneDrive OAuth...' first and enter your Microsoft Entra App Registration Client ID.",
+                InfoBarSeverity.Warning);
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var tokens = await _oneDrive.ConnectWithBrowserAsync();
+            await RefreshCloudStateAsync();
+            ShowInfoBar("OneDrive Connected", $"Signed in as {tokens.Email}.", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowInfoBar("OneDrive Sign-In Failed", ex.Message, InfoBarSeverity.Error);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task DisconnectOneDriveAsync()
+    {
+        if (_oneDrive is null)
+            return;
+
+        IsBusy = true;
+        try
+        {
+            await _oneDrive.DisconnectAsync();
+            SaveConfigSafe();
+            await RefreshCloudStateAsync();
+            ShowInfoBar("OneDrive Disconnected", "Local DPAPI OneDrive tokens wiped.", InfoBarSeverity.Informational);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task MigrateCloudProviderAsync(bool googleToOneDrive)
+    {
+        if (_migrationService is null || _oneDrive is null)
+        {
+            ShowInfoBar("Migration Unavailable", "OneDrive and CloudMigrationService must be registered.", InfoBarSeverity.Warning);
+            return;
+        }
+
         IsSyncing = true;
         SyncProgressPercent = 0;
-        SyncProgressText = "Starting bidirectional sync...";
+        SyncProgressText = googleToOneDrive ? "Migrating Google Drive -> OneDrive..." : "Migrating OneDrive -> Google Drive...";
+        try
+        {
+            ICloudArchiveProvider source = googleToOneDrive ? _drive : _oneDrive;
+            ICloudArchiveProvider dest = googleToOneDrive ? _oneDrive : _drive;
+            var progress = new Progress<DriveSyncProgress>(p =>
+            {
+                SyncProgressPercent = p.PercentComplete;
+                SyncProgressText = p.Total > 0 ? $"Migrate {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Finalizing...";
+            });
+            var report = await _migrationService.MigrateAsync(source, dest, progress);
+            await RefreshAllAsync();
+            ShowInfoBar(
+                report.Success ? "Cloud Migration Complete" : "Cloud Migration Failed",
+                report.Summary,
+                report.Success ? InfoBarSeverity.Success : InfoBarSeverity.Error);
+        }
+        finally
+        {
+            IsSyncing = false;
+        }
+    }
+
+    public async Task SyncNowAsync()
+    {
+        var provider = ResolveActiveCloudProvider();
+        if (provider is null)
+        {
+            ShowInfoBar("Local-Only Mode", "Cloud sync skipped (Local-Only mode keeps all backups strictly on this device).", InfoBarSeverity.Informational);
+            return;
+        }
+
+        IsSyncing = true;
+        SyncProgressPercent = 0;
+        SyncProgressText = $"Starting {provider.DisplayName} bidirectional sync...";
         try
         {
             var progress = new Progress<DriveSyncProgress>(p =>
@@ -1573,7 +1784,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 SyncProgressPercent = p.PercentComplete;
                 SyncProgressText = p.Total > 0 ? $"{p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
             });
-            var (report, pull) = await _drive.SyncBidirectionalAsync(progress);
+            var (report, pull) = await provider.SyncBidirectionalAsync(progress);
             SaveConfigSafe();
             await RefreshAllAsync();
 
@@ -1583,7 +1794,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 ShowInfoBar("Sync Completed With Errors", $"Uploaded: {report.UploadedCount}, Failed: {report.FailedCount}. {report.LastError ?? pull.Error}", InfoBarSeverity.Warning);
             else
                 ShowInfoBar("Bidirectional Sync Complete",
-                    $"Uploaded: {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
+                    $"{provider.DisplayName}: Uploaded {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
                     InfoBarSeverity.Success);
         }
         catch (Exception ex)
@@ -1681,6 +1892,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _oAuthClientId = _config.OAuthClient.ClientId;
         _oAuthClientSecret = _config.OAuthClient.ClientSecret;
+        _oneDriveClientId = _config.OneDriveOAuthClient.ClientId;
+        _oneDriveTenantId = string.IsNullOrWhiteSpace(_config.OneDriveOAuthClient.TenantId) ? "consumers" : _config.OneDriveOAuthClient.TenantId;
+        _selectedCloudProviderIndex = (int)_config.PrimaryCloudProvider;
         _archiveDir = _config.ArchiveDir;
         _readyDir = _config.ReadyDir;
         _selectedLanguageIndex = _config.Language == UiLanguage.Vi ? 0 : 1;
@@ -2062,5 +2276,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _bridge.BrowserConnectionsChanged -= OnBrowserConnectionsChanged;
         _drive.SyncCompleted -= OnDriveSyncCompleted;
         _drive.AuthStageChanged -= OnAuthStageChanged;
+        if (_oneDrive is not null)
+        {
+            _oneDrive.SyncCompleted -= OnDriveSyncCompleted;
+            _oneDrive.AuthStageChanged -= OnAuthStageChanged;
+        }
     }
 }

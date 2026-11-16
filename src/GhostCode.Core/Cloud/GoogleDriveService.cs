@@ -108,7 +108,6 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         var folderId = await EnsureRemoteFolderIdAsync(tokens.AccessToken, ct);
         var entries = await ListFolderFilesAsync(tokens.AccessToken, folderId, ct);
         return entries
-            .Where(e => !e.Name.Equals(ManifestFileName, StringComparison.OrdinalIgnoreCase))
             .Select(e =>
             {
                 e.AppProperties.TryGetValue("ghostcode_sha256", out var propSha);
@@ -466,6 +465,8 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
     {
         if (!_config.DriveEnabled)
             return new DriveSyncReport(0, 0, 0, false, "Google Drive synchronization is disabled in Settings.");
+        if (_config.PrimaryCloudProvider == CloudProviderKind.LocalOnly)
+            return new DriveSyncReport(0, 0, 0, true, "Local-Only mode is active; Google Drive upload skipped.");
         if (_config.SyncPausedManually)
             return new DriveSyncReport(0, 0, 0, true, "Synchronization is paused manually.");
 

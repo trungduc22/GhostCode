@@ -27,6 +27,13 @@ public sealed class DpapiCredentialStore
         _filePath = filePath;
     }
 
+    public DpapiCredentialStore(string appDataDirectory, string secretFileName)
+        : this(Path.Combine(
+            appDataDirectory,
+            string.IsNullOrWhiteSpace(secretFileName) ? "gdrive_oauth_tokens.dpapi" : secretFileName))
+    {
+    }
+
     public string FilePath => _filePath;
     public string ClientSecretFilePath =>
         Path.Combine(Path.GetDirectoryName(_filePath) ?? Path.GetTempPath(), "client_secret.dpapi");

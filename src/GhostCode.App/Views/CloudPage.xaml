@@ -6,16 +6,46 @@
     xmlns:controls="using:CommunityToolkit.WinUI.Controls"
     xmlns:vm="using:GhostCode.App.ViewModels">
 
-    <Grid Padding="24,16,24,24" RowSpacing="16">
+    <Grid Padding="24,16,24,24" RowSpacing="12">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Account & OAuth Connection SettingsCard -->
+        <!-- Primary Cloud Storage Provider Selector & Non-Destructive Migration -->
         <controls:SettingsCard
             Grid.Row="0"
+            Header="{x:Bind ViewModel.ExpStrings.CloudProviderTitle, Mode=OneWay}"
+            Description="Choose your active cloud provider or switch non-destructively between Google Drive, Microsoft OneDrive AppFolder, or Local Only.">
+            <controls:SettingsCard.HeaderIcon>
+                <FontIcon Glyph="&#xE895;" />
+            </controls:SettingsCard.HeaderIcon>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox
+                    x:Name="PrimaryProviderCombo"
+                    Width="210"
+                    SelectedIndex="{x:Bind ViewModel.SelectedCloudProviderIndex, Mode=TwoWay}">
+                    <ComboBoxItem Content="Google Drive" />
+                    <ComboBoxItem Content="Microsoft OneDrive" />
+                    <ComboBoxItem Content="Local Only (No Cloud)" />
+                </ComboBox>
+                <DropDownButton Content="{x:Bind ViewModel.ExpStrings.MigrateCloudButton, Mode=OneWay}">
+                    <DropDownButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="Migrate Google Drive -&gt; OneDrive" Command="{x:Bind ViewModel.MigrateToOneDriveCommand}" />
+                            <MenuFlyoutItem Text="Migrate OneDrive -&gt; Google Drive" Command="{x:Bind ViewModel.MigrateToGoogleDriveCommand}" />
+                        </MenuFlyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+            </StackPanel>
+        </controls:SettingsCard>
+
+        <!-- Google Account & OAuth Connection SettingsCard -->
+        <controls:SettingsCard
+            Grid.Row="1"
             Header="{x:Bind ViewModel.Strings.CloudAccountTitle, Mode=OneWay}"
             Description="{x:Bind ViewModel.DriveConnectionStatusText, Mode=OneWay}">
             <controls:SettingsCard.HeaderIcon>
@@ -28,8 +58,23 @@
             </StackPanel>
         </controls:SettingsCard>
 
+        <!-- Microsoft OneDrive Account & AppFolder Connection SettingsCard -->
+        <controls:SettingsCard
+            Grid.Row="2"
+            Header="Microsoft OneDrive (AppFolder)"
+            Description="{x:Bind ViewModel.OneDriveConnectionStatusText, Mode=OneWay}">
+            <controls:SettingsCard.HeaderIcon>
+                <FontIcon Glyph="&#xE753;" />
+            </controls:SettingsCard.HeaderIcon>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Configure OneDrive OAuth..." Click="ConfigureOneDriveOAuth_Click" />
+                <Button Content="Connect OneDrive" Command="{x:Bind ViewModel.ConnectOneDriveCommand}" />
+                <Button Content="Disconnect" Command="{x:Bind ViewModel.DisconnectOneDriveCommand}" />
+            </StackPanel>
+        </controls:SettingsCard>
+
         <!-- Bidirectional Sync Controls & Progress -->
-        <Border Grid.Row="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+        <Border Grid.Row="3" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
             <StackPanel Spacing="10">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -60,7 +105,7 @@
         </Border>
 
         <!-- Persistent Queue & Cloud Sync History -->
-        <Grid Grid.Row="2" ColumnSpacing="16">
+        <Grid Grid.Row="4" ColumnSpacing="16">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="*" />
