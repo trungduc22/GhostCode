@@ -1,60 +1,66 @@
-# ⚡ GhostCode — Zero-Effort Hot Archiver & Smart Namer
+# GhostCode — Lossless Code Archiver & WinUI 3 Desktop Companion
 
 > **Never lose another `Untitled1.cpp` solution again.**  
-> Tự động cứu code, đặt tên chuẩn `<Mã_Bài>_<Tên_Bài>` từ trình duyệt (Code PTIT, Codeforces, VNOJ, LeetCode, HackerRank), và đồng bộ lên Google Drive khi có mạng — viết thuần bằng **Rust** với giao diện **Windows 11 Mica** chạy ngầm dưới System Tray (~10 MB RAM).
+> Reengineered in **C# / .NET 10** with genuine **WinUI 3 (`Microsoft.WindowsAppSDK`)**, **SQLite WAL lossless versioning**, **multi-directory Desktop/Documents/OneDrive monitoring**, and **native Google Drive OAuth 2.0 PKCE + DPAPI** synchronization.
 
 ---
 
-## ✨ Tính năng nổi bật / Key Features
-
-- **🔥 Hot-Backup & Chống mất bài khi code đè `Untitled*`**:
-  - Theo dõi thư mục code (`Dev-C++`, `VS Code`, `Python`), phát hiện lưu (`Ctrl+S`), biên dịch (`F11` tạo `.exe`), xóa trắng hoặc viết đè bài mới (<50% tương đồng cấu trúc) để tách bài cũ ra file độc lập ngay lập tức mà không làm gián đoạn file đang mở.
-- **🌐 Cầu nối Trình duyệt thông minh (Edge & Thorium)**:
-  - **Manifest V3 Extension (`browser-extension/`)**: Background Service Worker đọc chính xác `Mã bài + Tên bài` từ `code.ptit.edu.vn`, `codeforces.com` (Problemset, Contest, Gym, Group, Edu, Submit), `oj.vnoi.info`, `leetcode.com`, `hackerrank.com`.
-  - **Win32 Fallback**: Quét tiêu đề cửa sổ trình duyệt (tự xử lý hậu tố đa tab Edge `and N more pages` / `và N trang nữa`).
-- **🎯 Tối ưu thao tác nộp bài**:
-  - **Code PTIT ("Chọn tệp")**: Tự động tạo/cập nhật nóng `<Mã>_<Tên_Không_Dấu>.c/.cpp/.py` vào `CodePTIT_Ready\`, tự khớp đuôi theo mã môn (`C0*` $\rightarrow$ `.c`, `CPP*` $\rightarrow$ `.cpp`, `PY*` $\rightarrow$ `.py`) và copy sẵn đường dẫn vào Clipboard.
-  - **Codeforces / OJ ("Copy-Paste")**: Nút 1-click **Copy Code** tự bỏ dòng comment `[AutoName]` để dán nộp ngay.
-- **🧠 Offline Heuristic Analyzer (`--organize-existing`)**:
-  - Phân tích thuật toán C/C++/Python ngay cả khi rớt mạng, đồng thời dọn dẹp các file cũ như `Untitled1..14.cpp`, `11111.cpp`, `123.cpp` vào `CodeArchive\Organized\`.
-- **☁️ Hàng đợi Offline & Đồng bộ Google Drive**:
-  - Tự lưu hàng đợi vào `archive_state.json` khi mất mạng KTX và tự upload bù lên `CodeArchive` trên Google Drive ngay khi có kết nối.
-- **🪟 Giao diện Windows 11 Mica + Song ngữ (VI / EN)**:
-  - Kiến trúc `NavigationView` 4 tab, **Mica material thực tế** lấy mẫu từ hình nền Desktop Windows (`TranscodedWallpaper`) + các thẻ kính mờ (`SettingsCard`, `ToggleSwitch`), hỗ trợ cả Dark/Light mode và thu gọn xuống System Tray.
-
----
-
-## 🏗️ Kiến trúc hệ thống / Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
-    Browser["🌐 Edge / Thorium\n(MV3 Extension + Win32)"] -->|HTTP :48123| Core["⚙️ autoname-core\n(UI-Independent Rust Engine)"]
-    IDE["💻 Dev-C++ / VS Code / Python\n(Untitled*.cpp / main.c / *.py)"] -->|File Watcher + .exe| Core
-    Core --> Ready["📁 CodePTIT_Ready\n(1-Click Choose File)"]
-    Core --> Archive["📁 CodeArchive\n(Organized Solutions)"]
-    Archive -->|Online Queue| Drive["☁️ Google Drive\n/CodeArchive"]
-    Core --> App["🪟 autoname-app\n(Win11 Mica UI + System Tray)"]
+    Browser["Edge / Thorium\n(MV3 Extension v1.2 + Win32)"] -->|"Loopback HTTP :48123\nX-GhostCode-Token"| Bridge["AuthenticatedBrowserBridge"]
+    Folders["Desktop / Documents / OneDrive\n+ Custom Folders"] -->|"MultiDirectoryMonitor\nDebounce + Retry + Reconcile"| Archiver["LosslessArchiver"]
+    Bridge -->|"Optional Naming Context"| Archiver
+    Archiver -->|"Atomic Writes"| History["CodeArchive/History\nImmutable v1, v2, ..."]
+    Archiver -->|"PTIT Ready Copy"| Ready["CodePTIT_Ready"]
+    Archiver -->|"Transactional WAL"| Db[("ghostcode.db")]
+    Db -->|"Offline Queue + Backoff"| Drive["GoogleDriveService\nOAuth 2.0 PKCE + DPAPI"]
+    Db --> UI["GhostCode.App\nWinUI 3 + Mica + System Tray"]
 ```
 
-- **`crates/autoname-core`**: Thư viện lõi hoàn toàn độc lập với UI, có thể nhúng trực tiếp vào dự án lớn hơn sau này.
-- **`crates/autoname-app`**: Ứng dụng Windows Native (`autoname.exe` GUI + Tray, `autoname-cli.exe` CLI) với icon `<⚡>` nhúng trực tiếp.
-- **`browser-extension/`**: Extension Manifest V3 cho Microsoft Edge và Thorium.
+### Projects
+- **`src/GhostCode.Core`**: UI-independent .NET 10 library providing Known Folder resolution, recursive multi-directory monitoring, lossless byte-preserving versioned storage in SQLite WAL, source analysis (`C`, `C++`, `Python`, `H/HPP`), authenticated loopback browser bridge, DPAPI token vault, and Google Drive v3 client.
+- **`src/GhostCode.App`**: Genuine WinUI 3 (`Microsoft.WindowsAppSDK 2.6.5`) XAML application using `<MicaBackdrop />`, `NavigationView`, `SettingsCard`, `InfoBar`, `ProgressRing`, `ContentDialog`, `ToggleSwitch`, MVVM (`CommunityToolkit.Mvvm`), DI (`Microsoft.Extensions.DependencyInjection`), System Tray (`Shell_NotifyIconW`), and bilingual `Tiếng Việt` / `English` UI.
+- **`tests/GhostCode.Tests`**: 30 xUnit tests across archival, monitoring, cloud/bridge security, and 18 end-to-end acceptance scenarios.
+- **`browser-extension/`**: Hardened Manifest V3 extension (`v1.2.0`) for Microsoft Edge and Thorium that enforces active-tab visibility and authenticates with `X-GhostCode-Token`.
 
 ---
 
-## 🚀 Cài đặt & Sử dụng / Build & Run
+## Key Capabilities
 
-### 1. Biên dịch từ mã nguồn (Rust `x86_64-pc-windows-gnu` — không cần MSVC 6GB)
+- **Works With or Without Browser Context**: Saving any eligible source file (`.c`, `.cpp`, `.cc`, `.cxx`, `.py`, `.h`, `.hpp`) in any watched folder creates an immutable backup automatically, even when offline or with no browser open.
+- **Zero-Data-Loss History**: Never overwrites previous backups based on heuristic code similarity; resets to empty files or boilerplate templates preserve the prior snapshot automatically.
+- **Multi-Directory & OneDrive Support**: Discovers Windows Known Folders (including OneDrive-redirected Desktop/Documents) via `SHGetKnownFolderPath` without hardcoded usernames, supports unlimited custom folders, excludes output directories, and refuses full drive roots (`C:\`).
+- **Native Cloud Sync**: Encrypts OAuth tokens using Windows DPAPI (`DataProtectionScope.CurrentUser`), performs remote SHA-256 deduplication via Drive `appProperties`, and retries outages with bounded exponential backoff.
+
+---
+
+## Quick Start
+
+### 1. Build & Run Tests
+Requires **.NET 10 SDK** on Windows x64:
+
 ```powershell
-cargo test --workspace
-cargo build --release --workspace
+dotnet restore GhostCode.sln -r win-x64
+dotnet build GhostCode.sln -c Release -p:Platform=x64 --no-restore
+dotnet test GhostCode.sln -c Release -p:Platform=x64 --no-build
 ```
-File chạy sau khi build nằm tại:
-- `target\release\autoname.exe` (Giao diện Windows 11 Mica + System Tray)
-- `target\release\autoname-cli.exe` (Công cụ dòng lệnh: `--organize-existing`, `--simulate-ptit`, `--simulate-cf`, `--sync-now`, `--status`)
 
-### 2. Cài Extension vào Edge / Thorium
-1. Mở `edge://extensions` (hoặc `chrome://extensions` trên Thorium).
-2. Bật **Developer mode**.
-3. Chọn **Load unpacked** $\rightarrow$ trỏ vào thư mục `browser-extension/`.
-4. Mở `target\release\autoname.exe` (đóng cửa sổ để chạy ngầm dưới System Tray).
+Run the packaged WinUI 3 application:
+```powershell
+src\GhostCode.App\bin\x64\Release\net10.0-windows10.0.19041.0\win-x64\GhostCode.App.exe
+```
+
+### 2. Google Cloud Desktop OAuth Setup (One-Time)
+GhostCode never bundles hardcoded OAuth client secrets:
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create or select a project.
+2. Enable the **Google Drive API**.
+3. Configure the **OAuth consent screen** (External/Testing — add your Google account under Test users) with scope `https://www.googleapis.com/auth/drive.file`.
+4. Under **Credentials -> Create Credentials -> OAuth client ID**, choose **Desktop app**.
+5. In GhostCode -> **Google Drive** tab -> click **Configure OAuth Client...**, paste your **Client ID** (and optional Client Secret), then click **Connect Google Account**.
+
+### 3. Install the Browser Extension (Edge & Thorium)
+1. Navigate to `edge://extensions` or `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Click **Load unpacked** and select `browser-extension/`.

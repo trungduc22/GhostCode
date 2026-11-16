@@ -4,3 +4,19 @@ config.json
 *.exe
 *.pdb
 *.log
+
+# .NET / WinUI 3 / Visual Studio
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+# Local runtime state & encrypted secrets
+*.db
+*.db-wal
+*.db-shm
+credentials.dpapi
+*.corrupt.*.bak

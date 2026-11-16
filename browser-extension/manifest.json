@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AutoName Code Bridge (PTIT & Codeforces)",
-  "version": "1.1.0",
-  "description": "Extracts the active problem Code + Title from Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank and sends it to the AutoName Windows app via background service worker.",
+  "name": "GhostCode Bridge (PTIT & Codeforces)",
+  "version": "1.2.0",
+  "description": "Authenticated active-tab context bridge for Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank.",
   "permissions": [
     "tabs",
     "activeTab",

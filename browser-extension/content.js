@@ -7,7 +7,6 @@
   }
   window.__autonameContentLoaded = true;
 
-  const ENDPOINT = "http://127.0.0.1:48123/context";
   let lastUrl = location.href;
   let lastSentKey = "";
 
@@ -125,19 +124,13 @@
         chrome.runtime.sendMessage({ type: "AUTONAME_CONTEXT", payload: ctx }, () => {
           void chrome.runtime.lastError;
         });
-        return;
       }
     } catch {}
-    fetch(ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ctx),
-      keepalive: true
-    }).catch(() => {});
   }
 
   function syncContext(force) {
-    if (document.visibilityState === "hidden" && !force) return;
+    // Context-only: never transmit when this tab is hidden/backgrounded
+    if (document.visibilityState === "hidden") return;
     const ctx = extractContext();
     if (!ctx) return;
 
@@ -156,16 +149,17 @@
   }
 
   window.__autonameSyncNow = syncContext;
-
   syncContext(true);
 
   setInterval(() => {
+    if (document.visibilityState !== "visible") return;
     const changed = location.href !== lastUrl;
     if (changed) lastUrl = location.href;
-    syncContext(true);
-  }, 4000);
+    syncContext(changed);
+  }, 5000);
 
   const obs = new MutationObserver(() => {
+    if (document.visibilityState !== "visible") return;
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       syncContext(true);

@@ -1,5 +1,8 @@
-const ENDPOINT = "http://127.0.0.1:48123/context";
+const BASE_URL = "http://127.0.0.1:48123";
 const injectedByTab = new Map();
+let bridgeToken = "";
+let lastSentKey = "";
+let lastSentAt = 0;
 
 function cleanText(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
@@ -7,9 +10,7 @@ function cleanText(raw) {
 
 function stripCodePrefix(title, code) {
   let t = cleanText(title);
-  // Remove leading "[CODE]" tag if we added it previously
   t = t.replace(/^\[[^\]]+\]\s*/, "");
-  // Remove trailing " - Codeforces" / " - Code PTIT" / " - LeetCode"
   t = t.replace(/\s*-\s*(Codeforces|Code\s*PTIT|PTIT|VNOJ|LeetCode|HackerRank)\s*$/i, "");
   if (code) {
     const shortCode = code.includes("_") ? code.split("_").pop() : code;
@@ -24,7 +25,7 @@ function stripCodePrefix(title, code) {
 }
 
 function extractFromTab(tab) {
-  if (!tab || !tab.url) return null;
+  if (!tab || !tab.url || !tab.active) return null;
   let parsed;
   try {
     parsed = new URL(tab.url);
@@ -39,8 +40,7 @@ function extractFromTab(tab) {
     const m = path.match(/\/(?:student\/)?questions?\/([A-Za-z0-9_-]+)/i);
     if (!m) return null;
     const code = m[1].toUpperCase();
-    const title = stripCodePrefix(rawTitle, code);
-    return { problem_code: code, problem_title: title, platform: "PTIT", url: tab.url };
+    return { problem_code: code, problem_title: stripCodePrefix(rawTitle, code), platform: "PTIT", url: tab.url };
   }
 
   if (host.endsWith("codeforces.com")) {
@@ -79,25 +79,79 @@ function extractFromTab(tab) {
   return null;
 }
 
-async function postToApp(payload) {
-  if (!payload || !payload.problem_code) return;
+async function ensureToken() {
+  if (bridgeToken) return bridgeToken;
   try {
-    await fetch(ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  } catch {
-    // App may not be running yet; ignore silently
+    const resp = await fetch(`${BASE_URL}/handshake`, { method: "GET" });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.token) {
+        bridgeToken = data.token;
+        return bridgeToken;
+      }
+    }
+  } catch {}
+  return "";
+}
+
+async function postToApp(payload, tabActive) {
+  if (!payload || !payload.problem_code || !tabActive) return;
+
+  const now = Date.now();
+  const key = `${payload.platform}|${payload.problem_code}|${payload.problem_title}|${payload.url}`;
+  if (key === lastSentKey && now - lastSentAt < 15000) {
+    return;
   }
+
+  const token = await ensureToken();
+  if (!token) return;
+
+  const body = {
+    problem_code: payload.problem_code,
+    problem_title: payload.problem_title || "",
+    platform: payload.platform || "",
+    url: payload.url || "",
+    tab_active: true,
+    timestamp: now
+  };
+
+  try {
+    const resp = await fetch(`${BASE_URL}/context`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GhostCode-Token": token
+      },
+      body: JSON.stringify(body)
+    });
+    if (resp.status === 401) {
+      // App restarted with a new token; refresh token and retry once
+      bridgeToken = "";
+      const fresh = await ensureToken();
+      if (fresh) {
+        await fetch(`${BASE_URL}/context`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-GhostCode-Token": fresh
+          },
+          body: JSON.stringify(body)
+        });
+      }
+    }
+    if (resp.ok) {
+      lastSentKey = key;
+      lastSentAt = now;
+    }
+  } catch {}
 }
 
 async function processTab(tab) {
+  if (!tab || !tab.active) return;
   const ctx = extractFromTab(tab);
   if (!ctx) return;
 
-  // Send URL-based context right away even before DOM script runs
-  await postToApp(ctx);
+  await postToApp(ctx, true);
 
   if (tab.id && injectedByTab.get(tab.id) !== tab.url) {
     injectedByTab.set(tab.id, tab.url);
@@ -106,49 +160,45 @@ async function processTab(tab) {
         target: { tabId: tab.id },
         files: ["content.js"]
       });
-    } catch {
-      // Ignore if host permission is unavailable or tab closed
-    }
+    } catch {}
   }
 }
 
-async function scanActiveTabs() {
+async function scanFocusedActiveTab() {
   try {
-    const active = await chrome.tabs.query({ active: true });
+    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     for (const tab of active) {
       if (extractFromTab(tab)) {
         await processTab(tab);
         return;
       }
     }
-    // Fallback: check any open OJ tab in current browser if user switched temporarily
-    const all = await chrome.tabs.query({});
-    for (const tab of all) {
-      if (extractFromTab(tab)) {
-        await processTab(tab);
-        return;
-      }
-    }
-  } catch {
-    // Ignore transient tab errors
-  }
+  } catch {}
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "AUTONAME_CONTEXT" && msg.payload) {
-    postToApp(msg.payload).then(() => sendResponse({ ok: true }));
+    // Only accept messages from an actually active tab
+    const isActive = Boolean(sender && sender.tab && sender.tab.active);
+    if (!isActive) {
+      sendResponse({ ok: false, ignored: "background_tab" });
+      return false;
+    }
+    postToApp(msg.payload, true).then(() => sendResponse({ ok: true }));
     return true;
   }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   injectedByTab.clear();
-  scanActiveTabs();
+  bridgeToken = "";
+  scanFocusedActiveTab();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   injectedByTab.clear();
-  scanActiveTabs();
+  bridgeToken = "";
+  scanFocusedActiveTab();
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -159,9 +209,11 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab.active) return;
   if (changeInfo.url || changeInfo.status === "complete" || changeInfo.title) {
     if (changeInfo.url) {
       injectedByTab.delete(tabId);
+      lastSentKey = "";
     }
     processTab(tab);
   }
@@ -169,9 +221,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 if (chrome.windows && chrome.windows.onFocusChanged) {
   chrome.windows.onFocusChanged.addListener(() => {
-    scanActiveTabs();
+    scanFocusedActiveTab();
   });
 }
 
-setInterval(scanActiveTabs, 3000);
-scanActiveTabs();
+setInterval(scanFocusedActiveTab, 5000);
+scanFocusedActiveTab();

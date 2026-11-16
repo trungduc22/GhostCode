@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GhostCode.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="GhostCode">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="Base" />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <InfoBar
+            Grid.Row="0"
+            Margin="12,8,12,0"
+            IsOpen="{x:Bind ViewModel.InfoBarOpen, Mode=TwoWay}"
+            Title="{x:Bind ViewModel.InfoBarTitle, Mode=OneWay}"
+            Message="{x:Bind ViewModel.InfoBarMessage, Mode=OneWay}"
+            Severity="{x:Bind ViewModel.InfoBarSeverity, Mode=OneWay}" />
+
+        <NavigationView
+            x:Name="RootNav"
+            Grid.Row="1"
+            PaneTitle="GhostCode"
+            OpenPaneLength="220"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            SelectionChanged="RootNav_SelectionChanged">
+
+            <NavigationView.MenuItems>
+                <NavigationViewItem Tag="Dashboard" Content="{x:Bind ViewModel.Strings.NavDashboard, Mode=OneWay}">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE80F;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Tag="Archive" Content="{x:Bind ViewModel.Strings.NavArchive, Mode=OneWay}">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8F1;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Tag="Cloud" Content="{x:Bind ViewModel.Strings.NavCloud, Mode=OneWay}">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE753;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Tag="Settings" Content="{x:Bind ViewModel.Strings.NavSettings, Mode=OneWay}">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <NavigationView.PaneFooter>
+                <StackPanel Orientation="Horizontal" Spacing="8" Padding="14,8">
+                    <ProgressRing IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" Width="18" Height="18" />
+                    <TextBlock Text="v2.0" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+            </NavigationView.PaneFooter>
+
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+    </Grid>
+</Window>
