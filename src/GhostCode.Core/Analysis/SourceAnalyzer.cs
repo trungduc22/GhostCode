@@ -397,7 +397,7 @@ public static class SourceAnalyzer
         OjPlatform platform;
         string? code = null;
 
-        if (host.EndsWith("code.ptit.edu.vn", StringComparison.Ordinal))
+        if (IsDomainMatch(host, "code.ptit.edu.vn"))
         {
             platform = OjPlatform.Ptit;
             for (int i = 0; i + 1 < segs.Length; i++)
@@ -409,7 +409,7 @@ public static class SourceAnalyzer
                 }
             }
         }
-        else if (host.EndsWith("codeforces.com", StringComparison.Ordinal))
+        else if (IsDomainMatch(host, "codeforces.com"))
         {
             platform = OjPlatform.Codeforces;
             if (segs.Length >= 5 && segs[0] == "problemset" && segs[1] == "acmsguru" && segs[2] == "problem")
@@ -430,18 +430,18 @@ public static class SourceAnalyzer
                 }
             }
         }
-        else if (host.EndsWith("oj.vnoi.info", StringComparison.Ordinal) && segs.Length >= 2 && segs[0] == "problem")
+        else if (IsDomainMatch(host, "oj.vnoi.info") && segs.Length >= 2 && segs[0] == "problem")
         {
             platform = OjPlatform.Vnoj;
             code = $"VNOJ_{SanitizeCode(segs[1])}";
         }
-        else if ((host.EndsWith("leetcode.com", StringComparison.Ordinal) || host.EndsWith("leetcode.cn", StringComparison.Ordinal))
+        else if ((IsDomainMatch(host, "leetcode.com") || IsDomainMatch(host, "leetcode.cn"))
                  && segs.Length >= 2 && segs[0] == "problems")
         {
             platform = OjPlatform.LeetCode;
             code = $"LC_{SanitizeCode(segs[1])}";
         }
-        else if (host.EndsWith("hackerrank.com", StringComparison.Ordinal))
+        else if (IsDomainMatch(host, "hackerrank.com"))
         {
             platform = OjPlatform.HackerRank;
             for (int i = 0; i + 1 < segs.Length; i++)
@@ -463,6 +463,10 @@ public static class SourceAnalyzer
 
         return new ProblemContext(platform, code, CleanTitle(titleHint, code), url.Trim(), "Extension", seenAtUnixMs);
     }
+
+    private static bool IsDomainMatch(string host, string domain) =>
+        host.Equals(domain, StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 
     public static string StripBrowserSuffix(string title)
     {

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using GhostCode.App.Localization;
+using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
@@ -155,6 +156,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _autoCopyReadyPath;
     private bool _driveEnabled;
 
+    private string _lastDetectedFileText = "None";
+    private string _lastSuccessfulBackupText = "None";
+    private string _lastMonitoringErrorText = "None";
+    private string _lastDiagnosticResultText = "Not run yet";
+    private string _oAuthStageText = "Idle";
+
     private bool _infoBarOpen;
     private string _infoBarTitle = string.Empty;
     private string _infoBarMessage = string.Empty;
@@ -199,6 +206,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _monitor.EventRecorded += OnMonitorEventRecorded;
         _bridge.ContextChanged += OnContextChanged;
         _drive.SyncCompleted += OnDriveSyncCompleted;
+        _drive.AuthStageChanged += OnAuthStageChanged;
     }
 
     public ObservableCollection<ActiveWatchRow> ActiveWatches { get; } = new();
@@ -303,7 +311,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public double SyncProgressPercent { get => _syncProgressPercent; private set => SetProperty(ref _syncProgressPercent, value); }
     public string SyncProgressText { get => _syncProgressText; private set => SetProperty(ref _syncProgressText, value); }
     public bool HasOAuthClientConfigured => _drive.HasOAuthClientConfigured;
-    public string BridgeInfoText => $"127.0.0.1:{_bridge.ListeningPort}  •  Token: {_bridge.BridgeToken}";
+    public string BridgeInfoText => $"127.0.0.1:{_bridge.ListeningPort}  •  HMAC Paired Session (Secret Hidden)";
+
+    public string LastDetectedFileText { get => _lastDetectedFileText; private set => SetProperty(ref _lastDetectedFileText, value); }
+    public string LastSuccessfulBackupText { get => _lastSuccessfulBackupText; private set => SetProperty(ref _lastSuccessfulBackupText, value); }
+    public string LastMonitoringErrorText { get => _lastMonitoringErrorText; private set => SetProperty(ref _lastMonitoringErrorText, value); }
+    public string LastDiagnosticResultText { get => _lastDiagnosticResultText; private set => SetProperty(ref _lastDiagnosticResultText, value); }
+    public string OAuthStageText { get => _oAuthStageText; private set => SetProperty(ref _oAuthStageText, value); }
 
     public string ArchiveDir { get => _archiveDir; private set => SetProperty(ref _archiveDir, value); }
     public string ReadyDir { get => _readyDir; private set => SetProperty(ref _readyDir, value); }
@@ -410,6 +424,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task InitializeAsync()
     {
+        OAuthClientSecret = await _credentialStore.LoadClientSecretAsync();
         UpdateContext(_bridge.GetActiveContext());
         await RefreshAllAsync();
     }
@@ -432,6 +447,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         BrowserStatusSummary = browsers.Count == 0
             ? "No supported browser running"
             : $"{string.Join(", ", browsers)} • Port {_bridge.ListeningPort}";
+
+        LastDetectedFileText = _monitor.LastDetectedFile;
+        LastSuccessfulBackupText = _monitor.LastSuccessfulBackup;
+        LastMonitoringErrorText = _monitor.LastMonitoringError;
+        LastDiagnosticResultText = _monitor.LastDiagnosticSummary;
 
         var watches = _monitor.GetActiveWatches();
         ActiveWatches.Clear();
@@ -502,26 +522,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public async Task RestoreSelectedVersionAsync(string destinationPath)
+    public async Task<bool> RestoreSelectedVersionAsync(string destinationPath)
     {
         if (SelectedVersion is null)
-            return;
+            return false;
 
-        await _archiver.RestoreVersionAsync(SelectedVersion.Id, destinationPath);
-        ShowInfoBar(
-            "Version Restored",
-            $"Restored {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) -> {destinationPath}",
-            InfoBarSeverity.Success);
+        try
+        {
+            await _archiver.RestoreVersionAsync(SelectedVersion.Id, destinationPath);
+            ShowInfoBar(
+                "Version Restored",
+                $"Restored {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) -> {destinationPath}",
+                InfoBarSeverity.Success);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowInfoBar("Restore Failed (Integrity Check)", ex.Message, InfoBarSeverity.Error);
+            return false;
+        }
     }
 
-    public void SaveOAuthClient(string clientId, string clientSecret)
+    public async Task SaveOAuthClientAsync(string clientId, string clientSecret)
     {
-        _config.OAuthClient = new GoogleOAuthClientConfig(clientId.Trim(), clientSecret.Trim());
+        _config.OAuthClient = new GoogleOAuthClientConfig(clientId.Trim(), string.Empty);
+        await _credentialStore.SaveClientSecretAsync(clientSecret);
         OAuthClientId = _config.OAuthClient.ClientId;
-        OAuthClientSecret = _config.OAuthClient.ClientSecret;
+        OAuthClientSecret = clientSecret.Trim();
         SaveConfigSafe();
         OnPropertyChanged(nameof(HasOAuthClientConfigured));
-        ShowInfoBar("OAuth Client Saved", "Desktop OAuth Client credentials saved locally.", InfoBarSeverity.Success);
+        ShowInfoBar("OAuth Client Saved", "Desktop OAuth Client ID saved and secret protected via Windows DPAPI.", InfoBarSeverity.Success);
     }
 
     public async Task ConnectGoogleAsync()
@@ -557,10 +587,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
-            await _drive.DisconnectAsync();
+            var res = await _drive.DisconnectAsync();
             SaveConfigSafe();
             await RefreshCloudStateAsync();
-            ShowInfoBar("Disconnected", "Google OAuth tokens revoked and wiped from DPAPI store.", InfoBarSeverity.Informational);
+            if (res.RemoteRevocationSucceeded)
+            {
+                ShowInfoBar("Disconnected", "Google OAuth tokens revoked remotely and wiped from DPAPI store.", InfoBarSeverity.Informational);
+            }
+            else
+            {
+                ShowInfoBar("Disconnected Locally", $"DPAPI tokens cleared, but remote revocation failed: {res.RemoteError}", InfoBarSeverity.Warning);
+            }
         }
         finally
         {
@@ -614,6 +651,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (KnownFoldersResolver.IsDriveRoot(folderPath))
         {
             ShowInfoBar("Drive Root Refused", "Watching an entire drive root is blocked for safety and performance.", InfoBarSeverity.Error);
+            return;
+        }
+        if (_monitor.IsExcludedOrOutputDirectory(folderPath))
+        {
+            ShowInfoBar("Output Directory Excluded", "ArchiveDir and ReadyDir cannot be monitored to prevent infinite feedback loops.", InfoBarSeverity.Error);
             return;
         }
         if (WatchedFolders.Any(w => string.Equals(w.Path, folderPath, StringComparison.OrdinalIgnoreCase)))
@@ -732,19 +774,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            if (File.Exists(row.ArchivePath))
-            {
-                SelectedVersionSource = await File.ReadAllTextAsync(row.ArchivePath);
-                return;
-            }
-            var snap = await _store.GetSnapshotAsync(row.SourcePath);
-            SelectedVersionSource = snap is not null
-                ? System.Text.Encoding.UTF8.GetString(snap.RawBytes)
-                : "// Archived file not found on disk.";
+            var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Id);
+            var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+            SelectedVersionSource = text;
         }
         catch (Exception ex)
         {
-            SelectedVersionSource = $"// Failed to read source: {ex.Message}";
+            SelectedVersionSource = $"// [INTEGRITY ERROR] {ex.Message}";
+            ShowInfoBar("Archive Integrity Error", ex.Message, InfoBarSeverity.Error);
         }
     }
 
@@ -798,6 +835,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatch(() => { _ = RefreshAllAsync(); });
     }
 
+    private void OnAuthStageChanged(OAuthConnectionStage stage, string message)
+    {
+        _dispatch(() => { OAuthStageText = $"{stage}: {message}"; });
+    }
+
     private static void OpenFolder(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -812,5 +854,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _monitor.EventRecorded -= OnMonitorEventRecorded;
         _bridge.ContextChanged -= OnContextChanged;
         _drive.SyncCompleted -= OnDriveSyncCompleted;
+        _drive.AuthStageChanged -= OnAuthStageChanged;
     }
 }

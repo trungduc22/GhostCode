@@ -83,26 +83,33 @@ public sealed class LosslessArchiver
             var targetExt = SourceAnalyzer.TargetExtension(activeContext, lang.Value, text);
             var baseStem = SourceAnalyzer.BuildProblemBaseName(activeContext, fullSource, text, lang.Value);
             var shortHash = sha256[..8];
+            var versionId = Guid.NewGuid().ToString("N");
 
-            // 1. Immutable historical version (exact lossless bytes, never overwritten)
+            // 1. Strictly immutable historical version (exclusive create, never overwrites existing historical files)
             var dateFolder = DateTime.Now.ToString("yyyy-MM-dd");
             var historyDir = Path.Combine(_config.ArchiveDir, "History", dateFolder);
-            var historyFileName = $"{baseStem}_v{versionNum}_{shortHash}.{targetExt}";
-            var historyPath = Path.Combine(historyDir, historyFileName);
-            await WriteBytesAtomicallyAsync(historyPath, rawBytes, ct);
+            var (historyPath, historyFileName) = await WriteImmutableHistoricalFileAsync(
+                historyDir,
+                baseStem,
+                versionNum,
+                shortHash,
+                versionId,
+                targetExt,
+                rawBytes,
+                ct);
 
-            // 2. Clean named latest copy in category directory (collision-safe for distinct files)
+            // 2. Replaceable latest clean copy in category directory (collision-safe for distinct files)
             var categoryDir = Path.Combine(_config.ArchiveDir, SourceAnalyzer.GetCategoryFolder(activeContext));
             var latestFileName = ResolveNonCollidingLatestName(categoryDir, baseStem, targetExt, sha256, normHash, fullSource);
             var latestCopyPath = Path.Combine(categoryDir, latestFileName);
-            await WriteBytesAtomicallyAsync(latestCopyPath, rawBytes, ct);
+            await WriteReplaceableCopyAtomicallyAsync(latestCopyPath, rawBytes, ct);
 
-            // 3. Ready submission copy (`CodePTIT_Ready`) updated atomically for immediate upload/copy
+            // 3. Replaceable submission copy (`CodePTIT_Ready`) updated atomically for immediate upload/copy
             string? readyPath = null;
             if (!string.IsNullOrWhiteSpace(_config.ReadyDir))
             {
                 readyPath = Path.Combine(_config.ReadyDir, latestFileName);
-                await WriteBytesAtomicallyAsync(readyPath, rawBytes, ct);
+                await WriteReplaceableCopyAtomicallyAsync(readyPath, rawBytes, ct);
             }
 
             var platformLabel = activeContext?.Platform.ToString() ?? OjPlatform.Offline.ToString();
@@ -118,7 +125,7 @@ public sealed class LosslessArchiver
                 nowMs);
 
             var version = new ArchiveVersionRecord(
-                Id: Guid.NewGuid().ToString("N"),
+                Id: versionId,
                 VersionNum: versionNum,
                 SourcePath: fullSource,
                 ArchivePath: historyPath,
@@ -155,27 +162,186 @@ public sealed class LosslessArchiver
         }
     }
 
-    public async Task RestoreVersionAsync(string versionId, string destinationPath, CancellationToken ct = default)
+    /// <summary>
+    /// Reads and validates exact historical bytes against expected byte count and SHA-256.
+    /// Never falls back to a newer/older snapshot if the exact version file is missing or corrupted.
+    /// </summary>
+    public async Task<byte[]> ReadAndVerifyVersionBytesAsync(string versionId, CancellationToken ct = default)
     {
         var version = await _store.GetVersionByIdAsync(versionId, ct)
-            ?? throw new InvalidOperationException($"Archive version '{versionId}' was not found.");
+            ?? throw new InvalidOperationException($"Archive version '{versionId}' was not found in the database.");
 
-        byte[] bytes;
-        if (File.Exists(version.ArchivePath))
+        var archiveFullPath = Path.GetFullPath(version.ArchivePath);
+        if (!File.Exists(archiveFullPath))
         {
-            bytes = await File.ReadAllBytesAsync(version.ArchivePath, ct);
-        }
-        else
-        {
-            var snap = await _store.GetSnapshotAsync(version.SourcePath, ct)
-                ?? throw new FileNotFoundException($"Archive file missing at '{version.ArchivePath}' and no snapshot fallback available.");
-            bytes = snap.RawBytes;
+            throw new FileNotFoundException(
+                $"Historical archive file for v{version.VersionNum} ('{version.FileName}') is missing at '{archiveFullPath}'. Restoration aborted to prevent substituting another version.",
+                archiveFullPath);
         }
 
-        await WriteBytesAtomicallyAsync(destinationPath, bytes, ct);
+        var bytes = await File.ReadAllBytesAsync(archiveFullPath, ct);
+        var actualSha = SourceAnalyzer.ComputeSha256Hex(bytes);
+        if (bytes.LongLength != version.SizeBytes || !string.Equals(actualSha, version.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Integrity verification failed for v{version.VersionNum} ('{version.FileName}'): expected {version.SizeBytes} bytes (SHA-256 {version.Sha256}), got {bytes.LongLength} bytes (SHA-256 {actualSha}).");
+        }
+
+        return bytes;
     }
 
-    public static async Task WriteBytesAtomicallyAsync(string targetPath, byte[] bytes, CancellationToken ct = default)
+    public async Task RestoreVersionAsync(string versionId, string destinationPath, CancellationToken ct = default)
+    {
+        var bytes = await ReadAndVerifyVersionBytesAsync(versionId, ct);
+        await WriteReplaceableCopyAtomicallyAsync(destinationPath, bytes, ct);
+    }
+
+    /// <summary>
+    /// Cleans leftover temporary files and registers orphaned historical archive files
+    /// written before an unexpected termination prior to SQLite transaction commit.
+    /// </summary>
+    public async Task<int> ReconcileAfterCrashAsync(CancellationToken ct = default)
+    {
+        SweepTempFiles(_config.ArchiveDir);
+        SweepTempFiles(_config.ReadyDir);
+
+        int recovered = 0;
+        var historyRoot = Path.Combine(_config.ArchiveDir, "History");
+        if (!Directory.Exists(historyRoot))
+            return 0;
+
+        foreach (var file in Directory.EnumerateFiles(historyRoot, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            var name = Path.GetFileName(file);
+            if (name.StartsWith('.') || name.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (SourceAnalyzer.LanguageFromPath(file) is null)
+                continue;
+
+            var fullArchive = Path.GetFullPath(file);
+            if (await _store.GetVersionByArchivePathAsync(fullArchive, ct) is not null)
+                continue;
+
+            byte[] bytes;
+            try
+            {
+                bytes = await File.ReadAllBytesAsync(fullArchive, ct);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (bytes.Length == 0)
+                continue;
+
+            var sha = SourceAnalyzer.ComputeSha256Hex(bytes);
+            var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+            var normHash = SourceAnalyzer.ComputeNormalizedHash(text);
+            int verNum = 1;
+            var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileNameWithoutExtension(name), @"_v(\d+)_");
+            if (match.Success && int.TryParse(match.Groups[1].Value, out int parsedVer) && parsedVer > 0)
+                verNum = parsedVer;
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var rec = new ArchiveVersionRecord(
+                Id: Guid.NewGuid().ToString("N"),
+                VersionNum: verNum,
+                SourcePath: fullArchive,
+                ArchivePath: fullArchive,
+                ReadyPath: null,
+                FileName: name,
+                Sha256: sha,
+                NormHash: normHash,
+                SizeBytes: bytes.LongLength,
+                ProblemCode: null,
+                ProblemTitle: "Recovered Orphan",
+                Platform: "Recovered",
+                CreatedAtUnixMs: nowMs);
+
+            var queue = new UploadQueueItem(rec.Id, UploadStatus.Pending, 0, 0, null, null, nowMs);
+            await _store.InsertRecoveredVersionAsync(rec, queue, ct);
+            recovered++;
+        }
+
+        return recovered;
+    }
+
+    private static void SweepTempFiles(string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            return;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                var name = Path.GetFileName(file);
+                if (name.StartsWith(".tmp.", StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+            }
+        }
+        catch { }
+    }
+
+    public static async Task<(string Path, string FileName)> WriteImmutableHistoricalFileAsync(
+        string historyDir,
+        string baseStem,
+        int versionNum,
+        string shortHash,
+        string versionId,
+        string ext,
+        byte[] bytes,
+        CancellationToken ct = default)
+    {
+        Directory.CreateDirectory(historyDir);
+        var tempPath = System.IO.Path.Combine(historyDir, $".tmp.{Guid.NewGuid():N}");
+        try
+        {
+            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 8192, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await fs.WriteAsync(bytes, ct);
+                await fs.FlushAsync(ct);
+                fs.Flush(flushToDisk: true);
+            }
+
+            string[] candidates =
+            {
+                $"{baseStem}_v{versionNum}_{shortHash}.{ext}",
+                $"{baseStem}_v{versionNum}_{shortHash}_{versionId[..8]}.{ext}",
+                $"{baseStem}_v{versionNum}_{shortHash}_{Guid.NewGuid():N}.{ext}"
+            };
+
+            foreach (var candidateName in candidates)
+            {
+                var candidatePath = System.IO.Path.Combine(historyDir, candidateName);
+                try
+                {
+                    File.Move(tempPath, candidatePath, overwrite: false);
+                    return (candidatePath, candidateName);
+                }
+                catch (IOException) when (File.Exists(candidatePath))
+                {
+                    // Never overwrite an existing historical archive file; try next unique name
+                }
+            }
+
+            throw new IOException($"Unable to allocate unique immutable archive filename inside '{historyDir}'.");
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
+
+    public static Task WriteBytesAtomicallyAsync(string targetPath, byte[] bytes, CancellationToken ct = default) =>
+        WriteReplaceableCopyAtomicallyAsync(targetPath, bytes, ct);
+
+    public static async Task WriteReplaceableCopyAtomicallyAsync(string targetPath, byte[] bytes, CancellationToken ct = default)
     {
         var fullTarget = Path.GetFullPath(targetPath);
         var dir = Path.GetDirectoryName(fullTarget);
@@ -185,12 +351,24 @@ public sealed class LosslessArchiver
         var tempPath = $"{fullTarget}.tmp.{Guid.NewGuid():N}";
         try
         {
-            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 8192, useAsync: true))
+            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 8192, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 await fs.WriteAsync(bytes, ct);
                 await fs.FlushAsync(ct);
+                fs.Flush(flushToDisk: true);
             }
-            File.Move(tempPath, fullTarget, overwrite: true);
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, fullTarget, overwrite: true);
+                    return;
+                }
+                catch (Exception ex) when (attempt < 4 && (ex is IOException || ex is UnauthorizedAccessException))
+                {
+                    await Task.Delay(40 * (attempt + 1), ct);
+                }
+            }
         }
         catch
         {

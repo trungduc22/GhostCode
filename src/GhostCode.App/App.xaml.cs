@@ -1,3 +1,4 @@
+using GhostCode.App.Diagnostics;
 using GhostCode.App.ViewModels;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
@@ -29,11 +30,16 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        var configPath = Environment.GetEnvironmentVariable("GHOSTCODE_CONFIG_PATH");
-        if (string.IsNullOrWhiteSpace(configPath))
-            configPath = GhostCodeConfig.DefaultConfigPath();
+        var customConfigEnv = Environment.GetEnvironmentVariable("GHOSTCODE_CONFIG_PATH");
+        var configPath = string.IsNullOrWhiteSpace(customConfigEnv)
+            ? GhostCodeConfig.DefaultConfigPath()
+            : customConfigEnv;
 
         var config = GhostCodeConfig.LoadOrDefault(configPath);
+        if (string.IsNullOrWhiteSpace(customConfigEnv))
+        {
+            config.PairingFilePath ??= FindExtensionPairingPath();
+        }
         config.Save(configPath);
 
         var credPath = Path.Combine(Path.GetDirectoryName(configPath)!, "credentials.dpapi");
@@ -78,6 +84,9 @@ public partial class App : Application
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
             await store.InitializeAsync();
 
+            var archiver = _serviceProvider.GetRequiredService<LosslessArchiver>();
+            await archiver.ReconcileAfterCrashAsync();
+
             var bridge = _serviceProvider.GetRequiredService<AuthenticatedBrowserBridge>();
             bridge.Start();
 
@@ -93,12 +102,39 @@ public partial class App : Application
 
             var vm = _serviceProvider.GetRequiredService<MainViewModel>();
             await vm.InitializeAsync();
+
+            var selfTestReportPath = Environment.GetEnvironmentVariable("GHOSTCODE_SELF_TEST_REPORT");
+            if (!string.IsNullOrWhiteSpace(selfTestReportPath))
+            {
+                await UiSelfTestRunner.RunAndWriteReportAsync(
+                    selfTestReportPath,
+                    _window,
+                    vm,
+                    config,
+                    configPath,
+                    _serviceProvider.GetRequiredService<DpapiCredentialStore>(),
+                    Path.GetDirectoryName(configPath)!);
+                await ShutdownAndExitAsync();
+            }
         }
         catch (Exception ex)
         {
             var vm = _serviceProvider.GetRequiredService<MainViewModel>();
             vm.ShowInfoBar("Startup Warning", ex.Message, InfoBarSeverity.Error);
         }
+    }
+
+    private static string? FindExtensionPairingPath()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "browser-extension");
+            if (Directory.Exists(candidate))
+                return Path.Combine(candidate, "pairing.generated.json");
+            dir = dir.Parent;
+        }
+        return null;
     }
 
     private async Task ShutdownAndExitAsync()

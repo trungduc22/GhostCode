@@ -61,7 +61,7 @@ public sealed record WatchedFolderConfig(
 
 public sealed record GoogleOAuthClientConfig(
     string ClientId = "",
-    string ClientSecret = "");
+    [property: JsonIgnore] string ClientSecret = "");
 
 public sealed record FileSnapshotRecord(
     string SourcePath,
@@ -139,7 +139,10 @@ public sealed class GhostCodeConfig
     public string? DriveRootFolderId { get; set; }
     public int HttpPort { get; set; } = 48123;
     public int ContextExpirationSeconds { get; set; } = 1200;
+    public int SessionTokenTtlSeconds { get; set; } = 300;
     public string BridgeAuthToken { get; set; } = string.Empty;
+    [JsonIgnore]
+    public string? PairingFilePath { get; set; }
     public GoogleOAuthClientConfig OAuthClient { get; set; } = new();
 
     public static string DefaultConfigPath(string? localAppDataOverride = null) =>
@@ -205,7 +208,7 @@ public sealed class GhostCodeConfig
     public void EnsureDefaults(string? userProfileOverride = null, string? localAppDataOverride = null)
     {
         var def = CreateDefault(userProfileOverride, localAppDataOverride);
-        if (WatchedFolders is null || WatchedFolders.Count == 0)
+        if (WatchedFolders is null)
             WatchedFolders = def.WatchedFolders;
         WatchedFolders = WatchedFolders
             .Where(w => !string.IsNullOrWhiteSpace(w.Path) && !KnownFoldersResolver.IsDriveRoot(w.Path))
@@ -241,5 +244,28 @@ public sealed class GhostCodeConfig
         File.Move(tmp, configPath, overwrite: true);
     }
 
-    public string ExportToJson() => JsonSerializer.Serialize(this, JsonOptions);
+    public string ExportToJson()
+    {
+        var sanitized = new GhostCodeConfig
+        {
+            WatchedFolders = WatchedFolders.ToList(),
+            ArchiveDir = ArchiveDir,
+            ReadyDir = ReadyDir,
+            DatabasePath = DatabasePath,
+            Language = Language,
+            Theme = Theme,
+            MinimizeToTrayOnClose = MinimizeToTrayOnClose,
+            LaunchAtStartup = LaunchAtStartup,
+            AutoCopyReadyPath = AutoCopyReadyPath,
+            DriveEnabled = DriveEnabled,
+            DriveFolderName = DriveFolderName,
+            DriveRootFolderId = DriveRootFolderId,
+            HttpPort = HttpPort,
+            ContextExpirationSeconds = ContextExpirationSeconds,
+            SessionTokenTtlSeconds = SessionTokenTtlSeconds,
+            BridgeAuthToken = string.IsNullOrEmpty(BridgeAuthToken) ? string.Empty : "[REDACTED]",
+            OAuthClient = new GoogleOAuthClientConfig(OAuthClient.ClientId, string.Empty)
+        };
+        return JsonSerializer.Serialize(sanitized, JsonOptions);
+    }
 }

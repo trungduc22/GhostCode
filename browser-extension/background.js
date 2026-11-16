@@ -1,11 +1,17 @@
-const BASE_URL = "http://127.0.0.1:48123";
+const DEFAULT_PORT = 48123;
 const injectedByTab = new Map();
-let bridgeToken = "";
+let activePort = DEFAULT_PORT;
+let sessionToken = "";
+let sessionExpiresAt = 0;
 let lastSentKey = "";
 let lastSentAt = 0;
 
 function cleanText(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
+}
+
+function isDomainMatch(host, domain) {
+  return host === domain || host.endsWith("." + domain);
 }
 
 function stripCodePrefix(title, code) {
@@ -32,18 +38,19 @@ function extractFromTab(tab) {
   } catch {
     return null;
   }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   const host = parsed.hostname.toLowerCase();
   const path = parsed.pathname;
   const rawTitle = tab.title || "";
 
-  if (host.endsWith("code.ptit.edu.vn")) {
+  if (isDomainMatch(host, "code.ptit.edu.vn")) {
     const m = path.match(/\/(?:student\/)?questions?\/([A-Za-z0-9_-]+)/i);
     if (!m) return null;
     const code = m[1].toUpperCase();
     return { problem_code: code, problem_title: stripCodePrefix(rawTitle, code), platform: "PTIT", url: tab.url };
   }
 
-  if (host.endsWith("codeforces.com")) {
+  if (isDomainMatch(host, "codeforces.com")) {
     let m = path.match(/\/problemset\/problem\/(\d+)\/([A-Za-z0-9]+)/i);
     if (!m) m = path.match(/\/(?:contest|gym)\/(\d+)\/problem\/([A-Za-z0-9]+)/i);
     if (!m) return null;
@@ -55,21 +62,21 @@ function extractFromTab(tab) {
     return { problem_code: code, problem_title: title, platform: "Codeforces", url: tab.url };
   }
 
-  if (host.endsWith("oj.vnoi.info")) {
+  if (isDomainMatch(host, "oj.vnoi.info")) {
     const m = path.match(/\/problem\/([A-Za-z0-9_-]+)/i);
     if (!m) return null;
     const code = `VNOJ_${m[1]}`;
     return { problem_code: code, problem_title: stripCodePrefix(rawTitle, m[1]), platform: "VNOJ", url: tab.url };
   }
 
-  if (host.endsWith("leetcode.com") || host.endsWith("leetcode.cn")) {
+  if (isDomainMatch(host, "leetcode.com") || isDomainMatch(host, "leetcode.cn")) {
     const m = path.match(/\/problems\/([A-Za-z0-9_-]+)/i);
     if (!m) return null;
     const code = `LC_${m[1]}`;
     return { problem_code: code, problem_title: stripCodePrefix(rawTitle, m[1]), platform: "LeetCode", url: tab.url };
   }
 
-  if (host.endsWith("hackerrank.com")) {
+  if (isDomainMatch(host, "hackerrank.com")) {
     const m = path.match(/\/challenges\/([A-Za-z0-9_-]+)/i);
     if (!m) return null;
     const code = `HR_${m[1]}`;
@@ -79,23 +86,131 @@ function extractFromTab(tab) {
   return null;
 }
 
-async function ensureToken() {
-  if (bridgeToken) return bridgeToken;
+async function computeHmacHex(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function tryNativeHandshake() {
+  if (!chrome.runtime || !chrome.runtime.sendNativeMessage) return "";
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage("com.ghostcode.bridge", { type: "handshake" }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.session_token) {
+          resolve("");
+          return;
+        }
+        if (resp.port) activePort = resp.port;
+        sessionToken = resp.session_token;
+        sessionExpiresAt = Date.now() + 240_000;
+        resolve(sessionToken);
+      });
+    } catch {
+      resolve("");
+    }
+  });
+}
+
+async function loadLocalPairing() {
   try {
-    const resp = await fetch(`${BASE_URL}/handshake`, { method: "GET" });
+    const url = chrome.runtime.getURL("pairing.generated.json");
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data || !data.pairing_secret || !data.pairing_id) return null;
+    if (data.port) activePort = data.port;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureToken(forceRefresh = false) {
+  if (!forceRefresh && sessionToken && Date.now() < sessionExpiresAt) {
+    return sessionToken;
+  }
+
+  const nativeTok = await tryNativeHandshake();
+  if (nativeTok) return nativeTok;
+
+  const pairing = await loadLocalPairing();
+  if (!pairing) return "";
+
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(nonceBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const timestamp = Date.now();
+  const proof = await computeHmacHex(pairing.pairing_secret, `${nonce}:${timestamp}`);
+
+  try {
+    const resp = await fetch(`http://127.0.0.1:${activePort}/handshake`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GhostCode-Pairing-Id": pairing.pairing_id,
+        "X-GhostCode-Nonce": nonce,
+        "X-GhostCode-Timestamp": String(timestamp),
+        "X-GhostCode-Proof": proof
+      },
+      body: "{}"
+    });
     if (resp.ok) {
       const data = await resp.json();
-      if (data && data.token) {
-        bridgeToken = data.token;
-        return bridgeToken;
+      if (data && data.session_token) {
+        sessionToken = data.session_token;
+        const ttlMs = (data.expires_in || 300) * 1000;
+        sessionExpiresAt = Date.now() + Math.max(30_000, ttlMs - 15_000);
+        return sessionToken;
       }
     }
   } catch {}
   return "";
 }
 
+async function clearContextInApp() {
+  if (!lastSentKey) return;
+  lastSentKey = "";
+  lastSentAt = 0;
+
+  const token = await ensureToken(false);
+  if (!token) return;
+
+  try {
+    const resp = await fetch(`http://127.0.0.1:${activePort}/context/clear`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GhostCode-Token": token
+      },
+      body: "{}"
+    });
+    if (resp.status === 401) {
+      const fresh = await ensureToken(true);
+      if (fresh) {
+        await fetch(`http://127.0.0.1:${activePort}/context/clear`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-GhostCode-Token": fresh
+          },
+          body: "{}"
+        });
+      }
+    }
+  } catch {}
+}
+
 async function postToApp(payload, tabActive) {
-  if (!payload || !payload.problem_code || !tabActive) return;
+  if (!payload || !payload.problem_code || !payload.url || !tabActive) return;
 
   const now = Date.now();
   const key = `${payload.platform}|${payload.problem_code}|${payload.problem_title}|${payload.url}`;
@@ -103,7 +218,7 @@ async function postToApp(payload, tabActive) {
     return;
   }
 
-  const token = await ensureToken();
+  let token = await ensureToken(false);
   if (!token) return;
 
   const body = {
@@ -116,7 +231,7 @@ async function postToApp(payload, tabActive) {
   };
 
   try {
-    const resp = await fetch(`${BASE_URL}/context`, {
+    let resp = await fetch(`http://127.0.0.1:${activePort}/context`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -125,15 +240,13 @@ async function postToApp(payload, tabActive) {
       body: JSON.stringify(body)
     });
     if (resp.status === 401) {
-      // App restarted with a new token; refresh token and retry once
-      bridgeToken = "";
-      const fresh = await ensureToken();
-      if (fresh) {
-        await fetch(`${BASE_URL}/context`, {
+      token = await ensureToken(true);
+      if (token) {
+        resp = await fetch(`http://127.0.0.1:${activePort}/context`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "X-GhostCode-Token": fresh
+            "X-GhostCode-Token": token
           },
           body: JSON.stringify(body)
         });
@@ -149,7 +262,12 @@ async function postToApp(payload, tabActive) {
 async function processTab(tab) {
   if (!tab || !tab.active) return;
   const ctx = extractFromTab(tab);
-  if (!ctx) return;
+  if (!ctx) {
+    if (tab.url && /^https?:\/\//i.test(tab.url)) {
+      await clearContextInApp();
+    }
+    return;
+  }
 
   await postToApp(ctx, true);
 
@@ -168,17 +286,14 @@ async function scanFocusedActiveTab() {
   try {
     const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     for (const tab of active) {
-      if (extractFromTab(tab)) {
-        await processTab(tab);
-        return;
-      }
+      await processTab(tab);
+      return;
     }
   } catch {}
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "AUTONAME_CONTEXT" && msg.payload) {
-    // Only accept messages from an actually active tab
     const isActive = Boolean(sender && sender.tab && sender.tab.active);
     if (!isActive) {
       sendResponse({ ok: false, ignored: "background_tab" });
@@ -191,13 +306,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   injectedByTab.clear();
-  bridgeToken = "";
+  sessionToken = "";
+  sessionExpiresAt = 0;
   scanFocusedActiveTab();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   injectedByTab.clear();
-  bridgeToken = "";
+  sessionToken = "";
+  sessionExpiresAt = 0;
   scanFocusedActiveTab();
 });
 

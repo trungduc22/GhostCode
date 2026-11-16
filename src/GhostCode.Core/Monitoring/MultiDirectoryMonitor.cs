@@ -53,6 +53,33 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
 
     public event Action<MonitorEventRecord>? EventRecorded;
 
+    public string LastDetectedFile { get; private set; } = "None";
+    public string LastSuccessfulBackup { get; private set; } = "None";
+    public string LastMonitoringError { get; private set; } = "None";
+    public string LastDiagnosticSummary { get; private set; } = "Not run yet";
+
+    public bool IsExcludedOrOutputDirectory(string candidatePath)
+    {
+        if (string.IsNullOrWhiteSpace(candidatePath))
+            return true;
+        var norm = NormalizeDir(candidatePath);
+        foreach (var ex in ExcludedDirectories())
+        {
+            if (string.IsNullOrWhiteSpace(ex))
+                continue;
+            var exNorm = NormalizeDir(ex);
+            if (string.Equals(norm, exNorm, StringComparison.OrdinalIgnoreCase)
+                || norm.StartsWith(exNorm + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static string NormalizeDir(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
     public IReadOnlyList<ActiveWatchInfo> GetActiveWatches()
     {
         lock (_watcherLock)
@@ -80,6 +107,18 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         {
             ClearWatchersLocked();
 
+            var seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var recursiveParents = _config.WatchedFolders
+                .Where(w => w.Enabled && w.Recursive && !string.IsNullOrWhiteSpace(w.Path) && !KnownFoldersResolver.IsDriveRoot(w.Path))
+                .Select(w =>
+                {
+                    try { return NormalizeDir(w.Path); }
+                    catch { return string.Empty; }
+                })
+                .Where(p => !string.IsNullOrEmpty(p) && !IsExcludedOrOutputDirectory(p) && Directory.Exists(p))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             foreach (var folder in _config.WatchedFolders)
             {
                 if (!folder.Enabled)
@@ -87,17 +126,50 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                 if (KnownFoldersResolver.IsDriveRoot(folder.Path))
                 {
                     _watchers.Add((folder, null, "Skipped drive root for safety"));
+                    LastMonitoringError = $"Drive root blocked: {folder.Path}";
                     continue;
                 }
-                if (!Directory.Exists(folder.Path))
+
+                string fullRoot;
+                try
+                {
+                    fullRoot = NormalizeDir(folder.Path);
+                }
+                catch (Exception ex)
+                {
+                    _watchers.Add((folder, null, ex.Message));
+                    LastMonitoringError = ex.Message;
+                    continue;
+                }
+
+                if (!seenRoots.Add(fullRoot))
+                    continue;
+
+                if (IsExcludedOrOutputDirectory(fullRoot))
+                {
+                    _watchers.Add((folder, null, "Excluded archive/output directory"));
+                    LastMonitoringError = $"Excluded archive/output directory: {fullRoot}";
+                    continue;
+                }
+
+                if (!Directory.Exists(fullRoot))
                 {
                     _watchers.Add((folder, null, "Directory not found"));
+                    LastMonitoringError = $"Directory not found: {fullRoot}";
+                    continue;
+                }
+
+                var coveringParent = recursiveParents.FirstOrDefault(p =>
+                    !string.Equals(p, fullRoot, StringComparison.OrdinalIgnoreCase)
+                    && fullRoot.StartsWith(p + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+                if (coveringParent is not null)
+                {
+                    _watchers.Add((folder, null, $"Covered by recursive parent '{coveringParent}'"));
                     continue;
                 }
 
                 try
                 {
-                    var fullRoot = Path.GetFullPath(folder.Path);
                     var fsw = new FileSystemWatcher(fullRoot)
                     {
                         IncludeSubdirectories = folder.Recursive,
@@ -114,6 +186,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                     fsw.Error += (_, e) =>
                     {
                         var msg = e.GetException()?.Message ?? "Watcher buffer overflow";
+                        LastMonitoringError = $"{fullRoot}: {msg}";
                         _ = RecordEventSafeAsync(fullRoot, fullRoot, "WatcherError", msg);
                     };
 
@@ -123,6 +196,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                 catch (Exception ex)
                 {
                     _watchers.Add((folder, null, ex.Message));
+                    LastMonitoringError = $"{fullRoot}: {ex.Message}";
                 }
             }
         }
@@ -214,15 +288,22 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         if (!File.Exists(filePath))
             return;
 
+        LastDetectedFile = $"{Path.GetFileName(filePath)} @ {DateTime.Now:HH:mm:ss}";
+
         var bytes = await ReadFileWithRetryAsync(filePath, ct);
         if (bytes is null)
         {
+            LastMonitoringError = $"File remained locked: {Path.GetFileName(filePath)} @ {DateTime.Now:HH:mm:ss}";
             await RecordEventSafeAsync(watchedRoot, filePath, "ReadFailed", "File remained locked after retries");
             return;
         }
 
         var ctx = _contextProvider();
         var res = await _archiver.ProcessFileSaveAsync(filePath, bytes, ctx, ct);
+        if (res.Outcome == ArchiveOutcome.CreatedVersion && res.Version is not null)
+        {
+            LastSuccessfulBackup = $"{res.Version.FileName} (v{res.Version.VersionNum}) @ {DateTime.Now:HH:mm:ss}";
+        }
         await RecordEventSafeAsync(watchedRoot, filePath, eventType, res.Message);
     }
 
@@ -361,9 +442,12 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
 
     public async Task<MonitoringDiagnosticResult> RunDiagnosticTestAsync(string? targetFolder = null, CancellationToken ct = default)
     {
-        var folder = targetFolder ?? _config.WatchedFolders.FirstOrDefault(w => w.Enabled && Directory.Exists(w.Path))?.Path;
+        var folder = targetFolder ?? _config.WatchedFolders.FirstOrDefault(w => w.Enabled && !IsExcludedOrOutputDirectory(w.Path) && Directory.Exists(w.Path))?.Path;
         if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            LastDiagnosticSummary = "FAIL: No enabled watched folder exists.";
             return new MonitoringDiagnosticResult(false, string.Empty, null, "No enabled watched folder exists.");
+        }
 
         bool startedHere = false;
         if (_cts is null)
@@ -372,7 +456,8 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
             startedHere = true;
         }
 
-        var probePath = Path.Combine(folder, $"GhostCode_DiagProbe_{Guid.NewGuid():N}.cpp");
+        var probeToken = Guid.NewGuid().ToString("N");
+        var probePath = Path.Combine(folder, $"GhostCode_DiagProbe_{probeToken}.cpp");
         var tcs = new TaskCompletionSource<ArchiveVersionRecord>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         void Handler(ArchiveVersionRecord ver)
@@ -381,36 +466,56 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                 tcs.TrySetResult(ver);
         }
 
+        ArchiveVersionRecord? probeVersion = null;
         _archiver.VersionArchived += Handler;
         try
         {
-            var probeCode = $"#include <stdio.h>\nint main(){{ printf(\"diag_{Guid.NewGuid():N}\"); return 0; }}\n";
+            var probeCode = $"#include <stdio.h>\nint main(){{ printf(\"diag_{probeToken}\"); return 0; }}\n";
             await File.WriteAllTextAsync(probePath, probeCode, Encoding.UTF8, ct);
 
             var winner = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(5), ct));
             if (winner == tcs.Task)
             {
-                var ver = await tcs.Task;
-                return new MonitoringDiagnosticResult(
-                    true,
-                    probePath,
-                    ver.Id,
-                    $"Verified watcher detected and archived probe inside '{folder}' -> {ver.FileName}");
+                probeVersion = await tcs.Task;
+                var summary = $"PASS ({DateTime.Now:HH:mm:ss}): Verified watcher detected and archived probe inside '{folder}' -> {probeVersion.FileName}";
+                LastDiagnosticSummary = summary;
+                await RecordEventSafeAsync(folder, probePath, "DiagnosticPassed", summary);
+                return new MonitoringDiagnosticResult(true, probePath, probeVersion.Id, summary);
             }
 
-            return new MonitoringDiagnosticResult(
-                false,
-                probePath,
-                null,
-                $"Timed out waiting for FileSystemWatcher event in '{folder}'.");
+            var failSummary = $"FAIL ({DateTime.Now:HH:mm:ss}): Timed out waiting for FileSystemWatcher event in '{folder}'.";
+            LastDiagnosticSummary = failSummary;
+            LastMonitoringError = failSummary;
+            await RecordEventSafeAsync(folder, probePath, "DiagnosticFailed", failSummary);
+            return new MonitoringDiagnosticResult(false, probePath, null, failSummary);
         }
         finally
         {
             _archiver.VersionArchived -= Handler;
             try { if (File.Exists(probePath)) File.Delete(probePath); } catch { }
+            if (probeVersion is not null)
+            {
+                try { await _store.DeleteVersionAsync(probeVersion.Id, CancellationToken.None); } catch { }
+            }
+            DeleteMatchingFiles(_config.ArchiveDir, $"*{probeToken}*");
+            DeleteMatchingFiles(_config.ReadyDir, $"*{probeToken}*");
             if (startedHere)
                 await StopAsync();
         }
+    }
+
+    private static void DeleteMatchingFiles(string? root, string pattern)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            return;
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
+            {
+                try { File.Delete(f); } catch { }
+            }
+        }
+        catch { }
     }
 
     private async Task RecordEventSafeAsync(string folder, string file, string eventType, string message)

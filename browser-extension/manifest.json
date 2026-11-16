@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "GhostCode Bridge (PTIT & Codeforces)",
-  "version": "1.2.0",
-  "description": "Authenticated active-tab context bridge for Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank.",
+  "version": "1.3.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6wti1tRs7VoHNOlA6gRaeKz8kEtiFPS04OPl8bV47RZgh8ievCpOUQgclduLC0me0rF7bmvBCh6B194rJZY0bz0fVIfAW+kDQ+dtCMaj+lQzs0qxu0gb2nNRGFzHIVRoaCk4SbtsGmc7brJw/mNDL2QH5QEnaWZ6EMgt8F2+yqIHn3yC9LMkQ0t8U8YkDKhO2JlBqlmTEY+pXJyjPsWcPenW0kSsiuEpjFNs5GXHguL7L08uij4K1CkhqROFq3oxkoG9xnK+kaC9PBcL+O+4RbiqjwBca9u+tSKLTZRap5j0YtWKT3F5j3IidUX7PInPb4LghZThppFq2uUd0C9hSQIDAQAB",
+  "description": "HMAC-authenticated active-tab context bridge for Code PTIT, Codeforces, VNOJ, LeetCode, and HackerRank.",
   "permissions": [
     "tabs",
     "activeTab",
-    "scripting"
+    "scripting",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "*://code.ptit.edu.vn/*",

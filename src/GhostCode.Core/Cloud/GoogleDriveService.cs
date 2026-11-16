@@ -23,6 +23,20 @@ public sealed record DriveSyncReport(
     bool Connected,
     string? LastError);
 
+public enum OAuthConnectionStage
+{
+    Idle,
+    WaitingForBrowserCallback,
+    CallbackReceivedExchangingToken,
+    Connected,
+    Failed
+}
+
+public sealed record DisconnectResult(
+    bool LocalCredentialsCleared,
+    bool RemoteRevocationSucceeded,
+    string? RemoteError);
+
 /// <summary>
 /// Native Google Drive v3 client using OAuth 2.0 Desktop PKCE, DPAPI token persistence,
 /// SHA-256 duplicate avoidance, bounded exponential backoff, and explicit server confirmation.
@@ -55,6 +69,7 @@ public sealed class GoogleDriveService : IAsyncDisposable
     public bool HasOAuthClientConfigured => !string.IsNullOrWhiteSpace(_config.OAuthClient?.ClientId);
 
     public event Action<DriveSyncReport>? SyncCompleted;
+    public event Action<OAuthConnectionStage, string>? AuthStageChanged;
 
     public async Task<GoogleAuthTokens?> GetConnectedAccountAsync(CancellationToken ct = default) =>
         await _credentialStore.LoadAsync(ct);
@@ -97,8 +112,9 @@ public sealed class GoogleDriveService : IAsyncDisposable
     {
         if (!HasOAuthClientConfigured)
         {
-            throw new InvalidOperationException(
-                "Google OAuth Desktop Client ID is not configured. Open Settings/Cloud OAuth setup and enter your Google Cloud Desktop Client ID.");
+            const string msg = "Google OAuth Desktop Client ID is not configured. Open Cloud OAuth setup and enter your Google Cloud Desktop Client ID.";
+            AuthStageChanged?.Invoke(OAuthConnectionStage.Failed, msg);
+            throw new InvalidOperationException(msg);
         }
 
         var verifier = Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
@@ -112,6 +128,8 @@ public sealed class GoogleDriveService : IAsyncDisposable
 
         try
         {
+            AuthStageChanged?.Invoke(OAuthConnectionStage.WaitingForBrowserCallback, "Waiting for Google sign-in authorization in browser...");
+
             var authUrl = "https://accounts.google.com/o/oauth2/v2/auth"
                 + $"?client_id={Uri.EscapeDataString(_config.OAuthClient.ClientId)}"
                 + $"&redirect_uri={Uri.EscapeDataString(redirectUri)}"
@@ -132,13 +150,75 @@ public sealed class GoogleDriveService : IAsyncDisposable
                 Process.Start(new ProcessStartInfo(authUrl) { UseShellExecute = true });
             }
 
-            string? authCode = await WaitForOAuthCallbackAsync(listener, state, ct);
-            if (string.IsNullOrEmpty(authCode))
-                throw new InvalidOperationException("Google authorization was cancelled or did not return an authorization code.");
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMinutes(3));
+            using var reg = timeoutCts.Token.Register(() => { try { listener.Stop(); } catch { } });
 
-            var tokens = await ExchangeCodeForTokensAsync(authCode, verifier, redirectUri, ct);
-            await _credentialStore.SaveAsync(tokens, ct);
-            return tokens;
+            using var client = await listener.AcceptTcpClientAsync(timeoutCts.Token);
+            await using var stream = client.GetStream();
+
+            var buf = new byte[8192];
+            int read = await stream.ReadAsync(buf, timeoutCts.Token);
+            var reqText = Encoding.ASCII.GetString(buf, 0, read);
+            var firstLine = reqText.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            var parts = firstLine.Split(' ');
+            var target = parts.Length >= 2 ? parts[1] : "/";
+            var uri = new Uri("http://127.0.0.1" + target);
+            var query = ParseQueryString(uri.Query);
+
+            query.TryGetValue("state", out var gotState);
+            query.TryGetValue("code", out var code);
+            query.TryGetValue("error", out var error);
+
+            bool callbackValid = string.Equals(gotState, state, StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(code)
+                && string.IsNullOrEmpty(error);
+
+            if (!callbackValid)
+            {
+                var reason = error ?? "State mismatch or authorization cancelled.";
+                await WriteOAuthBrowserResponseAsync(
+                    stream,
+                    400,
+                    "Bad Request",
+                    $"<html><body style='font-family:Segoe UI,sans-serif;padding:40px'><h2>Authorization Failed</h2><p>{WebUtility.HtmlEncode(reason)}</p></body></html>",
+                    ct);
+                AuthStageChanged?.Invoke(OAuthConnectionStage.Failed, reason);
+                throw new InvalidOperationException($"Google authorization failed: {reason}");
+            }
+
+            AuthStageChanged?.Invoke(OAuthConnectionStage.CallbackReceivedExchangingToken, "Authorization callback received. Exchanging PKCE code for tokens...");
+
+            try
+            {
+                var tokens = await ExchangeCodeForTokensAsync(code!, verifier, redirectUri, ct);
+                await _credentialStore.SaveAsync(tokens, ct);
+
+                await WriteOAuthBrowserResponseAsync(
+                    stream,
+                    200,
+                    "OK",
+                    $"<html><body style='font-family:Segoe UI,sans-serif;padding:40px'><h2>Token Exchange Completed &amp; Account Connected</h2><p>Connected account: <strong>{WebUtility.HtmlEncode(tokens.Email)}</strong>. You can close this tab and return to GhostCode.</p></body></html>",
+                    ct);
+
+                AuthStageChanged?.Invoke(OAuthConnectionStage.Connected, $"Connected as {tokens.Email}");
+                return tokens;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    await WriteOAuthBrowserResponseAsync(
+                        stream,
+                        500,
+                        "Internal Server Error",
+                        $"<html><body style='font-family:Segoe UI,sans-serif;padding:40px'><h2>Token Exchange Failed</h2><p>Authorization callback was received, but token exchange failed: {WebUtility.HtmlEncode(ex.Message)}</p></body></html>",
+                        CancellationToken.None);
+                }
+                catch { }
+                AuthStageChanged?.Invoke(OAuthConnectionStage.Failed, ex.Message);
+                throw;
+            }
         }
         finally
         {
@@ -146,39 +226,26 @@ public sealed class GoogleDriveService : IAsyncDisposable
         }
     }
 
-    private static async Task<string?> WaitForOAuthCallbackAsync(TcpListener listener, string expectedState, CancellationToken ct)
+    private static async Task WriteOAuthBrowserResponseAsync(
+        NetworkStream stream,
+        int statusCode,
+        string statusText,
+        string html,
+        CancellationToken ct)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(TimeSpan.FromMinutes(3));
-
-        using var reg = timeoutCts.Token.Register(() => { try { listener.Stop(); } catch { } });
-        using var client = await listener.AcceptTcpClientAsync(timeoutCts.Token);
-        await using var stream = client.GetStream();
-
-        var buf = new byte[8192];
-        int read = await stream.ReadAsync(buf, timeoutCts.Token);
-        var reqText = Encoding.ASCII.GetString(buf, 0, read);
-        var firstLine = reqText.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
-        var parts = firstLine.Split(' ');
-        var target = parts.Length >= 2 ? parts[1] : "/";
-        var uri = new Uri("http://127.0.0.1" + target);
-        var query = ParseQueryString(uri.Query);
-
-        query.TryGetValue("state", out var gotState);
-        query.TryGetValue("code", out var code);
-        query.TryGetValue("error", out var error);
-
-        bool ok = string.Equals(gotState, expectedState, StringComparison.Ordinal) && !string.IsNullOrEmpty(code) && string.IsNullOrEmpty(error);
-        var html = ok
-            ? "<html><body style='font-family:Segoe UI,sans-serif;padding:40px'><h2>GhostCode connected to Google Drive!</h2><p>You can close this tab and return to GhostCode.</p></body></html>"
-            : $"<html><body style='font-family:Segoe UI,sans-serif;padding:40px'><h2>Authorization failed</h2><p>{WebUtility.HtmlEncode(error ?? "State mismatch or cancelled")}</p></body></html>";
         var htmlBytes = Encoding.UTF8.GetBytes(html);
-        var header = $"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {htmlBytes.Length}\r\nConnection: close\r\n\r\n";
+        var header = $"HTTP/1.1 {statusCode} {statusText}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {htmlBytes.Length}\r\nConnection: close\r\n\r\n";
         await stream.WriteAsync(Encoding.ASCII.GetBytes(header), ct);
         await stream.WriteAsync(htmlBytes, ct);
         await stream.FlushAsync(ct);
+    }
 
-        return ok ? code : null;
+    private async Task<string> ResolveClientSecretAsync(CancellationToken ct)
+    {
+        var dpapiSecret = await _credentialStore.LoadClientSecretAsync(ct);
+        if (!string.IsNullOrWhiteSpace(dpapiSecret))
+            return dpapiSecret;
+        return _config.OAuthClient.ClientSecret ?? string.Empty;
     }
 
     private async Task<GoogleAuthTokens> ExchangeCodeForTokensAsync(string code, string verifier, string redirectUri, CancellationToken ct)
@@ -191,8 +258,9 @@ public sealed class GoogleDriveService : IAsyncDisposable
             ["grant_type"] = "authorization_code",
             ["redirect_uri"] = redirectUri
         };
-        if (!string.IsNullOrWhiteSpace(_config.OAuthClient.ClientSecret))
-            form["client_secret"] = _config.OAuthClient.ClientSecret;
+        var clientSecret = await ResolveClientSecretAsync(ct);
+        if (!string.IsNullOrWhiteSpace(clientSecret))
+            form["client_secret"] = clientSecret;
 
         using var resp = await _http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(form), ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
@@ -249,8 +317,9 @@ public sealed class GoogleDriveService : IAsyncDisposable
             ["refresh_token"] = tokens.RefreshToken,
             ["grant_type"] = "refresh_token"
         };
-        if (!string.IsNullOrWhiteSpace(_config.OAuthClient.ClientSecret))
-            form["client_secret"] = _config.OAuthClient.ClientSecret;
+        var clientSecret = await ResolveClientSecretAsync(ct);
+        if (!string.IsNullOrWhiteSpace(clientSecret))
+            form["client_secret"] = clientSecret;
 
         using var resp = await _http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(form), ct);
         if (!resp.IsSuccessStatusCode)
@@ -268,27 +337,57 @@ public sealed class GoogleDriveService : IAsyncDisposable
         return updated;
     }
 
-    public async Task DisconnectAsync(CancellationToken ct = default)
+    public async Task<DisconnectResult> DisconnectAsync(CancellationToken ct = default)
     {
-        var tokens = await _credentialStore.LoadAsync(ct);
-        if (tokens is not null)
+        bool remoteRevoked = false;
+        string? remoteError = null;
+        try
         {
-            var tokenToRevoke = !string.IsNullOrEmpty(tokens.RefreshToken) ? tokens.RefreshToken : tokens.AccessToken;
-            if (!string.IsNullOrEmpty(tokenToRevoke))
+            var tokens = await _credentialStore.LoadAsync(ct);
+            if (tokens is not null)
             {
-                try
+                var tokenToRevoke = !string.IsNullOrEmpty(tokens.RefreshToken) ? tokens.RefreshToken : tokens.AccessToken;
+                if (!string.IsNullOrEmpty(tokenToRevoke))
                 {
-                    using var content = new FormUrlEncodedContent(new[] { new KeyValuePair<string, string>("token", tokenToRevoke) });
-                    await _http.PostAsync("https://oauth2.googleapis.com/revoke", content, ct);
+                    try
+                    {
+                        using var content = new FormUrlEncodedContent(new[] { new KeyValuePair<string, string>("token", tokenToRevoke) });
+                        using var resp = await _http.PostAsync("https://oauth2.googleapis.com/revoke", content, ct);
+                        if (resp.IsSuccessStatusCode)
+                        {
+                            remoteRevoked = true;
+                        }
+                        else
+                        {
+                            remoteError = $"Remote revocation returned HTTP {(int)resp.StatusCode}";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        remoteError = $"Remote revocation failed: {ex.Message}";
+                    }
                 }
-                catch
+                else
                 {
-                    // Best-effort remote revocation; local DPAPI tokens are still cleared below
+                    remoteRevoked = true;
                 }
             }
+            else
+            {
+                remoteRevoked = true;
+            }
         }
-        await _credentialStore.ClearAsync(ct);
-        _config.DriveRootFolderId = null;
+        finally
+        {
+            await _credentialStore.ClearAsync(ct);
+            _config.DriveRootFolderId = null;
+            AuthStageChanged?.Invoke(OAuthConnectionStage.Idle, "Disconnected");
+        }
+
+        return new DisconnectResult(
+            LocalCredentialsCleared: true,
+            RemoteRevocationSucceeded: remoteRevoked,
+            RemoteError: remoteError);
     }
 
     public async Task<DriveSyncReport> SyncPendingAsync(
@@ -489,7 +588,7 @@ public sealed class GoogleDriveService : IAsyncDisposable
         multipart.Add(metaPart);
         multipart.Add(filePart);
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name");
+        using var req = new HttpRequestMessage(HttpMethod.Post, "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,sha256Checksum,size");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         req.Content = multipart;
 
@@ -499,6 +598,15 @@ public sealed class GoogleDriveService : IAsyncDisposable
             throw new InvalidOperationException($"Drive upload failed ({(int)resp.StatusCode}): {body}");
 
         using var doc = JsonDocument.Parse(body);
+        if (doc.RootElement.TryGetProperty("sha256Checksum", out var shaProp))
+        {
+            var remoteSha = shaProp.GetString();
+            if (!string.IsNullOrWhiteSpace(remoteSha)
+                && !string.Equals(remoteSha, version.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Google Drive SHA-256 mismatch: expected {version.Sha256}, remote returned {remoteSha}.");
+            }
+        }
         return doc.RootElement.GetProperty("id").GetString() ?? string.Empty;
     }
 

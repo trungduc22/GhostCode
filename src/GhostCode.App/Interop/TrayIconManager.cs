@@ -49,6 +49,7 @@ public sealed class TrayIconManager : IDisposable
     private readonly IntPtr _hwnd;
     private readonly AppWindow _appWindow;
     private readonly SubclassProc _subclassDelegate;
+    private readonly uint _taskbarCreatedMsg;
 
     private IntPtr _hIcon;
     private bool _iconAdded;
@@ -67,6 +68,7 @@ public sealed class TrayIconManager : IDisposable
 
         _subclassDelegate = WindowSubclassCallback;
         SetWindowSubclass(_hwnd, _subclassDelegate, SubclassId, IntPtr.Zero);
+        _taskbarCreatedMsg = RegisterWindowMessageW("TaskbarCreated");
 
         var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
         if (File.Exists(iconPath))
@@ -80,6 +82,14 @@ public sealed class TrayIconManager : IDisposable
     }
 
     public AppWindow AppWindow => _appWindow;
+    public bool IsIconAdded => _iconAdded;
+    public bool HasValidIcon => _hIcon != IntPtr.Zero;
+    public static bool IsTaskbarPresent => FindWindowW("Shell_TrayWnd", null) != IntPtr.Zero;
+
+    public void HideToTray()
+    {
+        _appWindow.Hide();
+    }
 
     public void ShowAndActivateWindow()
     {
@@ -157,6 +167,12 @@ public sealed class TrayIconManager : IDisposable
 
     private IntPtr WindowSubclassCallback(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, nuint uIdSubclass, IntPtr dwRefData)
     {
+        if (_taskbarCreatedMsg != 0 && msg == _taskbarCreatedMsg)
+        {
+            _iconAdded = false;
+            AddOrUpdateTrayIcon();
+            return IntPtr.Zero;
+        }
         if (msg == WM_TRAYICON)
         {
             int mouseEvent = (int)(lParam.ToInt64() & 0xFFFF);
@@ -306,4 +322,10 @@ public sealed class TrayIconManager : IDisposable
 
     [DllImport("comctl32.dll")]
     private static extern IntPtr DefSubclassProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowW(string lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterWindowMessageW(string lpString);
 }

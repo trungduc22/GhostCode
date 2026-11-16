@@ -18,6 +18,7 @@ public sealed record GoogleAuthTokens(
 public sealed class DpapiCredentialStore
 {
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("GhostCode.OAuth.DPAPI.v1");
+    private static readonly byte[] SecretEntropy = Encoding.UTF8.GetBytes("GhostCode.OAuthClientSecret.DPAPI.v1");
     private readonly string _filePath;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
 
@@ -27,6 +28,8 @@ public sealed class DpapiCredentialStore
     }
 
     public string FilePath => _filePath;
+    public string ClientSecretFilePath =>
+        Path.Combine(Path.GetDirectoryName(_filePath) ?? Path.GetTempPath(), "client_secret.dpapi");
 
     public async Task SaveAsync(GoogleAuthTokens tokens, CancellationToken ct = default)
     {
@@ -84,6 +87,61 @@ public sealed class DpapiCredentialStore
         {
             if (File.Exists(_filePath))
                 File.Delete(_filePath);
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+    }
+
+    public async Task SaveClientSecretAsync(string clientSecret, CancellationToken ct = default)
+    {
+        await _ioLock.WaitAsync(ct);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(clientSecret))
+            {
+                if (File.Exists(ClientSecretFilePath))
+                    File.Delete(ClientSecretFilePath);
+                return;
+            }
+
+            var dir = Path.GetDirectoryName(ClientSecretFilePath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            var rawBytes = Encoding.UTF8.GetBytes(clientSecret.Trim());
+            byte[] protectedBytes = OperatingSystem.IsWindows()
+                ? ProtectedData.Protect(rawBytes, SecretEntropy, DataProtectionScope.CurrentUser)
+                : rawBytes;
+
+            var tmp = $"{ClientSecretFilePath}.tmp.{Guid.NewGuid():N}";
+            await File.WriteAllBytesAsync(tmp, protectedBytes, ct);
+            File.Move(tmp, ClientSecretFilePath, overwrite: true);
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+    }
+
+    public async Task<string> LoadClientSecretAsync(CancellationToken ct = default)
+    {
+        await _ioLock.WaitAsync(ct);
+        try
+        {
+            if (!File.Exists(ClientSecretFilePath))
+                return string.Empty;
+
+            var protectedBytes = await File.ReadAllBytesAsync(ClientSecretFilePath, ct);
+            var plainBytes = OperatingSystem.IsWindows()
+                ? ProtectedData.Unprotect(protectedBytes, SecretEntropy, DataProtectionScope.CurrentUser)
+                : protectedBytes;
+            return Encoding.UTF8.GetString(plainBytes);
+        }
+        catch
+        {
+            return string.Empty;
         }
         finally
         {

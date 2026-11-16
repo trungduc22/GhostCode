@@ -85,7 +85,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             PRAGMA journal_mode=WAL;
-            PRAGMA synchronous=NORMAL;
+            PRAGMA synchronous=FULL;
+            PRAGMA busy_timeout=5000;
             PRAGMA foreign_keys=ON;
 
             CREATE TABLE IF NOT EXISTS file_snapshots (
@@ -118,6 +119,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
 
             CREATE INDEX IF NOT EXISTS idx_versions_source ON archive_versions(source_path, version_num DESC);
             CREATE INDEX IF NOT EXISTS idx_versions_created ON archive_versions(created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_archive_path ON archive_versions(archive_path);
 
             CREATE TABLE IF NOT EXISTS upload_queue (
                 version_id TEXT PRIMARY KEY,
@@ -138,7 +140,12 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 message TEXT NOT NULL,
                 occurred_at INTEGER NOT NULL
             );
+
+            UPDATE upload_queue
+            SET status = 'Pending', updated_at = $now
+            WHERE status = 'Uploading';
             """;
+        cmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -310,6 +317,139 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.Parameters.AddWithValue("$id", versionId);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+    }
+
+    public async Task<ArchiveVersionRecord?> GetVersionByArchivePathAsync(string archivePath, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at
+            FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$ap", archivePath);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+    }
+
+    public async Task InsertRecoveredVersionAsync(
+        ArchiveVersionRecord version,
+        UploadQueueItem queueItem,
+        CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            await using (var verCmd = conn.CreateCommand())
+            {
+                verCmd.Transaction = tx;
+                verCmd.CommandText = """
+                    INSERT OR IGNORE INTO archive_versions (id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at)
+                    VALUES ($id, $vn, $sp, $ap, $rp, $fn, $sha, $nh, $sz, $code, $title, $plat, $ts);
+                    """;
+                verCmd.Parameters.AddWithValue("$id", version.Id);
+                verCmd.Parameters.AddWithValue("$vn", version.VersionNum);
+                verCmd.Parameters.AddWithValue("$sp", version.SourcePath);
+                verCmd.Parameters.AddWithValue("$ap", version.ArchivePath);
+                verCmd.Parameters.AddWithValue("$rp", (object?)version.ReadyPath ?? DBNull.Value);
+                verCmd.Parameters.AddWithValue("$fn", version.FileName);
+                verCmd.Parameters.AddWithValue("$sha", version.Sha256);
+                verCmd.Parameters.AddWithValue("$nh", version.NormHash);
+                verCmd.Parameters.AddWithValue("$sz", version.SizeBytes);
+                verCmd.Parameters.AddWithValue("$code", (object?)version.ProblemCode ?? DBNull.Value);
+                verCmd.Parameters.AddWithValue("$title", (object?)version.ProblemTitle ?? DBNull.Value);
+                verCmd.Parameters.AddWithValue("$plat", version.Platform);
+                verCmd.Parameters.AddWithValue("$ts", version.CreatedAtUnixMs);
+                await verCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var qCmd = conn.CreateCommand())
+            {
+                qCmd.Transaction = tx;
+                qCmd.CommandText = """
+                    INSERT OR IGNORE INTO upload_queue (version_id, status, attempt_count, next_retry_at, drive_file_id, last_error, updated_at)
+                    VALUES ($vid, $st, $att, $next, $did, $err, $ts);
+                    """;
+                qCmd.Parameters.AddWithValue("$vid", queueItem.VersionId);
+                qCmd.Parameters.AddWithValue("$st", queueItem.Status.ToString());
+                qCmd.Parameters.AddWithValue("$att", queueItem.AttemptCount);
+                qCmd.Parameters.AddWithValue("$next", queueItem.NextRetryAtUnixMs);
+                qCmd.Parameters.AddWithValue("$did", (object?)queueItem.DriveFileId ?? DBNull.Value);
+                qCmd.Parameters.AddWithValue("$err", (object?)queueItem.LastError ?? DBNull.Value);
+                qCmd.Parameters.AddWithValue("$ts", queueItem.UpdatedAtUnixMs);
+                await qCmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task DeleteVersionAsync(string versionId, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
+            string? sourcePath = null;
+            await using (var selCmd = conn.CreateCommand())
+            {
+                selCmd.Transaction = tx;
+                selCmd.CommandText = "SELECT source_path FROM archive_versions WHERE id = $id;";
+                selCmd.Parameters.AddWithValue("$id", versionId);
+                sourcePath = Convert.ToString(await selCmd.ExecuteScalarAsync(ct));
+            }
+
+            await using (var delQueue = conn.CreateCommand())
+            {
+                delQueue.Transaction = tx;
+                delQueue.CommandText = "DELETE FROM upload_queue WHERE version_id = $id;";
+                delQueue.Parameters.AddWithValue("$id", versionId);
+                await delQueue.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var delVer = conn.CreateCommand())
+            {
+                delVer.Transaction = tx;
+                delVer.CommandText = "DELETE FROM archive_versions WHERE id = $id;";
+                delVer.Parameters.AddWithValue("$id", versionId);
+                await delVer.ExecuteNonQueryAsync(ct);
+            }
+
+            if (!string.IsNullOrEmpty(sourcePath))
+            {
+                await using var checkCmd = conn.CreateCommand();
+                checkCmd.Transaction = tx;
+                checkCmd.CommandText = "SELECT COUNT(*) FROM archive_versions WHERE source_path = $sp COLLATE NOCASE;";
+                checkCmd.Parameters.AddWithValue("$sp", sourcePath);
+                var remaining = Convert.ToInt64(await checkCmd.ExecuteScalarAsync(ct));
+                if (remaining == 0)
+                {
+                    await using var delSnap = conn.CreateCommand();
+                    delSnap.Transaction = tx;
+                    delSnap.CommandText = "DELETE FROM file_snapshots WHERE source_path = $sp COLLATE NOCASE;";
+                    delSnap.Parameters.AddWithValue("$sp", sourcePath);
+                    await delSnap.ExecuteNonQueryAsync(ct);
+                }
+            }
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task<List<ArchiveVersionRecord>> QueryVersionsAsync(

@@ -301,19 +301,35 @@ public sealed class AcceptanceTests : IDisposable
         var body1 = "#include <iostream>\nint main(){ std::cout << 100; }\n";
 
         await File.WriteAllTextAsync(tmp, body1);
-        File.Move(tmp, target, overwrite: true);
+        await MoveWithRetryAsync(tmp, target);
         await WaitUntilAsync(async () => (await db.GetVersionsBySourceAsync(target)).Count == 1);
 
         // Identical rewrite -> deduplicated, still 1 version
         await File.WriteAllTextAsync(target, body1);
-        await Task.Delay(450);
+        await WaitUntilAsync(async () => (await db.GetRecentMonitorEventsAsync(10)).Count >= 2);
         Assert.Single(await db.GetVersionsBySourceAsync(target));
 
         // Real modification via atomic rename -> v2
         var body2 = "#include <iostream>\nint main(){ std::cout << 200; }\n";
         await File.WriteAllTextAsync(tmp, body2);
-        File.Move(tmp, target, overwrite: true);
+        await MoveWithRetryAsync(tmp, target);
         await WaitUntilAsync(async () => (await db.GetVersionsBySourceAsync(target)).Count == 2);
+    }
+
+    private static async Task MoveWithRetryAsync(string source, string dest)
+    {
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                File.Move(source, dest, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < 7 && (ex is IOException || ex is UnauthorizedAccessException))
+            {
+                await Task.Delay(50 * (attempt + 1));
+            }
+        }
     }
 
     // 7. Solution replacement with >50% similarity never overwrites earlier version
@@ -511,15 +527,28 @@ public sealed class AcceptanceTests : IDisposable
         var baseUrl = $"http://127.0.0.1:{bridge.ListeningPort}";
         using var http = new HttpClient();
 
+        var nonce = Guid.NewGuid().ToString("N");
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var hsReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/handshake");
+        hsReq.Headers.Add("Origin", "chrome-extension://bifmfiolmohcdfknnicfikhhpipkokbc");
+        hsReq.Headers.Add("X-GhostCode-Pairing-Id", AuthenticatedBrowserBridge.DefaultPairingId);
+        hsReq.Headers.Add("X-GhostCode-Nonce", nonce);
+        hsReq.Headers.Add("X-GhostCode-Timestamp", ts.ToString());
+        hsReq.Headers.Add("X-GhostCode-Proof", AuthenticatedBrowserBridge.ComputeHandshakeProof(cfg.BridgeAuthToken, nonce, ts));
+        var hsResp = await http.SendAsync(hsReq);
+        Assert.Equal(HttpStatusCode.OK, hsResp.StatusCode);
+        using var hsDoc = JsonDocument.Parse(await hsResp.Content.ReadAsStringAsync());
+        var sessionToken = hsDoc.RootElement.GetProperty("session_token").GetString()!;
+
         // Active tab PTIT
         var req1 = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
-        req1.Headers.Add("X-GhostCode-Token", cfg.BridgeAuthToken);
+        req1.Headers.Add("X-GhostCode-Token", sessionToken);
         req1.Content = new StringContent("""{"problem_code":"C04015","problem_title":"Dem So Lan","platform":"PTIT","url":"https://code.ptit.edu.vn/student/question/C04015","tab_active":true}""", Encoding.UTF8, "application/json");
         Assert.Equal(HttpStatusCode.OK, (await http.SendAsync(req1)).StatusCode);
 
         // Background tab Codeforces must NOT overwrite active PTIT context
         var req2 = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
-        req2.Headers.Add("X-GhostCode-Token", cfg.BridgeAuthToken);
+        req2.Headers.Add("X-GhostCode-Token", sessionToken);
         req2.Content = new StringContent("""{"problem_code":"CF_1A","problem_title":"Theatre Square","platform":"Codeforces","url":"https://codeforces.com/problemset/problem/1/A","tab_active":false}""", Encoding.UTF8, "application/json");
         Assert.Equal(HttpStatusCode.Accepted, (await http.SendAsync(req2)).StatusCode);
         Assert.Equal("C04015", bridge.GetActiveContext()!.Code);

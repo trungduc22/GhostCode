@@ -195,9 +195,23 @@ public class PhaseDCloudAndBrowserTests : IDisposable
             Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.Unauthorized, unauthResp.StatusCode);
 
+        // Acquire ephemeral session token via HMAC POST /handshake
+        var nonce = Guid.NewGuid().ToString("N");
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var hsReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/handshake");
+        hsReq.Headers.Add("Origin", "chrome-extension://bifmfiolmohcdfknnicfikhhpipkokbc");
+        hsReq.Headers.Add("X-GhostCode-Pairing-Id", AuthenticatedBrowserBridge.DefaultPairingId);
+        hsReq.Headers.Add("X-GhostCode-Nonce", nonce);
+        hsReq.Headers.Add("X-GhostCode-Timestamp", ts.ToString());
+        hsReq.Headers.Add("X-GhostCode-Proof", AuthenticatedBrowserBridge.ComputeHandshakeProof(cfg.BridgeAuthToken, nonce, ts));
+        var hsResp = await http.SendAsync(hsReq);
+        Assert.Equal(HttpStatusCode.OK, hsResp.StatusCode);
+        using var hsDoc = JsonDocument.Parse(await hsResp.Content.ReadAsStringAsync());
+        var sessionToken = hsDoc.RootElement.GetProperty("session_token").GetString()!;
+
         // 2. Inactive background tab must NOT overwrite active problem
         var reqBg = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
-        reqBg.Headers.Add("X-GhostCode-Token", cfg.BridgeAuthToken);
+        reqBg.Headers.Add("X-GhostCode-Token", sessionToken);
         reqBg.Content = new StringContent("""{"problem_code":"C01001","problem_title":"BgTab","platform":"PTIT","url":"https://code.ptit.edu.vn/student/question/C01001","tab_active":false}""",
             Encoding.UTF8, "application/json");
         var bgResp = await http.SendAsync(reqBg);
@@ -206,7 +220,7 @@ public class PhaseDCloudAndBrowserTests : IDisposable
 
         // 3. Valid active tab updates context, then expires after TTL
         var reqOk = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
-        reqOk.Headers.Add("X-GhostCode-Token", cfg.BridgeAuthToken);
+        reqOk.Headers.Add("X-GhostCode-Token", sessionToken);
         reqOk.Content = new StringContent("""{"problem_code":"CF_1900A","problem_title":"Cover in Water","platform":"Codeforces","url":"https://codeforces.com/problemset/problem/1900/A","tab_active":true}""",
             Encoding.UTF8, "application/json");
         var okResp = await http.SendAsync(reqOk);

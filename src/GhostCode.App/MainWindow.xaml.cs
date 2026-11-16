@@ -25,15 +25,42 @@ public sealed partial class MainWindow : Window
         App.SetMainWindowHandle(hwnd);
 
         ViewModel.AttachUiHooks(
-            action => DispatcherQueue.TryEnqueue(() => action()),
+            action =>
+            {
+                if (DispatcherQueue.HasThreadAccess)
+                {
+                    action();
+                    return true;
+                }
+                return DispatcherQueue.TryEnqueue(() => action());
+            },
             theme => RootGrid.RequestedTheme = theme,
             CopyTextToClipboard);
+        ViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.Strings))
+                Title = ViewModel.Strings.AppTitle;
+        };
 
         RootNav.SelectedItem = RootNav.MenuItems[0];
         ContentFrame.Navigate(typeof(DashboardPage));
     }
 
     public MainViewModel ViewModel { get; }
+    public ElementTheme CurrentRootTheme => RootGrid.RequestedTheme;
+    public Type? CurrentPageType => ContentFrame.CurrentSourcePageType;
+    public TrayIconManager? TrayManager => _tray;
+
+    public bool NavigateToTag(string tag)
+    {
+        var item = RootNav.MenuItems
+            .OfType<NavigationViewItem>()
+            .FirstOrDefault(i => string.Equals(i.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+            return false;
+        RootNav.SelectedItem = item;
+        return true;
+    }
 
     public void AttachTray(Action onExitRequested)
     {

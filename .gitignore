@@ -19,4 +19,6 @@ BenchmarkDotNet.Artifacts/
 *.db-wal
 *.db-shm
 credentials.dpapi
+client_secret.dpapi
+browser-extension/pairing.generated.json
 *.corrupt.*.bak

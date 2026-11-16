@@ -53,7 +53,7 @@ public sealed partial class CloudPage : Page
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
         {
-            ViewModel.SaveOAuthClient(clientIdBox.Text, clientSecretBox.Password);
+            await ViewModel.SaveOAuthClientAsync(clientIdBox.Text, clientSecretBox.Password);
         }
     }
 }
