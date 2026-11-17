@@ -244,7 +244,8 @@ public sealed class BrowserIntegrationService
         GhostCodeConfig config,
         int listeningPort,
         string? hostExecutablePath = null,
-        string? appDataOverride = null)
+        string? appDataOverride = null,
+        string? installedHostExeOverride = null)
     {
         var isFirefox = kind == BrowserKind.Firefox;
         var srcDir = LocateBundledExtensionFolder(isFirefox ? "browser-extension-firefox" : "browser-extension");
@@ -277,6 +278,17 @@ public sealed class BrowserIntegrationService
         var kindTag = kind.ToString().ToLowerInvariant();
         var nmPath = Path.Combine(nativeManifestDir, $"com.ghostcode.bridge.{kindTag}.json");
         var cmdWrapperPath = Path.Combine(nativeManifestDir, $"com.ghostcode.bridge.{kindTag}.cmd");
+        var pageUrl = GetExtensionsPageUrl(kind);
+        var discoveredExe = DiscoverInstalledBrowsers(config).FirstOrDefault(b => b.Kind == kind).ExePath;
+
+        if (ShouldPreserveInstalledNativeMessaging(hostExe, appDataOverride, installedHostExeOverride, out var installedExe))
+        {
+            var preservedMsg = isFirefox
+                ? $"Staged Portable Firefox extension at '{destDir}'. Preserved installed GhostCode Native Messaging host ({installedExe})."
+                : $"Staged Portable {kind} extension at '{destDir}' (port {listeningPort}). Preserved installed GhostCode Native Messaging host ({installedExe}).";
+            return new BrowserIntegrationResult(true, destDir, nmPath, preservedMsg, pageUrl, discoveredExe);
+        }
+
         var cmdContent = $"@echo off\r\n\"{hostExe}\" --native-messaging-host --browser {kind} %*\r\n";
         File.WriteAllText(cmdWrapperPath, cmdContent, Encoding.ASCII);
 
@@ -307,13 +319,64 @@ public sealed class BrowserIntegrationService
             catch { }
         }
 
-        var pageUrl = GetExtensionsPageUrl(kind);
-        var discoveredExe = DiscoverInstalledBrowsers(config).FirstOrDefault(b => b.Kind == kind).ExePath;
         var instructions = isFirefox
             ? $"Staged Firefox WebExtension at '{destDir}' and registered Native Messaging host. Open {pageUrl} -> Load Temporary Add-on."
             : $"Staged {kind} MV3 extension at '{destDir}' (port {listeningPort}) and registered Native Messaging host.";
 
         return new BrowserIntegrationResult(true, destDir, nmPath, instructions, pageUrl, discoveredExe);
+    }
+
+    private bool ShouldPreserveInstalledNativeMessaging(
+        string currentHostExe,
+        string? appDataOverride,
+        string? installedHostExeOverride,
+        out string? installedExe)
+    {
+        installedExe = null;
+        if (string.IsNullOrWhiteSpace(currentHostExe))
+            return false;
+
+        string? candidate = null;
+        if (!string.IsNullOrWhiteSpace(installedHostExeOverride))
+        {
+            candidate = installedHostExeOverride;
+        }
+        else if (appDataOverride is null && OperatingSystem.IsWindows())
+        {
+            candidate = ResolveInstalledHostExecutable();
+        }
+
+        if (string.IsNullOrWhiteSpace(candidate) || !_probe.FileExists(candidate))
+            return false;
+
+        var normCurrent = Path.GetFullPath(currentHostExe).Trim();
+        var normInstalled = Path.GetFullPath(candidate).Trim();
+        if (string.Equals(normCurrent, normInstalled, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        installedExe = normInstalled;
+        return true;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private string? ResolveInstalledHostExecutable()
+    {
+        var installDir = _probe.ReadRegistryString(
+            @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F9C31E2-7C2A-4D4B-9D8F-2B9E6C41A010}_is1",
+            "InstallLocation");
+        if (!string.IsNullOrWhiteSpace(installDir))
+        {
+            var fromReg = Path.Combine(installDir.Trim(), "GhostCode.App.exe");
+            if (_probe.FileExists(fromReg))
+                return fromReg;
+        }
+
+        var defaultProgramDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs",
+            "GhostCode",
+            "GhostCode.App.exe");
+        return _probe.FileExists(defaultProgramDir) ? defaultProgramDir : null;
     }
 
     [SupportedOSPlatform("windows")]
