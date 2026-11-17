@@ -55,15 +55,27 @@ public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int Versio
         : $"{Latest.Platform} • {Latest.ProblemCode} • {AvailabilityBadge}";
 }
 
-public sealed record UploadQueueRow(UploadQueueView View)
+public sealed record UploadQueueRow(UploadQueueView View, UiLanguage Language = UiLanguage.Vi)
 {
     public string FileName => View.Version.FileName;
-    public string StatusText => View.Queue.Status.ToString();
+    public string StatusText => Language == UiLanguage.Vi
+        ? View.Queue.Status switch
+        {
+            UploadStatus.Synced => "Đã đồng bộ",
+            UploadStatus.Failed => "Thất bại",
+            UploadStatus.Uploading => "Đang tải lên",
+            _ => "Đang chờ"
+        }
+        : View.Queue.Status.ToString();
     public string DetailText => View.Queue.Status switch
     {
-        UploadStatus.Synced => $"Drive ID: {View.Queue.DriveFileId}",
-        UploadStatus.Failed => $"Attempts: {View.Queue.AttemptCount} • {View.Queue.LastError}",
-        _ => $"Attempts: {View.Queue.AttemptCount} • Waiting for sync"
+        UploadStatus.Synced => $"ID: {View.Queue.DriveFileId}",
+        UploadStatus.Failed => Language == UiLanguage.Vi
+            ? $"Lần thử: {View.Queue.AttemptCount} • {UserFriendlyErrorService.MapError(ErrorCategory.NetworkOffline, View.Queue.LastError, Language).Title}"
+            : $"Attempts: {View.Queue.AttemptCount} • {View.Queue.LastError}",
+        _ => Language == UiLanguage.Vi
+            ? $"Lần thử: {View.Queue.AttemptCount} • Đang chờ đồng bộ"
+            : $"Attempts: {View.Queue.AttemptCount} • Waiting for sync"
     };
     public string UpdatedText => DateTimeOffset.FromUnixTimeMilliseconds(View.Queue.UpdatedAtUnixMs)
         .ToLocalTime().ToString("HH:mm:ss");
@@ -86,15 +98,21 @@ public sealed record ArchiveHistoryEventRow(ArchiveHistoryEvent Event)
         .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
 }
 
-public sealed record ActiveWatchRow(ActiveWatchInfo Info)
+public sealed record ActiveWatchRow(ActiveWatchInfo Info, UiLanguage Language = UiLanguage.Vi)
 {
     public string FolderPath => Info.FolderPath;
     public bool IsWatching => Info.IsWatching || Info.IsCoveredByParent;
-    public string StatusText => Info.IsWatching
-        ? (Info.Recursive ? "Watching (Recursive)" : "Watching (Top-Level)")
-        : Info.IsCoveredByParent
-            ? (Info.Error ?? "Covered by parent folder")
-            : $"Error: {Info.Error}";
+    public string StatusText => Language == UiLanguage.Vi
+        ? (Info.IsWatching
+            ? (Info.Recursive ? "Đang giám sát (gồm thư mục con)" : "Đang giám sát (chỉ thư mục gốc)")
+            : Info.IsCoveredByParent
+                ? "Được bao phủ bởi thư mục cha"
+                : $"Lỗi: {Info.Error}")
+        : (Info.IsWatching
+            ? (Info.Recursive ? "Watching (Recursive)" : "Watching (Top-Level)")
+            : Info.IsCoveredByParent
+                ? (Info.Error ?? "Covered by parent folder")
+                : $"Error: {Info.Error}");
 }
 
 public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Language)
@@ -123,26 +141,28 @@ public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Languag
     }
 }
 
-public sealed record IdeStatusRow(IdeStatusInfo Info)
+public sealed record IdeStatusRow(IdeStatusInfo Info, UiLanguage Language = UiLanguage.Vi)
 {
     public string Name => Info.Name;
-    public string StatusBadge => Info.IsRunning
-        ? "Running"
-        : Info.IsInstalled ? "Installed" : "Not Installed";
+    public string StatusBadge => Language == UiLanguage.Vi
+        ? (Info.IsRunning ? "Đang chạy" : Info.IsInstalled ? "Đã cài đặt" : "Chưa cài đặt")
+        : (Info.IsRunning ? "Running" : Info.IsInstalled ? "Installed" : "Not Installed");
     public string VersionText => Info.Version ?? string.Empty;
     public string ToolchainText => string.IsNullOrWhiteSpace(Info.ToolchainSummary)
-        ? Info.ExecutablePath ?? "Not detected"
+        ? Info.ExecutablePath ?? (Language == UiLanguage.Vi ? "Chưa phát hiện" : "Not detected")
         : $"{Info.ToolchainSummary} • {Info.ExecutablePath}";
 }
 
-public sealed record ToolchainRow(ToolchainInfo Info)
+public sealed record ToolchainRow(ToolchainInfo Info, UiLanguage Language = UiLanguage.Vi)
 {
     public string Name => Info.DisplayName;
-    public string StatusBadge => Info.IsAvailable ? "Ready" : "Unavailable";
+    public string StatusBadge => Language == UiLanguage.Vi
+        ? (Info.IsAvailable ? "Sẵn sàng" : "Chưa có")
+        : (Info.IsAvailable ? "Ready" : "Unavailable");
     public string VersionText => Info.Version ?? string.Empty;
     public string DetailText => Info.IsAvailable
         ? $"{Info.ExecutablePath} ({Info.DefaultFlags})"
-        : Info.StatusDetail;
+        : (Language == UiLanguage.Vi && string.IsNullOrWhiteSpace(Info.ExecutablePath) ? "Chưa tìm thấy trong PATH" : Info.StatusDetail);
 }
 
 public sealed record GlobalSearchSuggestion(ArchiveVersionRecord Record, string MatchKind, UiLanguage Language)
@@ -245,6 +265,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private UiTextBundle _strings;
     private ExpansionTextBundle _expStrings;
+    private UxOverhaulTextBundle _uxStrings;
     private ArchiveVersionRow? _compareWithVersion;
     private bool _isDiffModeActive;
     private bool _diffUseUnifiedMode;
@@ -350,6 +371,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _infoBarOpen;
     private string _infoBarTitle = string.Empty;
     private string _infoBarMessage = string.Empty;
+    private string _infoBarTechnicalDetails = string.Empty;
+    private string _infoBarActionLabel = string.Empty;
+    private string _infoBarActionKey = string.Empty;
     private InfoBarSeverity _infoBarSeverity = InfoBarSeverity.Informational;
     private bool _isBusy;
     private bool _suppressFolderSync;
@@ -404,8 +428,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _copilot = copilot ?? new CopilotAssistanceService(_config);
         _strings = UiStrings.For(config.Language);
         _expStrings = UiStrings.ExpansionFor(config.Language);
+        _uxStrings = UxOverhaulStrings.For(config.Language);
         _runnerStatusText = _strings.StatusReady;
         _consoleLogText = _strings.ConsoleOutputEmpty;
+        _lastDetectedFileText = _uxStrings.NoneText;
+        _lastSuccessfulBackupText = _uxStrings.NoneText;
+        _lastMonitoringErrorText = _uxStrings.NoneText;
+        _lastDiagnosticResultText = _uxStrings.NotRunYetText;
+        _lastSyncTimeText = _uxStrings.NeverText;
+        _recoverySummaryText = _uxStrings.NotRunYetText;
+        _oAuthStageText = string.Empty;
 
         LoadFieldsFromConfig();
 
@@ -454,6 +486,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OpenStagedExtensionFolderCommand = new RelayCommand(() => OpenFolder(BrowserSetupExtensionPath));
         OpenBrowserExtensionsPageCommand = new RelayCommand(OpenTargetBrowserExtensionsPage);
         CloseBrowserSetupCommand = new RelayCommand(() => IsBrowserSetupOpen = false);
+        CopyErrorDetailsCommand = new RelayCommand(CopyErrorDetails);
+        ExecuteFriendlyErrorActionCommand = new RelayCommand(ExecuteFriendlyErrorAction);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -518,12 +552,42 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Strings.ThemeDark
     };
 
-    public IReadOnlyList<string> ConflictPolicyChoices { get; } = new[]
+    public IReadOnlyList<string> MicaChoices => new[]
     {
-        "PreserveBothBranches (Never Overwrite)",
-        "PreferLocal",
-        "PreferRemote"
+        UxStrings.MicaBaseLabel,
+        UxStrings.MicaAltLabel,
+        UxStrings.MicaSolidLabel
     };
+
+    public IReadOnlyList<string> NotificationLevelChoices => new[]
+    {
+        UxStrings.NotifAllLabel,
+        UxStrings.NotifWarnErrLabel,
+        UxStrings.NotifDisabledLabel
+    };
+
+    public IReadOnlyList<string> CloudProviderChoices => new[]
+    {
+        UxStrings.DriveProviderGoogle,
+        UxStrings.DriveProviderOneDrive,
+        UxStrings.DriveProviderNone
+    };
+
+    public IReadOnlyList<string> ConflictPolicyChoices => _config.Language == UiLanguage.Vi
+        ? new[]
+        {
+            "Giữ cả 2 nhánh (Không ghi đè)",
+            "Ưu tiên bản trên máy",
+            "Ưu tiên bản đám mây"
+        }
+        : new[]
+        {
+            "Preserve Both Branches (Never Overwrite)",
+            "Prefer Local",
+            "Prefer Remote"
+        };
+
+    public event Action<string>? NavigationRequested;
 
     public IAsyncRelayCommand RefreshAllCommand { get; }
     public IRelayCommand RefreshDiscoveryCommand { get; }
@@ -570,6 +634,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand OpenStagedExtensionFolderCommand { get; }
     public IRelayCommand OpenBrowserExtensionsPageCommand { get; }
     public IRelayCommand CloseBrowserSetupCommand { get; }
+    public IRelayCommand CopyErrorDetailsCommand { get; }
+    public IRelayCommand ExecuteFriendlyErrorActionCommand { get; }
+
+    public UxOverhaulTextBundle UxStrings
+    {
+        get => _uxStrings;
+        private set
+        {
+            if (SetProperty(ref _uxStrings, value))
+            {
+                OnPropertyChanged(nameof(MicaChoices));
+                OnPropertyChanged(nameof(NotificationLevelChoices));
+                OnPropertyChanged(nameof(CloudProviderChoices));
+                OnPropertyChanged(nameof(ConflictPolicyChoices));
+                OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+            }
+        }
+    }
 
     public ExpansionTextBundle ExpStrings
     {
@@ -650,13 +732,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         get
         {
+            bool vi = _config.Language == UiLanguage.Vi;
             if (_config.PrimaryCloudProvider == CloudProviderKind.LocalOnly)
-                return "Cloud: Local Only";
+                return vi ? "Lưu trữ: Chỉ trên máy" : "Cloud: Local Only";
             if (_config.SyncPausedManually)
-                return "Cloud: Paused";
+                return vi ? "Đám mây: Tạm dừng" : "Cloud: Paused";
             if (_config.PrimaryCloudProvider == CloudProviderKind.OneDrive)
-                return IsOneDriveConnected ? $"OneDrive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}" : "OneDrive: Offline";
-            return IsDriveConnected ? $"Drive: {(PendingUploads > 0 ? $"{PendingUploads} pending" : Strings.ConnectedStatus)}" : "Drive: Local";
+                return IsOneDriveConnected
+                    ? $"OneDrive: {(PendingUploads > 0 ? (vi ? $"{PendingUploads} chờ" : $"{PendingUploads} pending") : Strings.ConnectedStatus)}"
+                    : (vi ? "OneDrive: Chưa kết nối" : "OneDrive: Offline");
+            return IsDriveConnected
+                ? $"Drive: {(PendingUploads > 0 ? (vi ? $"{PendingUploads} chờ" : $"{PendingUploads} pending") : Strings.ConnectedStatus)}"
+                : (vi ? "Drive: Chỉ lưu trên máy" : "Drive: Local Only");
         }
     }
 
@@ -1063,11 +1150,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _config.Language = lang;
                 Strings = UiStrings.For(lang);
                 ExpStrings = UiStrings.ExpansionFor(lang);
+                UxStrings = UxOverhaulStrings.For(lang);
                 RunnerStatusText = Strings.StatusReady;
                 SaveConfigSafe();
                 UpdateContext(_bridge.GetActiveContext());
-                RefreshBrowserAndIdeDiscovery();
+                RefreshProcessesAndWatches();
+                _ = RefreshStatsAndEventsAsync();
+                _ = RefreshCloudStateAsync();
                 _ = RefreshArchiveAsync();
+                OnPropertyChanged(nameof(BrowserSetupTitle));
+                OnPropertyChanged(nameof(BrowserSetupStep1));
+                OnPropertyChanged(nameof(BrowserSetupStep2));
+                OnPropertyChanged(nameof(BrowserSetupStep3));
+                OnPropertyChanged(nameof(BrowserSetupStep4));
             }
         }
     }
@@ -1381,6 +1476,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string InfoBarTitle { get => _infoBarTitle; private set => SetProperty(ref _infoBarTitle, value); }
     public string InfoBarMessage { get => _infoBarMessage; private set => SetProperty(ref _infoBarMessage, value); }
     public InfoBarSeverity InfoBarSeverity { get => _infoBarSeverity; private set => SetProperty(ref _infoBarSeverity, value); }
+    public string InfoBarTechnicalDetails { get => _infoBarTechnicalDetails; private set { if (SetProperty(ref _infoBarTechnicalDetails, value)) OnPropertyChanged(nameof(InfoBarHasDetailsVisibility)); } }
+    public Visibility InfoBarHasDetailsVisibility => string.IsNullOrWhiteSpace(InfoBarTechnicalDetails) ? Visibility.Collapsed : Visibility.Visible;
+    public string InfoBarActionLabel { get => _infoBarActionLabel; private set { if (SetProperty(ref _infoBarActionLabel, value)) OnPropertyChanged(nameof(InfoBarActionVisibility)); } }
+    public Visibility InfoBarActionVisibility => string.IsNullOrWhiteSpace(InfoBarActionLabel) ? Visibility.Collapsed : Visibility.Visible;
     public bool IsBusy { get => _isBusy; private set => SetProperty(ref _isBusy, value); }
 
     public GhostCodeConfig Config => _config;
@@ -1502,35 +1601,45 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var (ides, toolchains) = _toolchains.DiscoverAll(_config);
         IdeStatuses.Clear();
         foreach (var i in ides)
-            IdeStatuses.Add(new IdeStatusRow(i));
+            IdeStatuses.Add(new IdeStatusRow(i, _config.Language));
 
         Toolchains.Clear();
         foreach (var t in toolchains)
-            Toolchains.Add(new ToolchainRow(t));
+            Toolchains.Add(new ToolchainRow(t, _config.Language));
 
         var runningIdes = ides.Where(i => i.IsRunning).Select(i => i.Name).ToList();
         var installedIdes = ides.Where(i => i.IsInstalled).Select(i => i.Name).ToList();
+        bool vi = _config.Language == UiLanguage.Vi;
         IdeStatusSummary = runningIdes.Count > 0
-            ? $"Running: {string.Join(", ", runningIdes)}"
+            ? (vi ? $"Đang chạy: {string.Join(", ", runningIdes)}" : $"Running: {string.Join(", ", runningIdes)}")
             : installedIdes.Count > 0
-                ? $"Installed: {string.Join(", ", installedIdes)}"
-                : "No IDE detected";
+                ? (vi ? $"Đã cài đặt: {string.Join(", ", installedIdes)}" : $"Installed: {string.Join(", ", installedIdes)}")
+                : (vi ? "Chưa phát hiện IDE" : "No IDE detected");
     }
 
     public void RefreshProcessesAndWatches()
     {
         RefreshBrowserAndIdeDiscovery();
 
-        LastDetectedFileText = _monitor.LastDetectedFile;
-        LastSuccessfulBackupText = _monitor.LastSuccessfulBackup;
-        LastMonitoringErrorText = _monitor.LastMonitoringError;
-        LastDiagnosticResultText = _monitor.LastDiagnosticSummary;
+        LastDetectedFileText = FormatMonitorStatus(_monitor.LastDetectedFile);
+        LastSuccessfulBackupText = FormatMonitorStatus(_monitor.LastSuccessfulBackup);
+        LastMonitoringErrorText = FormatMonitorStatus(_monitor.LastMonitoringError);
+        LastDiagnosticResultText = FormatMonitorStatus(_monitor.LastDiagnosticSummary);
 
         var watches = _monitor.GetActiveWatches();
         ActiveWatches.Clear();
         foreach (var w in watches)
-            ActiveWatches.Add(new ActiveWatchRow(w));
+            ActiveWatches.Add(new ActiveWatchRow(w, _config.Language));
         OnPropertyChanged(nameof(OnboardingCardVisibility));
+    }
+
+    private string FormatMonitorStatus(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || raw == "None")
+            return UxStrings.NoneText;
+        if (raw == "Not run yet")
+            return UxStrings.NotRunYetText;
+        return raw;
     }
 
     public async Task RefreshStatsAndEventsAsync()
@@ -1542,7 +1651,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FailedUploads = stats.FailedUploads;
         LastSyncTimeText = stats.LastSuccessfulSyncUnixMs is long ts
             ? DateTimeOffset.FromUnixTimeMilliseconds(ts).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-            : "Never";
+            : UxStrings.NeverText;
 
         var events = await _store.GetRecentMonitorEventsAsync(40);
         RecentEvents.Clear();
@@ -1679,7 +1788,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var queue = await _store.GetAllUploadQueueAsync(150);
         UploadQueue.Clear();
         foreach (var q in queue)
-            UploadQueue.Add(new UploadQueueRow(q));
+            UploadQueue.Add(new UploadQueueRow(q, _config.Language));
     }
 
     public async Task RunSelectedVersionAsync()
@@ -1859,13 +1968,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await RefreshAllAsync();
 
             if (!pull.Connected)
-                ShowInfoBar("Cloud Pull Paused", pull.Error ?? "Not connected", InfoBarSeverity.Warning);
+                ShowFriendlyError(ErrorCategory.AuthenticationExpired, pull.Error, InfoBarSeverity.Warning);
             else if (!string.IsNullOrEmpty(pull.Error))
-                ShowInfoBar("Cloud Pull Error", pull.Error, InfoBarSeverity.Error);
+                ShowFriendlyError(ErrorCategory.NetworkOffline, pull.Error, InfoBarSeverity.Error);
             else
-                ShowInfoBar("Cloud Archive Reconciled",
-                    $"Discovered {pull.DiscoveredRemoteVersions} remote versions • New Cloud-Only: {pull.NewCloudOnlyCount} • Conflicts preserved: {pull.ConflictBranchCount}",
+                ShowInfoBar(
+                    _config.Language == UiLanguage.Vi ? "Đã đồng bộ danh mục đám mây" : "Cloud Archive Reconciled",
+                    _config.Language == UiLanguage.Vi
+                        ? $"Phát hiện {pull.DiscoveredRemoteVersions} phiên bản • Chỉ trên đám mây: {pull.NewCloudOnlyCount} • Xung đột giữ nguyên: {pull.ConflictBranchCount}"
+                        : $"Discovered {pull.DiscoveredRemoteVersions} remote versions • New Cloud-Only: {pull.NewCloudOnlyCount} • Conflicts preserved: {pull.ConflictBranchCount}",
                     InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowFriendlyException(ex, ErrorCategory.NetworkOffline);
         }
         finally
         {
@@ -1993,8 +2109,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!_drive.HasOAuthClientConfigured)
         {
             ShowInfoBar(
-                "OAuth Client ID Required",
-                "Click 'Configure OAuth Client...' first to enter your Google Cloud Desktop OAuth Client ID.",
+                _config.Language == UiLanguage.Vi ? "Chưa cấu hình OAuth Client ID" : "OAuth Client ID Required",
+                _config.Language == UiLanguage.Vi
+                    ? "Mở 'Cài đặt nâng cao' -> 'Cấu hình OAuth Client...' để nhập Google Desktop OAuth Client ID."
+                    : "Open Advanced Settings -> Configure OAuth Client to enter your Google Desktop OAuth Client ID.",
                 InfoBarSeverity.Warning);
             return;
         }
@@ -2004,15 +2122,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             var tokens = await _drive.ConnectWithBrowserAsync();
             await RefreshCloudStateAsync();
-            ShowInfoBar("Google Drive Connected", $"Signed in as {tokens.Email}.", InfoBarSeverity.Success);
+            ShowInfoBar(
+                _config.Language == UiLanguage.Vi ? "Đã kết nối Google Drive" : "Google Drive Connected",
+                _config.Language == UiLanguage.Vi ? $"Đã đăng nhập: {tokens.Email}" : $"Signed in as {tokens.Email}.",
+                InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
-            ShowInfoBar("Google Sign-In Failed", ex.Message, InfoBarSeverity.Error);
+            ShowFriendlyException(ex, ErrorCategory.AuthenticationExpired);
         }
         finally
         {
             IsBusy = false;
+            if (IsDriveConnected) OAuthStageText = string.Empty;
         }
     }
 
@@ -2051,8 +2173,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_oneDrive is null || !_oneDrive.IsConfigured)
         {
             ShowInfoBar(
-                "OneDrive Client ID Required",
-                "Click 'Configure OneDrive OAuth...' first and enter your Microsoft Entra App Registration Client ID.",
+                _config.Language == UiLanguage.Vi ? "Chưa cấu hình OneDrive Client ID" : "OneDrive Client ID Required",
+                _config.Language == UiLanguage.Vi
+                    ? "Mở 'Cài đặt nâng cao' -> 'Cấu hình OneDrive OAuth...' để nhập Microsoft Client ID."
+                    : "Open Advanced Settings -> Configure OneDrive OAuth first.",
                 InfoBarSeverity.Warning);
             return;
         }
@@ -2062,15 +2186,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             var tokens = await _oneDrive.ConnectWithBrowserAsync();
             await RefreshCloudStateAsync();
-            ShowInfoBar("OneDrive Connected", $"Signed in as {tokens.Email}.", InfoBarSeverity.Success);
+            ShowInfoBar(
+                _config.Language == UiLanguage.Vi ? "Đã kết nối OneDrive" : "OneDrive Connected",
+                _config.Language == UiLanguage.Vi ? $"Đã đăng nhập: {tokens.Email}" : $"Signed in as {tokens.Email}.",
+                InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
-            ShowInfoBar("OneDrive Sign-In Failed", ex.Message, InfoBarSeverity.Error);
+            ShowFriendlyException(ex, ErrorCategory.AuthenticationExpired);
         }
         finally
         {
             IsBusy = false;
+            if (IsOneDriveConnected) OAuthStageText = string.Empty;
         }
     }
 
@@ -2150,17 +2278,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await RefreshAllAsync();
 
             if (!report.Connected)
-                ShowInfoBar("Cloud Sync Paused", report.LastError ?? "Not connected", InfoBarSeverity.Warning);
+                ShowFriendlyError(ErrorCategory.AuthenticationExpired, report.LastError, InfoBarSeverity.Warning);
             else if (report.FailedCount > 0 || !string.IsNullOrEmpty(pull.Error))
-                ShowInfoBar("Sync Completed With Errors", $"Uploaded: {report.UploadedCount}, Failed: {report.FailedCount}. {report.LastError ?? pull.Error}", InfoBarSeverity.Warning);
+                ShowFriendlyError(ErrorCategory.NetworkOffline, report.LastError ?? pull.Error, InfoBarSeverity.Warning);
             else
-                ShowInfoBar("Bidirectional Sync Complete",
-                    $"{provider.DisplayName}: Uploaded {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
+                ShowInfoBar(
+                    _config.Language == UiLanguage.Vi ? "Đồng bộ thành công" : "Bidirectional Sync Complete",
+                    _config.Language == UiLanguage.Vi
+                        ? $"{provider.DisplayName}: Đã tải lên {report.UploadedCount} (Bỏ qua trùng lặp: {report.SkippedDuplicateCount}) • Đám mây mới: {pull.NewCloudOnlyCount}"
+                        : $"{provider.DisplayName}: Uploaded {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
                     InfoBarSeverity.Success);
         }
         catch (Exception ex)
         {
-            ShowInfoBar("Sync Error", ex.Message, InfoBarSeverity.Error);
+            ShowFriendlyException(ex, ErrorCategory.NetworkOffline);
         }
         finally
         {
@@ -2289,15 +2420,69 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string ExportConfigJson() => _config.ExportToJson();
 
-    public void ShowInfoBar(string title, string message, InfoBarSeverity severity)
+    public void ShowInfoBar(string title, string message, InfoBarSeverity severity, string technicalDetails = "", string actionLabel = "", string actionKey = "")
     {
         _dispatch(() =>
         {
             InfoBarTitle = title;
             InfoBarMessage = message;
             InfoBarSeverity = severity;
+            InfoBarTechnicalDetails = UserFriendlyErrorService.RedactSecrets(technicalDetails);
+            InfoBarActionLabel = actionLabel;
+            _infoBarActionKey = actionKey;
             InfoBarOpen = true;
         });
+    }
+
+    public void ShowFriendlyError(ErrorCategory category, string? rawTechnicalDetails = null, InfoBarSeverity severity = InfoBarSeverity.Error)
+    {
+        var info = UserFriendlyErrorService.MapError(category, rawTechnicalDetails, _config.Language);
+        ShowInfoBar(info.Title, info.Explanation, severity, info.RedactedTechnicalDetails, info.ActionLabel, info.ActionKey);
+    }
+
+    public void ShowFriendlyException(Exception ex, ErrorCategory fallback = ErrorCategory.RuntimeError)
+    {
+        var info = UserFriendlyErrorService.ClassifyAndMap(ex, _config.Language, fallback);
+        ShowInfoBar(info.Title, info.Explanation, InfoBarSeverity.Error, info.RedactedTechnicalDetails, info.ActionLabel, info.ActionKey);
+    }
+
+    private void CopyErrorDetails()
+    {
+        var payload = $"{InfoBarTitle}\n{InfoBarMessage}\n\n{InfoBarTechnicalDetails}".Trim();
+        if (!string.IsNullOrEmpty(payload))
+            TryCopyRawTextToClipboard(payload, _config.Language == UiLanguage.Vi ? "Đã sao chép chi tiết lỗi." : "Copied error details.");
+    }
+
+    private void ExecuteFriendlyErrorAction()
+    {
+        switch (_infoBarActionKey)
+        {
+            case "retry_sync":
+                _ = SyncNowAsync();
+                break;
+            case "connect_cloud":
+                NavigationRequested?.Invoke("Cloud");
+                break;
+            case "open_cloud":
+                NavigationRequested?.Invoke("Cloud");
+                break;
+            case "open_settings":
+                NavigationRequested?.Invoke("Settings");
+                break;
+            case "open_archive":
+                NavigationRequested?.Invoke("Archive");
+                break;
+            case "open_devtools":
+                NavigationRequested?.Invoke("DevTools");
+                break;
+            case "open_browser_setup":
+                var firstPending = InstalledBrowserRows.FirstOrDefault(b => !b.IsConnected)?.KindKey ?? "Edge";
+                _ = OpenBrowserSetupAsync(firstPending);
+                break;
+            case "run_recovery":
+                _ = RunRecoveryCheckAsync();
+                break;
+        }
     }
 
     private void LoadFieldsFromConfig()
@@ -2558,7 +2743,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (exactMatch is not null)
         {
             SelectedQuickActionTarget = exactMatch;
-            QuickActionsAmbiguityNote = $"Matched active problem {ActiveCode}";
+            QuickActionsAmbiguityNote = _config.Language == UiLanguage.Vi
+                ? $"Khớp bài tập đang mở: {ActiveCode}"
+                : $"Matched active problem {ActiveCode}";
         }
         else if (SelectedFileGroup is not null)
         {
@@ -2569,8 +2756,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             SelectedQuickActionTarget = null;
             QuickActionsAmbiguityNote = grouped.Count == 0
-                ? "No archived files yet."
-                : "No exact active-problem match. Please choose a file below explicitly.";
+                ? (_config.Language == UiLanguage.Vi ? "Chưa có tệp nào được lưu." : "No archived files yet.")
+                : UxStrings.QuickActionsSelectHint;
             QuickActionsLatestPreview = string.Empty;
         }
     }
@@ -2619,8 +2806,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            SelectedVersionSource = $"// [INTEGRITY ERROR] {ex.Message}";
-            ShowInfoBar("Archive Integrity Error", ex.Message, InfoBarSeverity.Error);
+            SelectedVersionSource = $"// [INTEGRITY ERROR] {UserFriendlyErrorService.RedactSecrets(ex.Message)}";
+            ShowFriendlyException(ex, ErrorCategory.ArchiveIntegrityFailure);
         }
         finally
         {
@@ -2641,12 +2828,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var effCode = !string.IsNullOrWhiteSpace(problemCode) ? problemCode : (HasActiveContext ? ActiveCode : string.Empty);
         var effPlat = !string.IsNullOrWhiteSpace(platform) ? platform : ActivePlatform;
+        bool vi = _config.Language == UiLanguage.Vi;
         if (string.IsNullOrWhiteSpace(effCode) || effCode == "-")
         {
             SampleTests.Clear();
             SelectedSampleTest = null;
-            CurrentProblemStatementSummary = "Select an archived problem with a recognized problem code or browse a problem in Chrome/Edge/Firefox.";
-            LatestVerdictBadgeText = "No Judge Verdict";
+            CurrentProblemStatementSummary = vi
+                ? "Chọn một bài đã lưu có mã bài tập hoặc mở đề bài trên trình duyệt đã kết nối tiện ích."
+                : "Select an archived problem with a recognized problem code or browse a problem with extension connected.";
+            LatestVerdictBadgeText = vi ? "Chưa có kết quả chấm" : "No Judge Verdict";
             return;
         }
 
@@ -2667,7 +2857,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         else
         {
-            CurrentProblemStatementSummary = $"Problem {effCode} (statement not captured yet — open problem tab with extension connected).";
+            CurrentProblemStatementSummary = vi
+                ? $"Bài {effCode} (chưa thu thập nội dung đề — mở tab bài tập khi tiện ích đã kết nối)."
+                : $"Problem {effCode} (statement not captured yet — open problem tab with extension connected).";
         }
 
         var prevId = SelectedSampleTest?.Id;
@@ -2681,12 +2873,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (subs.Count > 0)
         {
             var top = subs[0];
-            var tag = top.IsVersionCertain ? "verified version" : "version link unverified";
+            var tag = top.IsVersionCertain
+                ? (vi ? "đã khớp phiên bản" : "verified version")
+                : (vi ? "chưa xác minh phiên bản" : "version link unverified");
             LatestVerdictBadgeText = $"{top.Verdict} ({tag})";
         }
         else
         {
-            LatestVerdictBadgeText = "No Judge Verdict";
+            LatestVerdictBadgeText = vi ? "Chưa có kết quả chấm" : "No Judge Verdict";
         }
 
         var timeline = await _store.GetTimelineForProblemAsync(effCode, 50);
@@ -2694,8 +2888,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         foreach (var te in timeline)
             TimelineEntries.Add(te);
         TimelineSummaryText = timeline.Count == 0
-            ? $"Timeline ({effCode}): No events recorded yet."
-            : "Timeline (UTC): " + string.Join(" | ", timeline.Take(4).Select(t =>
+            ? (vi ? $"Dòng thời gian ({effCode}): Chưa có sự kiện nào." : $"Timeline ({effCode}): No events recorded yet.")
+            : (vi ? "Dòng thời gian (UTC): " : "Timeline (UTC): ") + string.Join(" | ", timeline.Take(4).Select(t =>
                 $"[{DateTimeOffset.FromUnixTimeMilliseconds(t.OccurredAtUnixMs).UtcDateTime:HH:mm:ss}] {t.EventType}"));
 
         ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(effCode);
@@ -2780,11 +2974,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             HasActiveContext = false;
             ActiveCode = "-";
             ActiveTitle = Strings.NoActiveContext;
-            ActivePlatform = "Offline";
+            ActivePlatform = _config.Language == UiLanguage.Vi ? "Ngoại tuyến" : "Offline";
             ActiveUrl = string.Empty;
             ActiveBrowserName = string.Empty;
             ActiveFilenamePreview = string.Empty;
-            ActiveContextStateBadge = "Offline";
+            ActiveContextStateBadge = _config.Language == UiLanguage.Vi ? "Ngoại tuyến" : "Offline";
             return;
         }
 

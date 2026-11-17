@@ -40,14 +40,14 @@
                     <ToggleSwitch
                         IsOn="{x:Bind ViewModel.MinimizeToTrayOnClose, Mode=TwoWay}"
                         OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
-                        OffContent="Off" />
+                        OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard Header="{x:Bind ViewModel.Strings.AutoCopyReadyLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
                     <ToggleSwitch
                         IsOn="{x:Bind ViewModel.AutoCopyReadyPath, Mode=TwoWay}"
                         OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
-                        OffContent="Off" />
+                        OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ArchiveDirLabel, Mode=OneWay}" Description="{x:Bind ViewModel.ArchiveDir, Mode=OneWay}" HorizontalAlignment="Stretch">
@@ -107,13 +107,13 @@
                                         MinWidth="0"
                                         IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
                                         OnContent="{x:Bind Label}"
-                                        OffContent="Off"
+                                        OffContent="{x:Bind Label}"
                                         VerticalAlignment="Center" />
                                     <CheckBox
                                         Grid.Column="2"
                                         MinWidth="0"
                                         IsChecked="{x:Bind IsRecursive, Mode=TwoWay}"
-                                        Content="Recursive"
+                                        Content="{x:Bind Label}"
                                         VerticalAlignment="Center" />
                                     <Button
                                         Grid.Column="3"
@@ -166,7 +166,7 @@
                                     </Border>
                                     <Button
                                         Grid.Column="2"
-                                        Content="Stage / Repair"
+                                        Content="{x:Bind ActionButtonLabel}"
                                         Tag="{x:Bind KindKey}"
                                         Click="PrepareBrowser_Click" />
                                 </Grid>
@@ -241,76 +241,72 @@
 
             <!-- 8. Productivity Hotkey, Appearance (Mica), Notifications & Privacy Opt-In -->
             <StackPanel Spacing="6">
-                <TextBlock Text="Productivity, Backdrop, Notifications &amp; Privacy" FontWeight="SemiBold" FontSize="16" />
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.SettingsProductivityTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
 
                 <controls:SettingsCard
-                    Header="Quick Actions System Hotkey"
+                    Header="{x:Bind ViewModel.UxStrings.SettingsHotkeyHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.GlobalHotkeyStatusText, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBox Width="150" Text="{x:Bind ViewModel.GlobalHotkeyGesture, Mode=TwoWay}" PlaceholderText="Ctrl+Shift+F9" />
-                        <ToggleSwitch IsOn="{x:Bind ViewModel.GlobalHotkeyEnabled, Mode=TwoWay}" OnContent="On" OffContent="Off" />
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.GlobalHotkeyEnabled, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                     </StackPanel>
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Windows 11 Backdrop Appearance"
-                    Description="Switch live between Mica, Mica Alt, or Solid Fallback if transparency is disabled."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsMicaHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsMicaDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
                     <ComboBox
                         x:Name="MicaAppearanceCombo"
+                        ItemsSource="{x:Bind ViewModel.MicaChoices, Mode=OneWay}"
                         SelectedIndex="{x:Bind ViewModel.SelectedMicaKindIndex, Mode=TwoWay}"
-                        MinWidth="180">
-                        <ComboBoxItem Content="Mica (Base)" />
-                        <ComboBoxItem Content="Mica Alt" />
-                        <ComboBoxItem Content="Solid Fallback" />
-                    </ComboBox>
+                        MinWidth="180" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Native Notification Level"
-                    Description="Deduplicated alerts for cloud connectivity, failures, recovery, and judge verdicts."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsNotifHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsNotifDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ComboBox SelectedIndex="{x:Bind ViewModel.SelectedNotificationLevelIndex, Mode=TwoWay}" MinWidth="180">
-                        <ComboBoxItem Content="All Notifications" />
-                        <ComboBoxItem Content="Warnings &amp; Errors Only" />
-                        <ComboBoxItem Content="Disabled" />
-                    </ComboBox>
+                    <ComboBox
+                        ItemsSource="{x:Bind ViewModel.NotificationLevelChoices, Mode=OneWay}"
+                        SelectedIndex="{x:Bind ViewModel.SelectedNotificationLevelIndex, Mode=TwoWay}"
+                        MinWidth="180" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Active-Tab Problem Statement &amp; Sample Capture"
-                    Description="Stores visible statements/samples locally only for active browser tabs."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsStmtCaptureHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsStmtCaptureDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.CaptureProblemStatements, Mode=TwoWay}" OnContent="On" OffContent="Off" />
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.CaptureProblemStatements, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Conservative Submission Verdict Tracking"
-                    Description="Captures visible OJ verdicts without ever retro-marking unverified versions AC."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsVerdictHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsVerdictDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrackSubmissionVerdicts, Mode=TwoWay}" OnContent="On" OffContent="Off" />
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrackSubmissionVerdicts, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Sample Comparison: Trim Trailing Whitespace"
-                    Description="Matches online judge whitespace rules when checking Sample Passed locally."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsTrimWsHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsTrimWsDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrimTrailingWhitespaceOnCompare, Mode=TwoWay}" OnContent="Trim" OffContent="Exact" />
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrimTrailingWhitespaceOnCompare, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.TrimLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.ExactLabel, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="Active Coding Time Estimator (Opt-In, Local Only)"
-                    Description="Estimates local focus time with a 3-minute idle cutoff; never uploaded."
+                    Header="{x:Bind ViewModel.UxStrings.SettingsCodingTimeHeader, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.UxStrings.SettingsCodingTimeDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.EstimateActiveCodingTime, Mode=TwoWay}" OnContent="Estimated" OffContent="Off" />
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.EstimateActiveCodingTime, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EstimatedLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
-                    Header="AI / GitHub Copilot Assistance (Strict Opt-In)"
+                    Header="{x:Bind ViewModel.UxStrings.SettingsAiHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.CopilotStatusText, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.AiAssistanceOptIn, Mode=TwoWay}" OnContent="Opted In" OffContent="Disabled" />
+                    <ToggleSwitch IsOn="{x:Bind ViewModel.AiAssistanceOptIn, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.OptedInLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledLabel, Mode=OneWay}" />
                 </controls:SettingsCard>
             </StackPanel>
 

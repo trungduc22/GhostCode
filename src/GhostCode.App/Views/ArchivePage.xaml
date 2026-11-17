@@ -41,7 +41,7 @@
 
             <Button
                 Grid.Column="3"
-                Content="Search"
+                Content="{x:Bind ViewModel.UxStrings.SearchButton, Mode=OneWay}"
                 Style="{ThemeResource AccentButtonStyle}"
                 Command="{x:Bind ViewModel.SearchArchiveCommand}" />
 
@@ -143,7 +143,7 @@
                                 <SplitButton.Flyout>
                                     <MenuFlyout>
                                         <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.OpenWorkingCopyInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenInIdeCommand}" />
-                                        <MenuFlyoutItem Text="Open Original Source File" Command="{x:Bind ViewModel.OpenOriginalInIdeCommand}" />
+                                        <MenuFlyoutItem Text="{x:Bind ViewModel.UxStrings.OpenOriginalSourceMenu, Mode=OneWay}" Command="{x:Bind ViewModel.OpenOriginalInIdeCommand}" />
                                     </MenuFlyout>
                                 </SplitButton.Flyout>
                             </SplitButton>
@@ -230,14 +230,14 @@
                             <ComboBox
                                 Grid.Column="0"
                                 HorizontalAlignment="Stretch"
-                                Header="Compare Baseline Version"
+                                Header="{x:Bind ViewModel.UxStrings.CompareBaselineLabel, Mode=OneWay}"
                                 ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
                                 SelectedItem="{x:Bind ViewModel.CompareWithVersion, Mode=TwoWay}"
                                 DisplayMemberPath="SelectorLabel" />
                             <Button
                                 Grid.Column="1"
                                 VerticalAlignment="Bottom"
-                                Content="Side-by-Side / Unified"
+                                Content="{x:Bind ViewModel.UxStrings.DiffStyleToggleLabel, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.ToggleDiffStyleCommand}" />
                             <TextBlock
                                 Grid.Column="2"
@@ -479,7 +479,7 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Problem &amp; Verdict" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Grid.Column="0" Text="{x:Bind ViewModel.UxStrings.ProblemVerdictTitle, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     <Border Grid.Column="1" Padding="6,2" CornerRadius="4" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                                         <TextBlock Text="{x:Bind ViewModel.LatestVerdictBadgeText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" />
                                     </Border>
@@ -494,7 +494,7 @@
                         <StackPanel Grid.Row="1" Spacing="6">
                             <ComboBox
                                 HorizontalAlignment="Stretch"
-                                PlaceholderText="No sample cases captured yet..."
+                                PlaceholderText="{x:Bind ViewModel.UxStrings.NoSampleCasesPlaceholder, Mode=OneWay}"
                                 ItemsSource="{x:Bind ViewModel.SampleTests}"
                                 SelectedItem="{x:Bind ViewModel.SelectedSampleTest, Mode=TwoWay}"
                                 DisplayMemberPath="DisplayLabel" />
@@ -502,7 +502,7 @@
                                 <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.RunSampleButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.RunSelectedSampleCommand}" />
                                 <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.RunAllSamplesButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunAllSamplesCommand}" />
                                 <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.AddCustomTestButton, Mode=OneWay}" Click="AddCustomSample_Click" />
-                                <Button Padding="8,4" FontSize="11" Content="Del" Command="{x:Bind ViewModel.DeleteSelectedSampleCommand}" />
+                                <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.UxStrings.DeleteSampleShort, Mode=OneWay}" Command="{x:Bind ViewModel.DeleteSelectedSampleCommand}" />
                             </StackPanel>
                         </StackPanel>
 
@@ -512,8 +512,8 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <TextBox Grid.Column="0" Header="Sample Input" Text="{x:Bind ViewModel.SelectedSampleInputPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
-                            <TextBox Grid.Column="1" Header="Expected Output" Text="{x:Bind ViewModel.SelectedSampleExpectedPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
+                            <TextBox Grid.Column="0" Header="{x:Bind ViewModel.UxStrings.SampleInputHeader, Mode=OneWay}" Text="{x:Bind ViewModel.SelectedSampleInputPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
+                            <TextBox Grid.Column="1" Header="{x:Bind ViewModel.UxStrings.SampleExpectedHeader, Mode=OneWay}" Text="{x:Bind ViewModel.SelectedSampleExpectedPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
                         </Grid>
 
                         <!-- Comparison Summary & Expected vs Actual Diff -->

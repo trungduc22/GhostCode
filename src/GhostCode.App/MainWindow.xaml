@@ -122,14 +122,42 @@
             <Border Grid.Column="3" Background="Transparent" />
         </Grid>
 
-        <!-- Global Status Notification Bar -->
+        <!-- Global Status Notification Bar (Human-Friendly Errors + Expandable Technical Details) -->
         <InfoBar
             Grid.Row="1"
             Margin="16,4,16,0"
             IsOpen="{x:Bind ViewModel.InfoBarOpen, Mode=TwoWay}"
             Title="{x:Bind ViewModel.InfoBarTitle, Mode=OneWay}"
             Message="{x:Bind ViewModel.InfoBarMessage, Mode=OneWay}"
-            Severity="{x:Bind ViewModel.InfoBarSeverity, Mode=OneWay}" />
+            Severity="{x:Bind ViewModel.InfoBarSeverity, Mode=OneWay}">
+            <InfoBar.ActionButton>
+                <Button
+                    Content="{x:Bind ViewModel.InfoBarActionLabel, Mode=OneWay}"
+                    Visibility="{x:Bind ViewModel.InfoBarActionVisibility, Mode=OneWay}"
+                    Command="{x:Bind ViewModel.ExecuteFriendlyErrorActionCommand}" />
+            </InfoBar.ActionButton>
+            <InfoBar.Content>
+                <Expander
+                    Visibility="{x:Bind ViewModel.InfoBarHasDetailsVisibility, Mode=OneWay}"
+                    Header="{x:Bind ViewModel.UxStrings.ErrorTechnicalDetailsHeader, Mode=OneWay}"
+                    HorizontalAlignment="Stretch"
+                    Margin="0,4,0,4">
+                    <StackPanel Spacing="6">
+                        <TextBox
+                            Text="{x:Bind ViewModel.InfoBarTechnicalDetails, Mode=OneWay}"
+                            IsReadOnly="True"
+                            AcceptsReturn="True"
+                            TextWrapping="Wrap"
+                            FontFamily="Consolas"
+                            FontSize="11"
+                            MaxHeight="120" />
+                        <Button
+                            Content="{x:Bind ViewModel.UxStrings.ErrorCopyDetailsButton, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.CopyErrorDetailsCommand}" />
+                    </StackPanel>
+                </Expander>
+            </InfoBar.Content>
+        </InfoBar>
 
         <NavigationView
             x:Name="RootNav"
@@ -230,7 +258,7 @@
                             FontFamily="Consolas"
                             FontSize="12"
                             MaxHeight="160"
-                            PlaceholderText="Select an archived file above to preview &amp; copy..." />
+                            PlaceholderText="{x:Bind ViewModel.UxStrings.QuickActionsPreviewPlaceholder, Mode=OneWay}" />
                     </StackPanel>
 
                     <!-- Quick Actions Row -->
@@ -290,10 +318,10 @@
                         Text="{x:Bind ViewModel.BrowserSetupExtensionPath, Mode=OneWay}" />
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="Mở trang tiện ích" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.OpenBrowserExtensionsPageCommand}" />
-                        <Button Content="Mở thư mục" Command="{x:Bind ViewModel.OpenStagedExtensionFolderCommand}" />
-                        <Button Content="Sao chép đường dẫn" Command="{x:Bind ViewModel.CopyStagedExtensionPathCommand}" />
-                        <Button Content="Kiểm tra kết nối" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.BrowserSetupOpenPageButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.OpenBrowserExtensionsPageCommand}" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.BrowserSetupOpenFolderButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenStagedExtensionFolderCommand}" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.BrowserSetupCopyPathButton, Mode=OneWay}" Command="{x:Bind ViewModel.CopyStagedExtensionPathCommand}" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.BrowserSetupCheckConnectionButton, Mode=OneWay}" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
                     </StackPanel>
                 </StackPanel>
             </Border>

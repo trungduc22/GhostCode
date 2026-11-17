@@ -340,22 +340,22 @@
                     </Grid.RowDefinitions>
 
                     <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
-                        <TextBlock Text="Last Detected File" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastDetectedFileLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="{x:Bind ViewModel.LastDetectedFileText, Mode=OneWay}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
 
                     <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
-                        <TextBlock Text="Last Successful Backup" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastSuccessfulBackupLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="{x:Bind ViewModel.LastSuccessfulBackupText, Mode=OneWay}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
 
                     <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
-                        <TextBlock Text="Last Monitoring Error" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastMonitoringErrorLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="{x:Bind ViewModel.LastMonitoringErrorText, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
 
                     <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
-                        <TextBlock Text="Last Diagnostic Result" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastDiagnosticResultLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="{x:Bind ViewModel.LastDiagnosticResultText, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                     </StackPanel>
                 </Grid>

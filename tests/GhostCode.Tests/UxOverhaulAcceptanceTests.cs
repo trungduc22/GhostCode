@@ -7,6 +7,7 @@ using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
+using GhostCode.Core.Notifications;
 using GhostCode.Core.Storage;
 
 namespace GhostCode.Tests;
@@ -251,5 +252,40 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
         Assert.Equal(BrowserConnectionState.ExtensionConnected, afterStates.Single(b => b.Kind == BrowserKind.Thorium).ConnectionState);
         Assert.Equal(BrowserConnectionState.Installed, afterStates.Single(b => b.Kind == BrowserKind.Edge).ConnectionState);
         Assert.Contains("Thorium", cfg.KnownConnectedBrowsers);
+    }
+
+    [Fact]
+    public void P2_UserFriendlyErrorService_MapsAll17CategoriesAndRedactsSecretsInBothLanguages()
+    {
+        var allCategories = Enum.GetValues<ErrorCategory>();
+        Assert.Equal(17, allCategories.Length);
+
+        const string secretSample = "Authorization: Bearer ya29.super-secret-oauth-token-12345 pairing_secret=abc999 client_secret=\"topsecret\"";
+        foreach (var cat in allCategories)
+        {
+            var vi = UserFriendlyErrorService.MapError(cat, secretSample, UiLanguage.Vi);
+            var en = UserFriendlyErrorService.MapError(cat, secretSample, UiLanguage.En);
+
+            Assert.False(string.IsNullOrWhiteSpace(vi.Title));
+            Assert.False(string.IsNullOrWhiteSpace(vi.Explanation));
+            Assert.False(string.IsNullOrWhiteSpace(vi.ActionLabel));
+            Assert.DoesNotContain("ya29.super-secret", vi.RedactedTechnicalDetails);
+            Assert.DoesNotContain("abc999", vi.RedactedTechnicalDetails);
+            Assert.DoesNotContain("topsecret", vi.RedactedTechnicalDetails);
+            Assert.Contains("[REDACTED]", vi.RedactedTechnicalDetails);
+
+            Assert.False(string.IsNullOrWhiteSpace(en.Title));
+            Assert.False(string.IsNullOrWhiteSpace(en.Explanation));
+            Assert.False(string.IsNullOrWhiteSpace(en.ActionLabel));
+            Assert.NotEqual(vi.Title, en.Title);
+        }
+
+        // Exception classifier maps common exceptions accurately
+        var netMapped = UserFriendlyErrorService.ClassifyAndMap(new HttpRequestException("Name or service not known"), UiLanguage.Vi);
+        Assert.Equal(ErrorCategory.NetworkOffline, netMapped.Category);
+        Assert.Equal("Không có kết nối mạng", netMapped.Title);
+
+        var authMapped = UserFriendlyErrorService.ClassifyAndMap(new Exception("401 Unauthorized invalid_grant"), UiLanguage.Vi);
+        Assert.Equal(ErrorCategory.AuthenticationExpired, authMapped.Category);
     }
 }

@@ -98,6 +98,7 @@ public sealed partial class MainWindow : Window
             if (e.PropertyName == nameof(MainViewModel.Strings))
                 Title = ViewModel.Strings.AppTitle;
         };
+        ViewModel.NavigationRequested += tag => NavigateToTag(tag);
 
         RootNav.SelectedItem = RootNav.MenuItems[0];
         ContentFrame.Navigate(typeof(DashboardPage));
