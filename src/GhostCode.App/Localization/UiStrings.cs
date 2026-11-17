@@ -147,14 +147,14 @@ public static class UiStrings
         PendingUploadsLabel: "Chờ tải lên",
         SyncedUploadsLabel: "Đã đồng bộ đám mây",
         FailedUploadsLabel: "Lỗi tải lên",
-        ArchiveSearchPlaceholder: "Lọc theo mã bài, tên tệp, đường dẫn...",
+        ArchiveSearchPlaceholder: "Tìm trong kho lưu trữ...",
         PlatformFilterLabel: "Nền tảng",
         AvailabilityFilterLabel: "Trạng thái",
         AvailabilityAll: "Tất cả",
-        AvailabilityLocalOnly: "Chỉ lưu trên máy",
+        AvailabilityLocalOnly: "Cục bộ",
         AvailabilitySynced: "Đã đồng bộ",
-        AvailabilityCloudOnly: "Chỉ trên đám mây",
-        AvailabilityConflict: "Nhánh xung đột",
+        AvailabilityCloudOnly: "Chỉ đám mây",
+        AvailabilityConflict: "Xung đột",
         VersionSelectorLabel: "Phiên bản",
         CopyCodeButton: "Sao chép code",
         RestoreVersionButton: "Khôi phục",
@@ -257,13 +257,13 @@ public static class UiStrings
         PendingUploadsLabel: "Pending Queue",
         SyncedUploadsLabel: "Synced to Drive",
         FailedUploadsLabel: "Failed Uploads",
-        ArchiveSearchPlaceholder: "Filter by code, filename, path...",
+        ArchiveSearchPlaceholder: "Search in archive...",
         PlatformFilterLabel: "Platform",
-        AvailabilityFilterLabel: "Availability",
+        AvailabilityFilterLabel: "Status",
         AvailabilityAll: "All",
-        AvailabilityLocalOnly: "Local Only",
+        AvailabilityLocalOnly: "Local",
         AvailabilitySynced: "Synced",
-        AvailabilityCloudOnly: "Cloud Only",
+        AvailabilityCloudOnly: "Cloud-only",
         AvailabilityConflict: "Conflict",
         VersionSelectorLabel: "Version",
         CopyCodeButton: "Copy Source",
@@ -469,18 +469,11 @@ public static class UiStrings
                 _ => "Attention Needed"
             };
 
-    public static string ForAvailability(VersionAvailability availability, UiLanguage language)
-    {
-        var b = For(language);
-        return availability switch
-        {
-            VersionAvailability.LocalOnly => b.AvailabilityLocalOnly,
-            VersionAvailability.Synced => b.AvailabilitySynced,
-            VersionAvailability.CloudOnly => b.AvailabilityCloudOnly,
-            VersionAvailability.Conflict => b.AvailabilityConflict,
-            _ => b.AvailabilityLocalOnly
-        };
-    }
+    public static string ForAvailability(VersionAvailability availability, UiLanguage language) =>
+        StorageStatusFormatter.GetShortLabel(availability, null, language);
+
+    public static string ForStorageStatus(VersionAvailability availability, UploadStatus? uploadStatus, UiLanguage language) =>
+        StorageStatusFormatter.GetShortLabel(availability, uploadStatus, language);
 }
 
 public sealed record ExpansionTextBundle(

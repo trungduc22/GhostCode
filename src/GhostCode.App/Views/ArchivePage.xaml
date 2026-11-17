@@ -3,55 +3,81 @@
     x:Class="GhostCode.App.Views.ArchivePage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:vm="using:GhostCode.App.ViewModels">
+    xmlns:vm="using:GhostCode.App.ViewModels"
+    xmlns:conv="using:GhostCode.App.Converters">
 
-    <Grid Padding="20,12,20,20" RowSpacing="12">
+    <Page.Resources>
+        <conv:DiffKindToBrushConverter x:Key="UnifiedBgConverter" IsForeground="False" IsSidePanel="False" />
+        <conv:DiffKindToBrushConverter x:Key="DiffFgConverter" IsForeground="True" />
+        <conv:DiffKindToBrushConverter x:Key="LeftDiffBgConverter" IsForeground="False" IsSidePanel="True" IsLeftSide="True" />
+        <conv:DiffKindToBrushConverter x:Key="RightDiffBgConverter" IsForeground="False" IsSidePanel="True" IsLeftSide="False" />
+        <conv:StorageStatusKindToBrushConverter x:Key="StorageStatusBrushConverter" />
+    </Page.Resources>
+
+    <Grid Padding="20,12,20,16" RowSpacing="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Search & Filters Header -->
-        <Grid Grid.Row="0" ColumnSpacing="10">
+        <!-- P1: Single Archive-Local Search Box (embedded icon + clear button, no detached Search button) & Inline Filters -->
+        <Grid Grid.Row="0" ColumnSpacing="8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="150" />
-                <ColumnDefinition Width="165" />
+                <ColumnDefinition Width="*" MinWidth="180" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <TextBox
+            <AutoSuggestBox
+                x:Name="ArchiveSearchBox"
                 Grid.Column="0"
+                HorizontalAlignment="Stretch"
+                QueryIcon="Find"
                 PlaceholderText="{x:Bind ViewModel.Strings.ArchiveSearchPlaceholder, Mode=OneWay}"
                 Text="{x:Bind ViewModel.SearchQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                QuerySubmitted="ArchiveSearchBox_QuerySubmitted"
                 KeyDown="SearchBox_KeyDown" />
 
             <ComboBox
+                x:Name="PlatformFilterCombo"
                 Grid.Column="1"
-                HorizontalAlignment="Stretch"
+                MinWidth="112"
                 ItemsSource="{x:Bind ViewModel.PlatformFilters}"
                 SelectedItem="{x:Bind ViewModel.SelectedPlatformFilter, Mode=TwoWay}" />
 
             <ComboBox
+                x:Name="AvailabilityFilterCombo"
                 Grid.Column="2"
-                HorizontalAlignment="Stretch"
+                MinWidth="118"
                 ItemsSource="{x:Bind ViewModel.AvailabilityFilterLabels, Mode=OneWay}"
                 SelectedIndex="{x:Bind ViewModel.SelectedAvailabilityFilterIndex, Mode=TwoWay}" />
 
             <Button
+                x:Name="PullCloudHeaderBtn"
                 Grid.Column="3"
-                Content="{x:Bind ViewModel.UxStrings.SearchButton, Mode=OneWay}"
-                Style="{ThemeResource AccentButtonStyle}"
-                Command="{x:Bind ViewModel.SearchArchiveCommand}" />
+                Command="{x:Bind ViewModel.PullCloudArchiveCommand}"
+                ToolTipService.ToolTip="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE896;" FontSize="13" />
+                    <TextBlock x:Name="PullCloudBtnText" Text="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}" />
+                </StackPanel>
+            </Button>
 
             <Button
+                x:Name="OpenTrashButton"
                 Grid.Column="4"
-                Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}"
-                Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
+                Click="OpenTrashDialog_Click"
+                ToolTipService.ToolTip="Thùng rác GhostCode">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE74D;" FontSize="13" />
+                    <TextBlock Text="{x:Bind ViewModel.TrashButtonLabel, Mode=OneWay}" />
+                </StackPanel>
+            </Button>
         </Grid>
 
-        <!-- Empty State when 0 source versions exist yet -->
+        <!-- Empty State when 0 active source versions exist and no filter active -->
         <Border
             x:Name="ArchiveEmptyStateCard"
             Grid.Row="1"
@@ -75,23 +101,23 @@
             </StackPanel>
         </Border>
 
-        <!-- 3-Pane Workspace: File Explorer | Source + Version Viewer | Console & Split I/O Runner -->
+        <!-- Workspace: File Explorer | Source / Full-Width Diff | Code Runner (hidden when comparing) -->
         <Grid
             x:Name="ArchiveWorkspaceGrid"
             Grid.Row="1"
             ColumnSpacing="12"
             Visibility="{x:Bind ViewModel.ArchiveWorkspaceVisibility, Mode=OneWay}">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240" MinWidth="200" />
-                <ColumnDefinition Width="1.25*" MinWidth="260" />
-                <ColumnDefinition Width="*" MinWidth="270" />
+                <ColumnDefinition x:Name="ExplorerColDef" Width="232" MinWidth="185" />
+                <ColumnDefinition Width="1.25*" MinWidth="280" />
+                <ColumnDefinition x:Name="RunnerColDef" Width="*" MinWidth="0" />
             </Grid.ColumnDefinitions>
 
-            <!-- Pane 1: File Explorer -->
+            <!-- Pane 1: Compact Logical Problem / Archive Explorer -->
             <Border
                 x:Name="ExplorerPane"
                 Grid.Column="0"
-                Padding="8"
+                Padding="6"
                 CornerRadius="8"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
@@ -103,7 +129,23 @@
                     SelectionMode="Single">
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="vm:ArchiveFileGroupRow">
-                            <StackPanel Padding="4,8" Spacing="3">
+                            <StackPanel
+                                Padding="4,7"
+                                Spacing="3"
+                                Background="Transparent"
+                                ToolTipService.ToolTip="{x:Bind StatusTooltip}">
+                                <StackPanel.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Mở" Icon="OpenFile" Tag="{x:Bind GroupKey}" Click="GroupContextOpen_Click" />
+                                        <MenuFlyoutItem Text="Sao chép code mới nhất" Icon="Copy" Tag="{x:Bind GroupKey}" Click="GroupContextCopyLatest_Click" />
+                                        <MenuFlyoutItem Text="So sánh các phiên bản" Tag="{x:Bind GroupKey}" Click="GroupContextCompare_Click">
+                                            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8AB;" /></MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutItem Text="Xem chi tiết" Icon="PreviewLink" Tag="{x:Bind GroupKey}" Click="GroupContextDetails_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="Xóa bài" Icon="Delete" Tag="{x:Bind GroupKey}" Click="GroupContextDelete_Click" />
+                                    </MenuFlyout>
+                                </StackPanel.ContextFlyout>
                                 <Grid ColumnSpacing="6">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -112,25 +154,30 @@
                                     <Border Grid.Column="0" Padding="6,2" CornerRadius="4" Background="{ThemeResource AccentFillColorDefaultBrush}">
                                         <TextBlock Text="{x:Bind LatestVersionBadge}" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="11" FontWeight="SemiBold" />
                                     </Border>
-                                    <TextBlock Grid.Column="1" Text="{x:Bind FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{x:Bind CompactTitle}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                 </Grid>
-                                <TextBlock Text="{x:Bind Subtitle}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{x:Bind StorageKind, Converter={StaticResource StorageStatusBrushConverter}}" />
+                                    <TextBlock Text="{x:Bind Subtitle}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
                             </StackPanel>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
             </Border>
 
-            <!-- Pane 2: Read-Only Versioned Source Code Viewer -->
+            <!-- Pane 2 (expands across Column 1+2 when Diff Mode is active): Version Viewer / Full-Width Diff -->
             <Border
                 x:Name="SourceViewerPane"
                 Grid.Column="1"
+                Grid.ColumnSpan="{x:Bind ViewModel.SourcePaneColumnSpan, Mode=OneWay}"
                 Padding="14"
                 CornerRadius="8"
+                SizeChanged="SourceViewerPane_SizeChanged"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="1">
-                <Grid RowSpacing="10">
+                <Grid RowSpacing="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -138,31 +185,109 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- Version Selector & Action Toolbar -->
-                    <StackPanel Grid.Row="0" Spacing="6">
-                        <ComboBox
-                            HorizontalAlignment="Stretch"
-                            Header="{x:Bind ViewModel.Strings.VersionSelectorLabel, Mode=OneWay}"
-                            ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
-                            SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
-                            DisplayMemberPath="SelectorLabel" />
+                    <!-- Normal Source Mode Top Controls (hidden when in full-width Diff Workspace) -->
+                    <StackPanel Grid.Row="0" Spacing="8" Visibility="{x:Bind ViewModel.SourceViewerVisibility, Mode=OneWay}">
+                        <!-- Row A: Version Selector + Minimal Metadata Summary + Chi tiết -->
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                        <!-- Clean Two-Row Action Hierarchy: Primary (Run + Copy) & Secondary Actions -->
-                        <StackPanel Spacing="6">
-                            <!-- Row 1: Primary Actions -->
-                            <StackPanel Orientation="Horizontal" Spacing="6">
+                            <ComboBox
+                                x:Name="VersionSelectorCombo"
+                                Grid.Column="0"
+                                MinWidth="148"
+                                MaxWidth="205"
+                                ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
+                                SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
+                                DisplayMemberPath="SelectorLabel"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.SelectedVersion.StatusTooltip, Mode=OneWay, FallbackValue=''}">
+                                <ComboBox.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Xem" Icon="View" Click="VersionMenuView_Click" />
+                                        <MenuFlyoutItem Text="Sao chép" Icon="Copy" Command="{x:Bind ViewModel.CopySelectedCodeCommand}" />
+                                        <MenuFlyoutItem Text="So sánh" Click="CompareButton_Click">
+                                            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8AB;" /></MenuFlyoutItem.Icon>
+                                        </MenuFlyoutItem>
+                                        <MenuFlyoutItem Text="Khôi phục" Icon="Refresh" Click="RestoreVersion_Click" />
+                                        <MenuFlyoutSeparator />
+                                        <MenuFlyoutItem Text="Xóa phiên bản" Icon="Delete" Click="DeleteSelectedVersion_Click" />
+                                    </MenuFlyout>
+                                </ComboBox.ContextFlyout>
+                            </ComboBox>
+
+                            <StackPanel
+                                Grid.Column="1"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                VerticalAlignment="Center"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.SelectedVersion.StatusTooltip, Mode=OneWay, FallbackValue=''}">
+                                <Ellipse
+                                    Width="7"
+                                    Height="7"
+                                    VerticalAlignment="Center"
+                                    Visibility="{x:Bind ViewModel.HasSelectedVersion, Mode=OneWay}"
+                                    Fill="{x:Bind ViewModel.SelectedVersion.StorageKind, Converter={StaticResource StorageStatusBrushConverter}, Mode=OneWay}" />
+                                <TextBlock
+                                    x:Name="MinimalMetaLineText"
+                                    Text="{x:Bind ViewModel.SelectedVersionHeaderText, Mode=OneWay}"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+
+                            <Button
+                                x:Name="VersionDetailsBtn"
+                                Grid.Column="2"
+                                Height="30"
+                                Padding="8,2"
+                                FontSize="11"
+                                VerticalAlignment="Center"
+                                IsEnabled="{x:Bind ViewModel.HasSelectedVersion, Mode=OneWay}"
+                                Click="VersionDetails_Click"
+                                ToolTipService.ToolTip="Chi tiết phiên bản">
+                                <StackPanel Orientation="Horizontal" Spacing="5">
+                                    <FontIcon Glyph="&#xE946;" FontSize="11" />
+                                    <TextBlock Text="Chi tiết" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
+                        <!-- Row B (P3): Full-Width Single Horizontal Action Toolbar with Adaptive Overflow + Far-Right Separated Trash Button -->
+                        <Grid VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel
+                                x:Name="PrimaryActionStrip"
+                                Grid.Column="0"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                VerticalAlignment="Center">
                                 <Button
                                     x:Name="RunSourceButton"
-                                    Padding="12,5"
+                                    Height="32"
+                                    Padding="10,4"
                                     FontSize="12"
                                     FontWeight="SemiBold"
-                                    Content="{x:Bind ViewModel.PrimaryRunButtonText, Mode=OneWay}"
                                     Style="{ThemeResource AccentButtonStyle}"
-                                    Command="{x:Bind ViewModel.RunOrStopCodeCommand}" />
+                                    Command="{x:Bind ViewModel.RunOrStopCodeCommand}">
+                                    <StackPanel Orientation="Horizontal" Spacing="5">
+                                        <FontIcon Glyph="&#xE768;" FontSize="11" />
+                                        <TextBlock Text="{x:Bind ViewModel.PrimaryRunButtonText, Mode=OneWay}" />
+                                    </StackPanel>
+                                </Button>
+
                                 <SplitButton
+                                    x:Name="CopyCodeSplitBtn"
+                                    Height="32"
                                     Padding="8,4"
                                     FontSize="12"
-                                    Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
+                                    Content="{x:Bind ViewModel.SelectedFileGroup.CopyButtonLabel, Mode=OneWay, FallbackValue='Sao chép'}"
                                     Command="{x:Bind ViewModel.CopySelectedCodeCommand}">
                                     <SplitButton.Flyout>
                                         <MenuFlyout>
@@ -174,11 +299,10 @@
                                         </MenuFlyout>
                                     </SplitButton.Flyout>
                                 </SplitButton>
-                            </StackPanel>
 
-                            <!-- Row 2: Secondary Actions -->
-                            <StackPanel Orientation="Horizontal" Spacing="6">
                                 <SplitButton
+                                    x:Name="OpenIdeBtn"
+                                    Height="32"
                                     Padding="8,4"
                                     FontSize="12"
                                     Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}"
@@ -190,41 +314,71 @@
                                         </MenuFlyout>
                                     </SplitButton.Flyout>
                                 </SplitButton>
+
                                 <Button
+                                    x:Name="CompareDiffBtn"
+                                    Height="32"
                                     Padding="8,4"
                                     FontSize="12"
                                     Content="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}"
-                                    Command="{x:Bind ViewModel.ToggleDiffModeCommand}" />
+                                    IsEnabled="{x:Bind ViewModel.CanCompareVersions, Mode=OneWay}"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.CompareButtonTooltipText, Mode=OneWay}"
+                                    Click="CompareButton_Click" />
+
                                 <Button
+                                    x:Name="RestoreVersionBtn"
+                                    Height="32"
                                     Padding="8,4"
                                     FontSize="12"
                                     Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
                                     Click="RestoreVersion_Click" />
+
                                 <Button
+                                    x:Name="DownloadCloudVersionBtn"
+                                    Height="32"
                                     Padding="8,4"
                                     FontSize="12"
                                     Content="{x:Bind ViewModel.Strings.DownloadVersionButton, Mode=OneWay}"
                                     Visibility="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
                                     Command="{x:Bind ViewModel.DownloadSelectedVersionCommand}" />
                             </StackPanel>
-                        </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                <Button
+                                    x:Name="ToolbarOverflowBtn"
+                                    Width="32"
+                                    Height="32"
+                                    Padding="0"
+                                    Visibility="Collapsed"
+                                    ToolTipService.ToolTip="Thao tác khác">
+                                    <FontIcon Glyph="&#xE712;" FontSize="13" />
+                                    <Button.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem x:Name="OverflowOpenIdeItem" Text="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenInIdeCommand}" />
+                                            <MenuFlyoutItem x:Name="OverflowCompareItem" Text="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}" IsEnabled="{x:Bind ViewModel.CanCompareVersions, Mode=OneWay}" Click="CompareButton_Click" />
+                                            <MenuFlyoutItem x:Name="OverflowRestoreItem" Text="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}" Click="RestoreVersion_Click" />
+                                            <MenuFlyoutItem Text="Chi tiết phiên bản" Click="VersionDetails_Click" />
+                                        </MenuFlyout>
+                                    </Button.Flyout>
+                                </Button>
+
+                                <AppBarSeparator Margin="2,0" Height="20" />
+
+                                <Button
+                                    x:Name="DeleteVersionBtn"
+                                    Width="32"
+                                    Height="32"
+                                    Padding="0"
+                                    IsEnabled="{x:Bind ViewModel.HasSelectedVersion, Mode=OneWay}"
+                                    Click="DeleteSelectedVersion_Click"
+                                    ToolTipService.ToolTip="Xóa phiên bản (giữ Shift để xóa nhanh)">
+                                    <FontIcon Glyph="&#xE74D;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
                     </StackPanel>
 
-                    <!-- Version Integrity Header -->
-                    <StackPanel Grid.Row="1" Spacing="2">
-                        <TextBlock
-                            Text="{x:Bind ViewModel.SelectedVersionHeaderText, Mode=OneWay}"
-                            FontWeight="SemiBold"
-                            FontSize="12"
-                            TextTrimming="CharacterEllipsis" />
-                        <TextBlock
-                            Text="{x:Bind ViewModel.SelectedVersion.SourcePath, Mode=OneWay, FallbackValue=''}"
-                            FontSize="11"
-                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <!-- Cloud-Only Banner -->
+                    <!-- Cloud-Only Banner (shown only in normal viewer mode when local bytes missing) -->
                     <InfoBar
                         Grid.Row="2"
                         IsOpen="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
@@ -247,88 +401,253 @@
                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
                         ScrollViewer.VerticalScrollBarVisibility="Auto" />
 
-                    <!-- Non-Destructive Version Diff Viewer -->
+                    <!-- P2: Full-Width GitHub-Style Version Diff Workspace -->
                     <Grid
                         x:Name="VersionDiffViewer"
-                        Grid.Row="3"
+                        Grid.Row="0"
+                        Grid.RowSpan="4"
                         Visibility="{x:Bind ViewModel.DiffModeVisibility, Mode=OneWay}"
-                        RowSpacing="8">
+                        RowSpacing="10">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <Grid Grid.Row="0" ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <ComboBox
-                                Grid.Column="0"
-                                HorizontalAlignment="Stretch"
-                                Header="{x:Bind ViewModel.UxStrings.CompareBaselineLabel, Mode=OneWay}"
-                                ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
-                                SelectedItem="{x:Bind ViewModel.CompareWithVersion, Mode=TwoWay}"
-                                DisplayMemberPath="SelectorLabel" />
-                            <Button
-                                Grid.Column="1"
-                                VerticalAlignment="Bottom"
-                                Content="{x:Bind ViewModel.UxStrings.DiffStyleToggleLabel, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.ToggleDiffStyleCommand}" />
-                            <TextBlock
-                                Grid.Column="2"
-                                VerticalAlignment="Bottom"
-                                Margin="0,0,0,6"
-                                Text="{x:Bind ViewModel.DiffSummaryText, Mode=OneWay}"
-                                FontSize="12"
-                                FontWeight="SemiBold" />
-                        </Grid>
+                        <!-- Diff Header & Navigation Controls -->
+                        <Border
+                            Grid.Row="0"
+                            Padding="10,8"
+                            CornerRadius="6"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1">
+                            <Grid RowSpacing="8">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                        <ListView
+                                <!-- Header Row: Problem · So sánh mã nguồn + Diff Stats + Close Diff -->
+                                <Grid Grid.Row="0" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind ViewModel.DiffHeaderTitle, Mode=OneWay}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                        <Border Padding="6,2" CornerRadius="4" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                            <TextBlock Text="{x:Bind ViewModel.DiffVersionPairText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" FontFamily="Consolas" />
+                                        </Border>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind ViewModel.DiffAddedCountText, Mode=OneWay}" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorSuccessBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.DiffRemovedCountText, Mode=OneWay}" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                                        <TextBlock Text="{x:Bind ViewModel.DiffModifiedCountText, Mode=OneWay}" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                                    </StackPanel>
+
+                                    <Button
+                                        x:Name="CloseDiffBtn"
+                                        Grid.Column="2"
+                                        Height="30"
+                                        Padding="10,4"
+                                        FontSize="12"
+                                        Click="CloseDiff_Click">
+                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                            <FontIcon Glyph="&#xE711;" FontSize="11" />
+                                            <TextBlock Text="Đóng so sánh" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+
+                                <!-- Controls Row: Independent Từ -> Đến selectors + Song song / Hợp nhất + Prev/Next Change -->
+                                <Grid Grid.Row="1" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <Grid Grid.Column="0" ColumnSpacing="6" VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" MinWidth="120" MaxWidth="205" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" MinWidth="120" MaxWidth="205" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Từ:" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <ComboBox
+                                            x:Name="DiffBaseCombo"
+                                            Grid.Column="1"
+                                            HorizontalAlignment="Stretch"
+                                            ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
+                                            SelectedItem="{x:Bind ViewModel.CompareWithVersion, Mode=TwoWay}"
+                                            DisplayMemberPath="SelectorLabel" />
+                                        <FontIcon Grid.Column="2" Glyph="&#xE72A;" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <TextBlock Grid.Column="3" Text="Đến:" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <ComboBox
+                                            x:Name="DiffTargetCombo"
+                                            Grid.Column="4"
+                                            HorizontalAlignment="Stretch"
+                                            ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
+                                            SelectedItem="{x:Bind ViewModel.DiffTargetVersion, Mode=TwoWay}"
+                                            DisplayMemberPath="SelectorLabel" />
+                                    </Grid>
+
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                        <Button
+                                            x:Name="DiffSideBySideBtn"
+                                            Height="30"
+                                            Padding="10,4"
+                                            FontSize="12"
+                                            Content="Song song"
+                                            Click="DiffModeSideBySide_Click" />
+                                        <Button
+                                            x:Name="DiffUnifiedBtn"
+                                            Height="30"
+                                            Padding="10,4"
+                                            FontSize="12"
+                                            Content="Hợp nhất"
+                                            Click="DiffModeUnified_Click" />
+                                        <AppBarSeparator Margin="2,0" Height="20" />
+                                        <Button
+                                            x:Name="PrevHunkBtn"
+                                            Height="30"
+                                            Padding="8,4"
+                                            FontSize="12"
+                                            Click="PrevDiffChange_Click"
+                                            ToolTipService.ToolTip="Chuyển thay đổi trước">
+                                            <FontIcon Glyph="&#xE74A;" FontSize="11" />
+                                        </Button>
+                                        <Button
+                                            x:Name="NextHunkBtn"
+                                            Height="30"
+                                            Padding="8,4"
+                                            FontSize="12"
+                                            Click="NextDiffChange_Click"
+                                            ToolTipService.ToolTip="Chuyển thay đổi tiếp">
+                                            <FontIcon Glyph="&#xE74B;" FontSize="11" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <!-- Identical / Single-Version / Empty Change Notice -->
+                        <InfoBar
                             Grid.Row="1"
+                            Visibility="{x:Bind ViewModel.DiffNoticeVisibility, Mode=OneWay}"
+                            IsOpen="True"
+                            IsClosable="False"
+                            Severity="Informational"
+                            Message="{x:Bind ViewModel.DiffNoticeText, Mode=OneWay}" />
+
+                        <!-- Side-by-Side Virtualized GitHub-Style Code Diff -->
+                        <ListView
+                            x:Name="DiffSideBySideListView"
+                            Grid.Row="2"
                             Visibility="{x:Bind ViewModel.DiffSideBySideVisibility, Mode=OneWay}"
                             ItemsSource="{x:Bind ViewModel.DiffSideBySideLines}"
-                            SelectionMode="None">
+                            SelectionMode="None"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="MinHeight" Value="22" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="vm:DiffLineRow">
-                                    <Grid ColumnSpacing="6" Padding="2,1">
+                                    <Grid>
                                         <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40" />
                                             <ColumnDefinition Width="18" />
-                                            <ColumnDefinition Width="34" />
                                             <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="34" />
+                                            <ColumnDefinition Width="1" />
+                                            <ColumnDefinition Width="40" />
+                                            <ColumnDefinition Width="18" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{x:Bind KindTag}" FontFamily="Consolas" FontWeight="Bold" FontSize="12" />
-                                        <TextBlock Grid.Column="1" Text="{x:Bind LeftNumText}" FontFamily="Consolas" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <TextBlock Grid.Column="2" Text="{x:Bind LeftText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Grid.Column="3" Text="{x:Bind RightNumText}" FontFamily="Consolas" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                                        <TextBlock Grid.Column="4" Text="{x:Bind RightText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+
+                                        <!-- Left (Baseline) -->
+                                        <Border Grid.Column="0" Background="{x:Bind Kind, Converter={StaticResource LeftDiffBgConverter}}" Padding="4,2">
+                                            <TextBlock Text="{x:Bind LeftNumText}" FontFamily="Consolas" FontSize="11" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        </Border>
+                                        <Border Grid.Column="1" Background="{x:Bind Kind, Converter={StaticResource LeftDiffBgConverter}}" Padding="2,2">
+                                            <TextBlock Text="{x:Bind LeftKindTag}" FontFamily="Consolas" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="{x:Bind Kind, Converter={StaticResource DiffFgConverter}}" />
+                                        </Border>
+                                        <Border Grid.Column="2" Background="{x:Bind Kind, Converter={StaticResource LeftDiffBgConverter}}" Padding="6,2">
+                                            <TextBlock Text="{x:Bind LeftText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        </Border>
+
+                                        <!-- Center Divider -->
+                                        <Border Grid.Column="3" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                        <!-- Right (Target) -->
+                                        <Border Grid.Column="4" Background="{x:Bind Kind, Converter={StaticResource RightDiffBgConverter}}" Padding="4,2">
+                                            <TextBlock Text="{x:Bind RightNumText}" FontFamily="Consolas" FontSize="11" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        </Border>
+                                        <Border Grid.Column="5" Background="{x:Bind Kind, Converter={StaticResource RightDiffBgConverter}}" Padding="2,2">
+                                            <TextBlock Text="{x:Bind RightKindTag}" FontFamily="Consolas" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="{x:Bind Kind, Converter={StaticResource DiffFgConverter}}" />
+                                        </Border>
+                                        <Border Grid.Column="6" Background="{x:Bind Kind, Converter={StaticResource RightDiffBgConverter}}" Padding="6,2">
+                                            <TextBlock Text="{x:Bind RightText}" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        </Border>
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
 
-                        <TextBox
-                            Grid.Row="1"
+                        <!-- Unified Virtualized GitHub-Style Code Diff -->
+                        <ListView
+                            x:Name="DiffUnifiedListView"
+                            Grid.Row="2"
                             Visibility="{x:Bind ViewModel.DiffUnifiedVisibility, Mode=OneWay}"
-                            Text="{x:Bind ViewModel.DiffUnifiedText, Mode=OneWay}"
-                            IsReadOnly="True"
-                            AcceptsReturn="True"
-                            TextWrapping="NoWrap"
-                            FontFamily="Consolas"
-                            FontSize="12"
-                            ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                            ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                            ItemsSource="{x:Bind ViewModel.DiffUnifiedLines}"
+                            SelectionMode="None"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="MinHeight" Value="22" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="Margin" Value="0" />
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="vm:UnifiedDiffLineRow">
+                                    <Grid Background="{x:Bind Kind, Converter={StaticResource UnifiedBgConverter}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="42" />
+                                            <ColumnDefinition Width="42" />
+                                            <ColumnDefinition Width="22" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{x:Bind OldNumText}" Padding="4,2" FontFamily="Consolas" FontSize="11" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind NewNumText}" Padding="4,2" FontFamily="Consolas" FontSize="11" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                        <TextBlock Grid.Column="2" Text="{x:Bind PrefixGlyph}" Padding="2,2" FontFamily="Consolas" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" Foreground="{x:Bind Kind, Converter={StaticResource DiffFgConverter}}" />
+                                        <TextBlock Grid.Column="3" Text="{x:Bind Text}" Padding="6,2" FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
                     </Grid>
                 </Grid>
             </Border>
 
-            <!-- Pane 3: Console & Split STDIN/OUTPUT Execution Panel -->
+            <!-- Pane 3: Console & Split STDIN/OUTPUT Execution Panel (collapsed automatically when comparing) -->
             <Border
                 x:Name="RunnerPane"
                 Grid.Column="2"
+                Visibility="{x:Bind ViewModel.RunnerPaneVisibility, Mode=OneWay}"
                 Padding="14"
                 CornerRadius="8"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -341,7 +660,6 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- Consistent Non-Competing Tab Strip (Single Run Button Remains in Source Toolbar) -->
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6">
                         <Button
                             x:Name="ConsoleTabBtn"
@@ -366,7 +684,6 @@
                             Click="SamplesTab_Click" />
                     </StackPanel>
 
-                    <!-- Single Compact Status & Clear Strip (no duplicate Exit 0 / metrics) -->
                     <Grid Grid.Row="1" ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -411,7 +728,7 @@
                         </Expander>
                     </Grid>
 
-                    <!-- View B: Vertically Split STDIN (Top) & OUTPUT (Bottom) with Draggable Splitter -->
+                    <!-- View B: Vertically Split STDIN & OUTPUT -->
                     <Grid
                         x:Name="IoSplitContainer"
                         Grid.Row="2"
@@ -422,7 +739,6 @@
                             <RowDefinition x:Name="OutputRowDef" Height="1.3*" MinHeight="90" />
                         </Grid.RowDefinitions>
 
-                        <!-- Top: STDIN -->
                         <Grid Grid.Row="0" RowSpacing="4">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -447,7 +763,6 @@
                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
                         </Grid>
 
-                        <!-- Draggable Vertical Splitter -->
                         <Border
                             x:Name="IoSplitterThumb"
                             Grid.Row="1"
@@ -463,7 +778,6 @@
                                 Background="{ThemeResource ControlStrokeColorDefaultBrush}" />
                         </Border>
 
-                        <!-- Bottom: STDOUT & Distinct Compiler/Stderr Diagnostics -->
                         <Grid Grid.Row="2" RowSpacing="6">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -523,7 +837,6 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <!-- Problem Statement & Judge Verdict Card -->
                         <Border Grid.Row="0" Padding="8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
                             <StackPanel Spacing="4">
                                 <Grid>
@@ -542,7 +855,6 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Sample Selector & Actions -->
                         <StackPanel Grid.Row="1" Spacing="6">
                             <TextBlock
                                 Text="{x:Bind ViewModel.SampleCountBadgeText, Mode=OneWay}"
@@ -572,7 +884,6 @@
                             </Grid>
                         </StackPanel>
 
-                        <!-- Input / Expected Preview (shown when samples exist; hidden cleanly when empty) -->
                         <Grid Grid.Row="2" ColumnSpacing="8" Visibility="{x:Bind ViewModel.HasSamplesVisibility, Mode=OneWay}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -582,7 +893,6 @@
                             <TextBox Grid.Column="1" Header="{x:Bind ViewModel.UxStrings.SampleExpectedHeader, Mode=OneWay}" Text="{x:Bind ViewModel.SelectedSampleExpectedPreview, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Height="92" />
                         </Grid>
 
-                        <!-- Comparison Summary & Expected vs Actual Diff -->
                         <Grid Grid.Row="3" RowSpacing="4">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />

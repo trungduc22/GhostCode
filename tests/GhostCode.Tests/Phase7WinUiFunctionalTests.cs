@@ -128,6 +128,8 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
             "DriveThreeOptionExclusivityAndNoStaleOAuth",
             "CloudControlsAndDpapi",
             "QuickActionsOverlay",
+            "ArchiveSimplifiedSearchAndCleanMeta",
+            "ArchiveDeletionDialogTrashAndUndo",
             "VersionDiffAndSamples",
             "MicaAppearanceSwitch",
             "MultiResolutionAndThemeLayout",
@@ -149,7 +151,12 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
             "05_dark_dashboard.png",
             "06_quick_actions.png",
             "07_samples_timeline.png",
-            "08_devtools.png"
+            "08_devtools.png",
+            "09_delete_dialog.png",
+            "10_trash_dialog.png",
+            "11_diff_unified.png",
+            "12_diff_side_by_side.png",
+            "13_diff_dark.png"
         };
         foreach (var file in expectedScreenshots)
         {

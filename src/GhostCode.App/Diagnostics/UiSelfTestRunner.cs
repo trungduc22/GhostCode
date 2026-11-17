@@ -48,7 +48,17 @@ public static class UiSelfTestRunner
             await Task.Delay(350);
             var outPath = Path.Combine(screenshotDir, fileName);
             var theme = (window.Content as FrameworkElement)?.ActualTheme ?? ElementTheme.Light;
-            var ok = await WindowScreenshotCapture.CaptureElementToPngAsync(window.Content, theme, outPath);
+
+            UIElement captureTarget = window.Content;
+            if (window.Content.XamlRoot is not null)
+            {
+                var popups = VisualTreeHelper.GetOpenPopupsForXamlRoot(window.Content.XamlRoot);
+                var dialogPopup = popups.FirstOrDefault(p => p.Child is ContentDialog);
+                if (dialogPopup?.Child is UIElement dialogEl)
+                    captureTarget = dialogEl;
+            }
+
+            var ok = await WindowScreenshotCapture.CaptureElementToPngAsync(captureTarget, theme, outPath);
             if (ok)
                 capturedScreenshots.Add(outPath);
         }
@@ -348,10 +358,110 @@ public static class UiSelfTestRunner
                     $"singleBtn={singleRunBtnOk}, stdout='{vm.StdoutText.Trim()}', stderrCollapsed={cleanDiagOk}, cleanStatus={cleanStatusLineOk}");
                 await CaptureAsync("02_archive_runner.png");
 
-                // Version Diff & Samples / Timeline tab
+                // Archive simplified search, short status & minimal metadata check
+                bool cleanMetaOk = (vm.SelectedVersionHeaderText.Contains("Cục bộ", StringComparison.Ordinal)
+                        || vm.SelectedVersionHeaderText.Contains("Chờ đồng bộ", StringComparison.Ordinal))
+                    && !vm.SelectedVersionHeaderText.Contains("SHA:", StringComparison.Ordinal)
+                    && !vm.SelectedVersionHeaderText.Contains(tempWatchDir, StringComparison.OrdinalIgnoreCase);
+                bool noDetachedSearchOk = window.CurrentPageContent is ArchivePage apCheck
+                    && apCheck.FindName("ArchiveSearchBox") is AutoSuggestBox
+                    && apCheck.FindName("PrimaryActionStrip") is StackPanel;
+                Record("ArchiveSimplifiedSearchAndCleanMeta", cleanMetaOk && noDetachedSearchOk,
+                    $"meta='{vm.SelectedVersionHeaderText}', simplified={noDetachedSearchOk}");
+
+                // Single-version guard (< 2 versions)
+                bool singleVerGuardOk = !vm.CanCompareVersions;
+
+                // Create v2 and v3 edits cleanly to exercise GitHub-style Diff & Delete/Trash/Undo
+                const string srcCodeV2 = "#include <iostream>\nint main(){\n    long long a, b;\n    if (std::cin >> a >> b)\n        std::cout << (a + b) << \"\\n\";\n    return 0;\n}\n";
+                const string srcCodeV3 = "#include <iostream>\nint main(){\n    long long a, b;\n    if (std::cin >> a >> b) {\n        long long sum = a + b;\n        std::cout << sum << \"\\n\";\n    }\n    return 0;\n}\n";
+                await File.WriteAllBytesAsync(srcFile, Encoding.UTF8.GetBytes(srcCodeV2));
+                var v2Deadline = Environment.TickCount64 + 6000;
+                while (Environment.TickCount64 < v2Deadline)
+                {
+                    await vm.RefreshAllAsync();
+                    if (vm.SelectedFileVersions.Count >= 2)
+                        break;
+                    await Task.Delay(120);
+                }
+                await File.WriteAllBytesAsync(srcFile, Encoding.UTF8.GetBytes(srcCodeV3));
+                var v3Deadline = Environment.TickCount64 + 6000;
+                while (Environment.TickCount64 < v3Deadline)
+                {
+                    await vm.RefreshAllAsync();
+                    if (vm.SelectedFileVersions.Count >= 3)
+                        break;
+                    await Task.Delay(120);
+                }
+                if (vm.SelectedFileVersions.FirstOrDefault(v => v.VersionBadge == "v3") is ArchiveVersionRow v3Sel)
+                {
+                    vm.SelectedVersion = v3Sel;
+                    await Task.Delay(120);
+                }
+
+                // Enter Full-Width Diff (v2 -> v3) — test Light theme contrast on Side-by-Side first, then Unified & Dark
+                vm.SelectedThemeIndex = 1; // Light
                 vm.ToggleDiffModeCommand.Execute(null);
-                bool diffOk = vm.IsDiffModeActive && vm.DiffModeVisibility == Visibility.Visible;
-                vm.ToggleDiffModeCommand.Execute(null);
+                var diffDeadline = Environment.TickCount64 + 2000;
+                while (Environment.TickCount64 < diffDeadline && vm.DiffSideBySideLines.Count == 0)
+                    await Task.Delay(40);
+                await Task.Delay(150);
+                bool diffOk = vm.IsDiffModeActive
+                    && vm.DiffModeVisibility == Visibility.Visible
+                    && vm.SourcePaneColumnSpan == 2
+                    && vm.RunnerPaneVisibility == Visibility.Collapsed
+                    && vm.DiffSideBySideLines.Count > 0
+                    && vm.CompareWithVersion?.VersionBadge == "v2"
+                    && vm.DiffTargetVersion?.VersionBadge == "v3";
+                await CaptureAsync("12_diff_side_by_side.png");
+
+                // Switch to Unified Diff + capture Light screenshot
+                vm.DiffUseUnifiedMode = true;
+                await Task.Delay(220);
+                bool unifiedOk = vm.DiffUnifiedLines.Count > 0;
+                await CaptureAsync("11_diff_unified.png");
+
+                // Dark theme diff check & screenshot (Side-by-Side Dark contrast)
+                vm.DiffUseUnifiedMode = false;
+                vm.SelectedThemeIndex = 2;
+                await Task.Delay(220);
+                await CaptureAsync("13_diff_dark.png");
+                vm.SelectedThemeIndex = 0;
+
+                // Same-version guard + close diff buffer release
+                vm.CompareWithVersion = vm.DiffTargetVersion;
+                await Task.Delay(180);
+                bool sameVerNoticeOk = vm.DiffNoticeVisibility == Visibility.Visible;
+                vm.ExitDiffMode();
+                await Task.Delay(100);
+                bool diffReleasedOk = !vm.IsDiffModeActive && vm.DiffSideBySideLines.Count == 0 && vm.DiffUnifiedLines.Count == 0;
+
+                // Delete Confirmation Dialog + Move to Trash + Trash Dialog + Undo Restore
+                bool delTrashUndoOk = false;
+                if (window.CurrentPageContent is ArchivePage apDel && vm.SelectedFileVersions.FirstOrDefault(x => x.VersionBadge == "v2") is ArchiveVersionRow v2Row)
+                {
+                    var delDlg = apDel.CreateDeleteVersionDialog(v2Row, out _);
+                    _ = delDlg.ShowAsync();
+                    await Task.Delay(260);
+                    await CaptureAsync("09_delete_dialog.png");
+                    delDlg.Hide();
+                    await Task.Delay(120);
+
+                    bool moved = await vm.DeleteVersionToTrashAsync(v2Row, deleteRemote: false, showUndoToast: true);
+                    int remainingAfterDelete = vm.SelectedFileVersions.Count;
+
+                    var trashDlg = await apDel.CreateTrashDialogAsync();
+                    _ = trashDlg.ShowAsync();
+                    await Task.Delay(260);
+                    await CaptureAsync("10_trash_dialog.png");
+                    trashDlg.Hide();
+                    await Task.Delay(120);
+
+                    await vm.UndoLastTrashAsync();
+                    delTrashUndoOk = moved && remainingAfterDelete == 2 && vm.SelectedFileVersions.Count == 3;
+                    vm.InfoBarOpen = false;
+                }
+                Record("ArchiveDeletionDialogTrashAndUndo", delTrashUndoOk, $"delTrashUndo={delTrashUndoOk}");
 
                 await vm.AddCustomSampleAsync("123 456\n", "579\n");
                 vm.RunnerTabIndex = 2;
@@ -359,7 +469,9 @@ public static class UiSelfTestRunner
                 bool sampleOk = vm.SampleRunSummaryText.Contains("Sample Passed", StringComparison.Ordinal);
                 await CaptureAsync("07_samples_timeline.png");
                 vm.RunnerTabIndex = 1;
-                Record("VersionDiffAndSamples", diffOk && sampleOk, $"diff={diffOk}, sample='{vm.SampleRunSummaryText}'");
+                Record("VersionDiffAndSamples",
+                    singleVerGuardOk && diffOk && unifiedOk && sameVerNoticeOk && diffReleasedOk && sampleOk,
+                    $"singleGuard={singleVerGuardOk}, diff={diffOk}, unified={unifiedOk}, sameGuard={sameVerNoticeOk}, released={diffReleasedOk}, sample='{vm.SampleRunSummaryText}'");
 
                 var restoredPath = Path.Combine(testWorkspaceRoot, "restored_selftest.cpp");
                 bool restoreOk = await vm.RestoreSelectedVersionAsync(restoredPath)
@@ -512,6 +624,8 @@ public static class UiSelfTestRunner
             bool multiResOk = true;
             if (window.TrayManager is not null && window.Content is FrameworkElement rootEl)
             {
+                window.NavigateToTag("Archive");
+                await Task.Delay(100);
                 var navView = (window.Content as FrameworkElement)?.FindName("RootNav") as NavigationView;
                 var sizes = new[] { (1100, 720), (1280, 720), (1366, 768), (1920, 1080) };
                 foreach (var (w, h) in sizes)
@@ -524,9 +638,9 @@ public static class UiSelfTestRunner
                             navView.IsPaneOpen = w >= 1280;
                         await Task.Delay(70);
                         rootEl.UpdateLayout();
-                        bool dashSvOk = window.CurrentPageContent is not DashboardPage curDash
-                            || (curDash.FindName("DashboardScrollViewer") is ScrollViewer dsv && dsv.ScrollableWidth <= 2.0);
-                        if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16 || !dashSvOk)
+                        bool archiveFitOk = window.CurrentPageContent is not ArchivePage curArc
+                            || (curArc.FindName("PrimaryActionStrip") is StackPanel strip && strip.ActualHeight <= 42.0);
+                        if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16 || !archiveFitOk)
                             multiResOk = false;
                     }
                 }

@@ -19,7 +19,11 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace GhostCode.App.ViewModels;
 
-public sealed record ArchiveVersionRow(ArchiveVersionRecord Record, UiLanguage Language = UiLanguage.Vi)
+public sealed record ArchiveVersionRow(
+    ArchiveVersionRecord Record,
+    UiLanguage Language = UiLanguage.Vi,
+    UploadStatus? QueueStatus = null,
+    CloudProviderKind Provider = CloudProviderKind.GoogleDrive)
 {
     public string Id => Record.Id;
     public int VersionNum => Record.VersionNum;
@@ -33,30 +37,49 @@ public sealed record ArchiveVersionRow(ArchiveVersionRecord Record, UiLanguage L
     public bool IsConflictBranch => Record.IsConflictBranch;
     public string? DriveFileId => Record.DriveFileId;
     public VersionAvailability Availability => Record.Availability;
-    public string AvailabilityBadge => UiStrings.ForAvailability(Record.Availability, Language);
+    public StorageStatusKind StorageKind => StorageStatusFormatter.ResolveKind(Record.Availability, QueueStatus);
+    public string AvailabilityBadge => StorageStatusFormatter.GetShortLabel(StorageKind, Language);
+    public string StatusTooltip => StorageStatusFormatter.GetTooltip(Record.Availability, QueueStatus, Provider, Language);
     public string ProblemSummary => string.IsNullOrWhiteSpace(Record.ProblemCode)
         ? $"{Record.Platform} • {Record.SizeBytes} B"
         : $"{Record.Platform} • {Record.ProblemCode} — {Record.ProblemTitle}";
     public string ShortSha => Record.Sha256.Length >= 8 ? Record.Sha256[..8] : Record.Sha256;
+    public string Sha256Full => Record.Sha256;
+    public string SizeText => Record.SizeBytes < 1024 ? $"{Record.SizeBytes} B" : $"{Record.SizeBytes / 1024.0:F1} KB";
     public string TimestampText => DateTimeOffset.FromUnixTimeMilliseconds(Record.CreatedAtUnixMs)
         .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-    public string SelectorLabel => $"{VersionBadge} • {TimestampText} • {ShortSha} [{AvailabilityBadge}]";
+    public string CompactTimeText => DateTimeOffset.FromUnixTimeMilliseconds(Record.CreatedAtUnixMs)
+        .ToLocalTime().ToString("HH:mm");
+    public string CompactMetaText => $"{VersionBadge} · {CompactTimeText} · {AvailabilityBadge}";
+    public string SelectorLabel => $"{VersionBadge} · {CompactTimeText} · {AvailabilityBadge}";
 }
 
-public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int VersionCount, UiLanguage Language = UiLanguage.Vi)
+public sealed record ArchiveFileGroupRow(
+    ArchiveVersionRecord Latest,
+    int VersionCount,
+    UiLanguage Language = UiLanguage.Vi,
+    UploadStatus? QueueStatus = null,
+    CloudProviderKind Provider = CloudProviderKind.GoogleDrive)
 {
     public string Id => Latest.Id;
     public string GroupKey => SourceAnalyzer.BuildLogicalGroupKey(Latest);
     public string FileName => Latest.FileName;
     public string SourcePath => Latest.SourcePath;
-    public string LatestVersionBadge => $"v{Latest.VersionNum} ({VersionCount})";
-    public string AvailabilityBadge => UiStrings.ForAvailability(Latest.Availability, Language);
-    public string Subtitle => string.IsNullOrWhiteSpace(Latest.ProblemCode)
-        ? $"{Latest.Platform} • {AvailabilityBadge}"
-        : $"{Latest.Platform} • {Latest.ProblemCode} • {AvailabilityBadge}";
+    public string LatestVersionBadge => $"v{Latest.VersionNum}";
+    public StorageStatusKind StorageKind => StorageStatusFormatter.ResolveKind(Latest.Availability, QueueStatus);
+    public string AvailabilityBadge => StorageStatusFormatter.GetShortLabel(StorageKind, Language);
+    public string StatusTooltip => StorageStatusFormatter.GetTooltip(Latest.Availability, QueueStatus, Provider, Language);
+    public string CompactTitle => !string.IsNullOrWhiteSpace(Latest.ProblemCode) && !string.IsNullOrWhiteSpace(Latest.ProblemTitle)
+        ? $"{Latest.ProblemCode} · {Latest.ProblemTitle}"
+        : !string.IsNullOrWhiteSpace(Latest.ProblemCode)
+            ? Latest.ProblemCode
+            : Latest.FileName;
+    public string Subtitle => Language == UiLanguage.Vi
+        ? $"{VersionCount} phiên bản · {AvailabilityBadge}"
+        : $"{VersionCount} versions · {AvailabilityBadge}";
     public string ShortTimeText => DateTimeOffset.FromUnixTimeMilliseconds(Latest.CreatedAtUnixMs)
         .ToLocalTime().ToString("HH:mm");
-    public string MetaWithTimeText => $"{Subtitle} • {ShortTimeText}";
+    public string MetaWithTimeText => $"{Subtitle} · {ShortTimeText}";
     public string OpenButtonLabel => Language == UiLanguage.Vi ? "Mở" : "Open";
     public string CopyButtonLabel => Language == UiLanguage.Vi ? "Sao chép" : "Copy";
     public string RunButtonLabel => Language == UiLanguage.Vi ? "Chạy" : "Run";
@@ -223,17 +246,61 @@ public sealed record GlobalSearchSuggestion(ArchiveVersionRecord Record, string 
 
 public sealed record DiffLineRow(DiffLinePair Pair)
 {
+    public DiffLineKind Kind => Pair.Kind;
     public string LeftNumText => Pair.LeftLineNumber?.ToString() ?? string.Empty;
     public string LeftText => Pair.LeftText;
     public string RightNumText => Pair.RightLineNumber?.ToString() ?? string.Empty;
     public string RightText => Pair.RightText;
-    public string KindTag => Pair.Kind switch
+    public string LeftKindTag => Pair.Kind switch
     {
-        DiffLineKind.Added => "+",
-        DiffLineKind.Removed => "-",
+        DiffLineKind.Removed => "−",
         DiffLineKind.Modified => "~",
         _ => " "
     };
+    public string RightKindTag => Pair.Kind switch
+    {
+        DiffLineKind.Added => "+",
+        DiffLineKind.Modified => "~",
+        _ => " "
+    };
+    public string KindTag => Pair.Kind switch
+    {
+        DiffLineKind.Added => "+",
+        DiffLineKind.Removed => "−",
+        DiffLineKind.Modified => "~",
+        _ => " "
+    };
+}
+
+public sealed record UnifiedDiffLineRow(UnifiedDiffLine Line)
+{
+    public DiffLineKind Kind => Line.Kind;
+    public string OldNumText => Line.OldLineNumber?.ToString() ?? string.Empty;
+    public string NewNumText => Line.NewLineNumber?.ToString() ?? string.Empty;
+    public string PrefixGlyph => Line.PrefixGlyph == '-' ? "−" : Line.PrefixGlyph.ToString();
+    public string Text => Line.Text;
+}
+
+public sealed record TrashedArchiveVersionRow(TrashedArchiveVersionRecord Entry, UiLanguage Language = UiLanguage.Vi)
+{
+    public string Id => Entry.Version.Id;
+    public string? BatchId => Entry.TrashBatchId;
+    public string Title => !string.IsNullOrWhiteSpace(Entry.Version.ProblemCode)
+        ? $"{Entry.Version.ProblemCode} · v{Entry.Version.VersionNum}"
+        : $"{Entry.Version.FileName} · v{Entry.Version.VersionNum}";
+    public string Subtitle
+    {
+        get
+        {
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(Entry.DeletedAtUnixMs).ToLocalTime().ToString("dd/MM HH:mm");
+            int daysLeft = Math.Max(0, (int)Math.Ceiling((Entry.ExpiresAtUnixMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 86_400_000.0));
+            bool hasCloud = !string.IsNullOrWhiteSpace(Entry.Version.DriveFileId);
+            return Language == UiLanguage.Vi
+                ? $"{Entry.Version.FileName} · Xóa {dt} · Còn {daysLeft} ngày · {(hasCloud ? "Có bản đám mây" : "Cục bộ")}"
+                : $"{Entry.Version.FileName} · Deleted {dt} · {daysLeft}d left · {(hasCloud ? "Cloud copy kept" : "Local")}";
+        }
+    }
+    public bool HasRemoteCopy => !string.IsNullOrWhiteSpace(Entry.Version.DriveFileId);
 }
 
 public sealed class WatchedFolderItem : ObservableObject
@@ -283,7 +350,7 @@ public sealed class WatchedFolderItem : ObservableObject
 /// <summary>
 /// Central MVVM ViewModel bridging WinUI 3 views with GhostCode.Core services.
 /// </summary>
-public sealed class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly GhostCodeConfig _config;
     private readonly string _configPath;
@@ -616,6 +683,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<ToolchainRow> Toolchains { get; } = new();
     public ObservableCollection<GlobalSearchSuggestion> GlobalSearchSuggestions { get; } = new();
     public ObservableCollection<DiffLineRow> DiffSideBySideLines { get; } = new();
+    public ObservableCollection<UnifiedDiffLineRow> DiffUnifiedLines { get; } = new();
+    public ObservableCollection<TrashedArchiveVersionRow> TrashItems { get; } = new();
     public ObservableCollection<ArchiveFileGroupRow> QuickActionsCandidates { get; } = new();
     public ObservableCollection<SampleTestCaseRecord> SampleTests { get; } = new();
     public ObservableCollection<ProblemTimelineEntry> TimelineEntries { get; } = new();
@@ -1192,7 +1261,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string SearchQuery
     {
         get => _searchQuery;
-        set => SetProperty(ref _searchQuery, value);
+        set
+        {
+            if (SetProperty(ref _searchQuery, value))
+                TriggerDebouncedArchiveFilter();
+        }
     }
 
     public string SelectedPlatformFilter
@@ -1201,7 +1274,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _selectedPlatformFilter, value))
-                _ = RefreshArchiveAsync();
+                _ = ApplyArchiveFilterFromCacheAsync();
         }
     }
 
@@ -1211,7 +1284,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _selectedAvailabilityFilterIndex, value))
-                _ = RefreshArchiveAsync();
+                _ = ApplyArchiveFilterFromCacheAsync();
         }
     }
 
@@ -1220,8 +1293,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         get => _selectedFileGroup;
         set
         {
-            if (SetProperty(ref _selectedFileGroup, value) && value is not null)
-                _ = LoadVersionsForFileGroupAsync(value.Latest, preferredVersionId: null);
+            if (_suppressCollectionResetSelection && value is null)
+                return;
+            if (SetProperty(ref _selectedFileGroup, value))
+            {
+                if (value is not null)
+                    _ = LoadVersionsForFileGroupAsync(value.Latest, preferredVersionId: null);
+                else if (!_suppressCollectionResetSelection)
+                    ClearSelectedGroupState();
+            }
         }
     }
 
@@ -1230,17 +1310,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         get => _selectedVersion;
         set
         {
+            if (_suppressCollectionResetSelection && value is null)
+                return;
             if (SetProperty(ref _selectedVersion, value))
             {
                 OnPropertyChanged(nameof(SelectedVersionIsCloudOnly));
                 OnPropertyChanged(nameof(CanRunSelectedVersion));
                 OnPropertyChanged(nameof(SelectedVersionHeaderText));
+                OnPropertyChanged(nameof(HasSelectedVersion));
                 RunCodeCommand.NotifyCanExecuteChanged();
                 RunOrStopCodeCommand.NotifyCanExecuteChanged();
                 _ = LoadSelectedVersionSourceAsync(value);
             }
         }
     }
+
+    public bool HasSelectedVersion => SelectedVersion is not null;
 
     public string SelectedVersionSource
     {
@@ -1250,7 +1335,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string SelectedVersionHeaderText => SelectedVersion is null
         ? Strings.NoVersionSelected
-        : $"{SelectedVersion.FileName} ({SelectedVersion.VersionBadge}) • SHA: {SelectedVersion.ShortSha} • {SelectedVersion.AvailabilityBadge}";
+        : SelectedVersion.CompactMetaText;
 
     public bool SelectedVersionIsCloudOnly => SelectedVersion is not null && !SelectedVersion.IsLocalAvailable;
     public bool CanRunSelectedVersion => SelectedVersion is not null && SelectedVersion.IsLocalAvailable && !IsExecuting;
@@ -2054,51 +2139,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public ArchiveVersionRow? CompareWithVersion
-    {
-        get => _compareWithVersion;
-        set
-        {
-            if (SetProperty(ref _compareWithVersion, value) && IsDiffModeActive)
-                _ = RecomputeDiffAsync();
-        }
-    }
-
-    public bool IsDiffModeActive
-    {
-        get => _isDiffModeActive;
-        set
-        {
-            if (SetProperty(ref _isDiffModeActive, value))
-            {
-                OnPropertyChanged(nameof(DiffModeVisibility));
-                OnPropertyChanged(nameof(SourceViewerVisibility));
-                if (value) _ = RecomputeDiffAsync();
-            }
-        }
-    }
-
-    public Visibility DiffModeVisibility => IsDiffModeActive ? Visibility.Visible : Visibility.Collapsed;
-    public Visibility SourceViewerVisibility => IsDiffModeActive ? Visibility.Collapsed : Visibility.Visible;
-
-    public bool DiffUseUnifiedMode
-    {
-        get => _diffUseUnifiedMode;
-        set
-        {
-            if (SetProperty(ref _diffUseUnifiedMode, value))
-            {
-                OnPropertyChanged(nameof(DiffSideBySideVisibility));
-                OnPropertyChanged(nameof(DiffUnifiedVisibility));
-            }
-        }
-    }
-
-    public Visibility DiffSideBySideVisibility => !DiffUseUnifiedMode ? Visibility.Visible : Visibility.Collapsed;
-    public Visibility DiffUnifiedVisibility => DiffUseUnifiedMode ? Visibility.Visible : Visibility.Collapsed;
-    public string DiffSummaryText { get => _diffSummaryText; private set => SetProperty(ref _diffSummaryText, value); }
-    public string DiffUnifiedText { get => _diffUnifiedText; private set => SetProperty(ref _diffUnifiedText, value); }
-
     public bool IsQuickActionsOpen
     {
         get => _isQuickActionsOpen;
@@ -2525,72 +2565,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task RefreshArchiveAsync()
     {
-        List<ArchiveVersionRecord> list;
-        if (string.IsNullOrWhiteSpace(SearchQuery))
-        {
-            list = await _store.QueryVersionsAsync(null, SelectedPlatformFilter, 250);
-        }
-        else
-        {
-            var found = await _store.SearchArchiveAsync(SearchQuery, 250);
-            list = found.Select(f => f.Version)
-                .Where(v => SelectedPlatformFilter == "All" || string.Equals(v.Platform, SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-
-        VersionAvailability? availFilter = SelectedAvailabilityFilterIndex switch
-        {
-            1 => VersionAvailability.LocalOnly,
-            2 => VersionAvailability.Synced,
-            3 => VersionAvailability.CloudOnly,
-            4 => VersionAvailability.Conflict,
-            _ => null
-        };
-        if (availFilter is VersionAvailability f)
-            list = list.Where(v => v.Availability == f).ToList();
-
-        var selectedId = SelectedVersion?.Id;
-        var selectedGroupKey = SelectedFileGroup?.GroupKey;
-
-        ArchiveVersions.Clear();
-        foreach (var v in list)
-            ArchiveVersions.Add(new ArchiveVersionRow(v, _config.Language));
-
-        ArchiveFileGroups.Clear();
-        foreach (var grp in list.GroupBy(SourceAnalyzer.BuildLogicalGroupKey, StringComparer.OrdinalIgnoreCase))
-        {
-            var latest = grp.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First();
-            ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language));
-        }
-
-        if (string.IsNullOrWhiteSpace(SearchQuery) && SelectedPlatformFilter == "All" && SelectedAvailabilityFilterIndex == 0)
-        {
-            RecentDashboardArchives.Clear();
-            foreach (var g in ArchiveFileGroups.Take(6))
-                RecentDashboardArchives.Add(g);
-            OnPropertyChanged(nameof(HasRecentDashboardArchivesVisibility));
-            OnPropertyChanged(nameof(NoRecentDashboardArchivesVisibility));
-        }
-
-        OnPropertyChanged(nameof(ArchiveEmptyStateVisibility));
-        OnPropertyChanged(nameof(ArchiveWorkspaceVisibility));
-
-        if (!string.IsNullOrEmpty(selectedId))
-        {
-            var foundVer = ArchiveVersions.FirstOrDefault(x => x.Id == selectedId);
-            if (foundVer is not null)
-            {
-                await LoadVersionsForFileGroupAsync(foundVer.Record, foundVer.Id);
-                return;
-            }
-        }
-
-        if (!string.IsNullOrEmpty(selectedGroupKey))
-        {
-            var matchGrp = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.GroupKey, selectedGroupKey, StringComparison.OrdinalIgnoreCase));
-            if (matchGrp is not null)
-                SelectedFileGroup = matchGrp;
-        }
+        _cachedActiveVersions = await _store.QueryVersionsAsync(null, "All", 500);
+        _cachedUploadStatuses = await _store.GetUploadStatusesByVersionIdsAsync(_cachedActiveVersions.Select(v => v.Id));
+        var stats = await _store.GetStatsAsync();
+        TrashCount = stats.TrashedVersions;
+        await ApplyArchiveFilterFromCacheAsync();
     }
 
     public async Task<IReadOnlyList<GlobalSearchSuggestion>> UpdateGlobalSearchSuggestionsAsync(string query, CancellationToken ct = default)
@@ -2629,13 +2608,47 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var versions = !string.IsNullOrWhiteSpace(anchor.ProblemCode)
             ? await _store.GetVersionsByProblemAsync(anchor.Platform, anchor.ProblemCode)
             : await _store.GetOfflineVersionsBySourceAsync(anchor.SourcePath);
-        SelectedFileVersions.Clear();
-        foreach (var v in versions.OrderByDescending(x => x.VersionNum))
-            SelectedFileVersions.Add(new ArchiveVersionRow(v, _config.Language));
+        var ordered = versions.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).ToList();
+        var statusMap = await _store.GetUploadStatusesByVersionIdsAsync(ordered.Select(v => v.Id));
 
-        var pick = preferredVersionId is not null
-            ? SelectedFileVersions.FirstOrDefault(v => v.Id == preferredVersionId)
-            : SelectedFileVersions.FirstOrDefault();
+        ArchiveVersionRow? pick;
+        var prevBaseId = _compareWithVersion?.Id;
+        var prevTargetId = _diffTargetVersion?.Id;
+        _suppressCollectionResetSelection = true;
+        try
+        {
+            SelectedFileVersions.Clear();
+            foreach (var v in ordered)
+            {
+                statusMap.TryGetValue(v.Id, out var qSt);
+                SelectedFileVersions.Add(new ArchiveVersionRow(v, _config.Language, qSt, _config.PrimaryCloudProvider));
+            }
+
+            pick = preferredVersionId is not null
+                ? SelectedFileVersions.FirstOrDefault(v => v.Id == preferredVersionId)
+                : SelectedFileVersions.FirstOrDefault();
+
+            if (!string.IsNullOrEmpty(prevBaseId))
+            {
+                var mappedBase = SelectedFileVersions.FirstOrDefault(v => v.Id == prevBaseId);
+                if (mappedBase is not null)
+                    SetProperty(ref _compareWithVersion, mappedBase, nameof(CompareWithVersion));
+            }
+            if (!string.IsNullOrEmpty(prevTargetId))
+            {
+                var mappedTarget = SelectedFileVersions.FirstOrDefault(v => v.Id == prevTargetId);
+                if (mappedTarget is not null)
+                    SetProperty(ref _diffTargetVersion, mappedTarget, nameof(DiffTargetVersion));
+            }
+        }
+        finally
+        {
+            _suppressCollectionResetSelection = false;
+        }
+
+        OnPropertyChanged(nameof(CanCompareVersions));
+        OnPropertyChanged(nameof(CompareButtonTooltipText));
+        OnPropertyChanged(nameof(HasSelectedFileVersions));
 
         if (pick is not null)
         {
@@ -2644,10 +2657,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(SelectedVersionIsCloudOnly));
                 OnPropertyChanged(nameof(CanRunSelectedVersion));
                 OnPropertyChanged(nameof(SelectedVersionHeaderText));
+                OnPropertyChanged(nameof(HasSelectedVersion));
                 RunCodeCommand.NotifyCanExecuteChanged();
                 RunOrStopCodeCommand.NotifyCanExecuteChanged();
             }
             await LoadSelectedVersionSourceAsync(pick);
+        }
+        else
+        {
+            ClearSelectedVersionState();
         }
     }
 
@@ -3588,6 +3606,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             case "run_recovery":
                 _ = RunRecoveryCheckAsync();
                 break;
+            case "undo_trash":
+                _ = UndoLastTrashAsync();
+                break;
         }
     }
 
@@ -3825,48 +3846,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var res = await _ideLauncher.OpenVersionInIdeAsync(target, preferOriginalSource: File.Exists(target.SourcePath));
         ShowInfoBar(res.Success ? $"Opened in {res.IdeName}" : "IDE Launch Failed", res.Message,
             res.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
-    }
-
-    private void ToggleDiffMode()
-    {
-        if (!IsDiffModeActive && SelectedFileVersions.Count >= 2 && CompareWithVersion is null)
-            CompareWithVersion = SelectedFileVersions.FirstOrDefault(v => v.Id != SelectedVersion?.Id);
-        IsDiffModeActive = !IsDiffModeActive;
-    }
-
-    private async Task RecomputeDiffAsync()
-    {
-        DiffSideBySideLines.Clear();
-        if (SelectedVersion is null || CompareWithVersion is null)
-        {
-            DiffSummaryText = "Select two versions to compare.";
-            DiffUnifiedText = string.Empty;
-            return;
-        }
-
-        if (!SelectedVersion.IsLocalAvailable || !CompareWithVersion.IsLocalAvailable)
-        {
-            DiffSummaryText = "Download both Cloud-Only versions before comparing.";
-            DiffUnifiedText = string.Empty;
-            return;
-        }
-
-        var leftBytes = await _archiver.ReadAndVerifyVersionBytesAsync(CompareWithVersion.Id);
-        var rightBytes = await _archiver.ReadAndVerifyVersionBytesAsync(SelectedVersion.Id);
-        var (leftText, _) = SourceAnalyzer.DecodePreservingInfo(leftBytes);
-        var (rightText, _) = SourceAnalyzer.DecodePreservingInfo(rightBytes);
-
-        var diff = SourceDiffEngine.ComputeDiff(
-            leftText,
-            rightText,
-            $"{CompareWithVersion.FileName} ({CompareWithVersion.VersionBadge})",
-            $"{SelectedVersion.FileName} ({SelectedVersion.VersionBadge})");
-
-        foreach (var line in diff.SideBySideLines)
-            DiffSideBySideLines.Add(new DiffLineRow(line));
-
-        DiffSummaryText = $"+{diff.AddedLines} added • -{diff.RemovedLines} removed • ~{diff.ModifiedLines} modified ({CompareWithVersion.VersionBadge} -> {SelectedVersion.VersionBadge})";
-        DiffUnifiedText = diff.UnifiedDiffText;
     }
 
     public void OpenQuickActionsPanel() => IsQuickActionsOpen = true;
