@@ -347,6 +347,7 @@ public sealed partial class MainWindow : Window
         {
             "Archive" => typeof(ArchivePage),
             "Cloud" => typeof(CloudPage),
+            "DevTools" => typeof(DevelopmentToolsPage),
             "Settings" => typeof(SettingsPage),
             _ => typeof(DashboardPage)
         };

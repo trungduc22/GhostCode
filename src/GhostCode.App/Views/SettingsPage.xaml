@@ -176,61 +176,7 @@
                 </ItemsControl>
             </StackPanel>
 
-            <!-- 4. IDEs & Compilers / Toolchains -->
-            <StackPanel Spacing="6">
-                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsToolchainsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <TextBox Width="320" Text="{x:Bind ViewModel.CCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (gcc / clang)" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <TextBox Width="320" Text="{x:Bind ViewModel.CppCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (g++ / clang++)" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.PythonPathLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <TextBox Width="320" Text="{x:Bind ViewModel.PythonInterpreterPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (python.exe)" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <ComboBox ItemsSource="{x:Bind ViewModel.CStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCStandard, Mode=TwoWay}" MinWidth="140" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <ComboBox ItemsSource="{x:Bind ViewModel.CppStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCppStandard, Mode=TwoWay}" MinWidth="140" />
-                </controls:SettingsCard>
-            </StackPanel>
-
-            <!-- 5. Code Runner Execution Limits -->
-            <StackPanel Spacing="6">
-                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsRunnerTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.TimeoutMsLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <NumberBox Value="{x:Bind ViewModel.ExecutionTimeoutMs, Mode=TwoWay}" Minimum="500" Maximum="60000" SmallChange="500" SpinButtonPlacementMode="Inline" MinWidth="160" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MemoryLimitMbLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <NumberBox Value="{x:Bind ViewModel.ExecutionMemoryLimitMb, Mode=TwoWay}" Minimum="32" Maximum="4096" SmallChange="32" SpinButtonPlacementMode="Inline" MinWidth="160" />
-                </controls:SettingsCard>
-            </StackPanel>
-
-            <!-- 6. Google Drive Sync & Conflict Policy -->
-            <StackPanel Spacing="6">
-                <TextBlock Text="{x:Bind ViewModel.Strings.SettingsCloudSyncTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
-
-                <controls:SettingsCard Header="Google Drive Auto Sync" Description="{x:Bind ViewModel.DriveConnectionStatusText, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <ToggleSwitch
-                        IsOn="{x:Bind ViewModel.DriveEnabled, Mode=TwoWay}"
-                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
-                        OffContent="Off" />
-                </controls:SettingsCard>
-
-                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ConflictPolicyLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
-                    <ComboBox ItemsSource="{x:Bind ViewModel.ConflictPolicyChoices}" SelectedIndex="{x:Bind ViewModel.SelectedConflictPolicyIndex, Mode=TwoWay}" MinWidth="260" />
-                </controls:SettingsCard>
-            </StackPanel>
-
-            <!-- 7. Advanced & Diagnostics -->
+            <!-- 4. Diagnostics & Configuration Export (IDE/Compilers live in Development Tools; Cloud Sync lives in Drive) -->
             <StackPanel Spacing="6">
                 <TextBlock Text="{x:Bind ViewModel.Strings.SettingsAdvancedTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
 

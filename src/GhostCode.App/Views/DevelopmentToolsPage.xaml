@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="GhostCode.App.Views.DevelopmentToolsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CommunityToolkit.WinUI.Controls"
+    xmlns:vm="using:GhostCode.App.ViewModels">
+
+    <ScrollViewer
+        Padding="24,16,24,24"
+        VerticalScrollBarVisibility="Auto"
+        HorizontalScrollMode="Disabled"
+        HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="18" MaxWidth="1040" HorizontalAlignment="Stretch">
+
+            <!-- Header & Toolchain Actions -->
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="2">
+                    <TextBlock Text="{x:Bind ViewModel.UxStrings.DevToolsTitle, Mode=OneWay}" FontSize="20" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Bind ViewModel.UxStrings.DevToolsSubtitle, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button Content="{x:Bind ViewModel.UxStrings.DevToolsAutoDetectButton, Mode=OneWay}" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
+                    <Button Content="{x:Bind ViewModel.UxStrings.DevToolsTestToolchainButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.TestToolchainCommand}" />
+                    <Button Content="{x:Bind ViewModel.UxStrings.DevToolsResetAutoButton, Mode=OneWay}" Command="{x:Bind ViewModel.ResetToolchainsToAutoCommand}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 1. Detected IDEs & Language Preferences -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.DevToolsDetectedIdesHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <ItemsControl ItemsSource="{x:Bind ViewModel.IdeStatuses}" HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:IdeStatusRow">
+                            <Border
+                                Margin="0,0,0,6"
+                                Padding="12"
+                                CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind ToolchainText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Padding="8,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <TextBlock Text="{x:Bind StatusBadge}" FontSize="12" FontWeight="SemiBold" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.UxStrings.DevToolsPreferredIdeCHeader, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.IdeChoices}" SelectedItem="{x:Bind ViewModel.DefaultIdeForC, Mode=TwoWay}" MinWidth="180" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.UxStrings.DevToolsPreferredIdeCppHeader, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.IdeChoices}" SelectedItem="{x:Bind ViewModel.DefaultIdeForCpp, Mode=TwoWay}" MinWidth="180" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.UxStrings.DevToolsPreferredIdePythonHeader, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.IdeChoices}" SelectedItem="{x:Bind ViewModel.DefaultIdeForPython, Mode=TwoWay}" MinWidth="180" />
+                </controls:SettingsCard>
+            </StackPanel>
+
+            <!-- 2. Compilers, Interpreters & Overrides -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.DevToolsCompilersHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <ItemsControl ItemsSource="{x:Bind ViewModel.Toolchains}" HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:ToolchainRow">
+                            <Border
+                                Margin="0,0,0,6"
+                                Padding="12"
+                                CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind DetailText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Padding="8,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <TextBlock Text="{x:Bind StatusBadge}" FontSize="12" FontWeight="SemiBold" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox Width="280" Text="{x:Bind ViewModel.CCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (gcc / clang)" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.DevToolsChooseExeButton, Mode=OneWay}" Click="BrowseCCompiler_Click" />
+                    </StackPanel>
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppCompilerLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox Width="280" Text="{x:Bind ViewModel.CppCompilerPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (g++ / clang++)" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.DevToolsChooseExeButton, Mode=OneWay}" Click="BrowseCppCompiler_Click" />
+                    </StackPanel>
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.PythonPathLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox Width="280" Text="{x:Bind ViewModel.PythonInterpreterPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Auto-detect (python.exe)" />
+                        <Button Content="{x:Bind ViewModel.UxStrings.DevToolsChooseExeButton, Mode=OneWay}" Click="BrowsePython_Click" />
+                    </StackPanel>
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.CStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCStandard, Mode=TwoWay}" MinWidth="140" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.CppStandardLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <ComboBox ItemsSource="{x:Bind ViewModel.CppStandardChoices}" SelectedItem="{x:Bind ViewModel.SelectedCppStandard, Mode=TwoWay}" MinWidth="140" />
+                </controls:SettingsCard>
+            </StackPanel>
+
+            <!-- 3. Code Runner Execution Limits -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.DevToolsLimitsHeader, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.TimeoutMsLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <NumberBox Value="{x:Bind ViewModel.ExecutionTimeoutMs, Mode=TwoWay}" Minimum="500" Maximum="60000" SmallChange="500" SpinButtonPlacementMode="Inline" MinWidth="160" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MemoryLimitMbLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
+                    <NumberBox Value="{x:Bind ViewModel.ExecutionMemoryLimitMb, Mode=TwoWay}" Minimum="32" Maximum="4096" SmallChange="32" SpinButtonPlacementMode="Inline" MinWidth="160" />
+                </controls:SettingsCard>
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

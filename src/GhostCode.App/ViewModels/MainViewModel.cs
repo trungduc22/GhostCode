@@ -311,6 +311,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private string _ideStatusSummary = "Detecting...";
     private string _browserStatusSummary = "Checking...";
+    private string _compactToolchainSummaryText = string.Empty;
+    private string _defaultIdeForC = "Auto";
+    private string _defaultIdeForCpp = "Auto";
+    private string _defaultIdeForPython = "Auto";
     private int _totalVersions;
     private int _pendingUploads;
     private int _syncedUploads;
@@ -492,6 +496,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ExecuteFriendlyErrorActionCommand = new RelayCommand(ExecuteFriendlyErrorAction);
         CancelOAuthCommand = new RelayCommand(CancelOAuth);
         RunOrStopCodeCommand = new AsyncRelayCommand(RunOrStopCodeAsync, () => IsExecuting || CanRunSelectedVersion);
+        OpenDevToolsPageCommand = new RelayCommand(() => RequestNavigate("DevTools"));
+        TestToolchainCommand = new RelayCommand(TestToolchains);
+        ResetToolchainsToAutoCommand = new RelayCommand(ResetToolchainsToAuto);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -539,6 +546,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<string> CppStandardChoices { get; } =
         new[] { "auto", "c++17", "c++14", "c++11", "c++20" };
+
+    public IReadOnlyList<string> IdeChoices { get; } =
+        new[] { "Auto", "Dev-C++", "VS Code", "Visual Studio", "PyCharm" };
 
     public IReadOnlyList<string> AvailabilityFilterLabels => new[]
     {
@@ -642,6 +652,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand ExecuteFriendlyErrorActionCommand { get; }
     public IRelayCommand CancelOAuthCommand { get; }
     public IAsyncRelayCommand RunOrStopCodeCommand { get; }
+    public IRelayCommand OpenDevToolsPageCommand { get; }
+    public IRelayCommand TestToolchainCommand { get; }
+    public IRelayCommand ResetToolchainsToAutoCommand { get; }
 
     public UxOverhaulTextBundle UxStrings
     {
@@ -756,6 +769,46 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string IdeStatusSummary { get => _ideStatusSummary; private set => SetProperty(ref _ideStatusSummary, value); }
     public string BrowserStatusSummary { get => _browserStatusSummary; private set => SetProperty(ref _browserStatusSummary, value); }
+    public string CompactToolchainSummaryText { get => _compactToolchainSummaryText; private set => SetProperty(ref _compactToolchainSummaryText, value); }
+
+    public string DefaultIdeForC
+    {
+        get => _defaultIdeForC;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && SetProperty(ref _defaultIdeForC, value) && _config.DefaultIdeForC != value)
+            {
+                _config.DefaultIdeForC = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string DefaultIdeForCpp
+    {
+        get => _defaultIdeForCpp;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && SetProperty(ref _defaultIdeForCpp, value) && _config.DefaultIdeForCpp != value)
+            {
+                _config.DefaultIdeForCpp = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public string DefaultIdeForPython
+    {
+        get => _defaultIdeForPython;
+        set
+        {
+            if (!string.IsNullOrWhiteSpace(value) && SetProperty(ref _defaultIdeForPython, value) && _config.DefaultIdeForPython != value)
+            {
+                _config.DefaultIdeForPython = value;
+                SaveConfigSafe();
+            }
+        }
+    }
 
     public int TotalVersions { get => _totalVersions; private set => SetProperty(ref _totalVersions, value); }
     public int PendingUploads
@@ -1680,6 +1733,47 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             : installedIdes.Count > 0
                 ? (vi ? $"Đã cài đặt: {string.Join(", ", installedIdes)}" : $"Installed: {string.Join(", ", installedIdes)}")
                 : (vi ? "Chưa phát hiện IDE" : "No IDE detected");
+
+        string FormatToolPill(string kind, string shortName)
+        {
+            var found = toolchains.FirstOrDefault(t => string.Equals(t.Kind, kind, StringComparison.OrdinalIgnoreCase));
+            return found is { IsAvailable: true } ? $"{shortName} ✓" : $"{shortName} ✗";
+        }
+        var pills = string.Join(" · ", new[]
+        {
+            FormatToolPill("gcc", "GCC"),
+            FormatToolPill("g++", "G++"),
+            FormatToolPill("python", "Python")
+        });
+        var ideSuffix = installedIdes.Count > 0 ? $" · {installedIdes[0]} ✓" : string.Empty;
+        CompactToolchainSummaryText = vi
+            ? $"Công cụ: {pills}{ideSuffix}"
+            : $"Tools: {pills}{ideSuffix}";
+    }
+
+    private void TestToolchains()
+    {
+        RefreshBrowserAndIdeDiscovery();
+        bool vi = _config.Language == UiLanguage.Vi;
+        var summary = string.Join(" • ", Toolchains.Select(t => $"{t.Name}: {t.StatusBadge}"));
+        bool anyAvailable = Toolchains.Any(t => t.Info.IsAvailable);
+        ShowInfoBar(
+            vi ? "Kết quả kiểm tra trình biên dịch" : "Toolchain Check Complete",
+            summary,
+            anyAvailable ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+    }
+
+    private void ResetToolchainsToAuto()
+    {
+        CCompilerPath = string.Empty;
+        CppCompilerPath = string.Empty;
+        PythonInterpreterPath = string.Empty;
+        RefreshBrowserAndIdeDiscovery();
+        bool vi = _config.Language == UiLanguage.Vi;
+        ShowInfoBar(
+            vi ? "Đã đặt lại tự động dò tìm" : "Toolchains Reset to Auto",
+            CompactToolchainSummaryText,
+            InfoBarSeverity.Informational);
     }
 
     public void RefreshProcessesAndWatches()
@@ -2635,6 +2729,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _cCompilerPath = _config.CCompilerPath ?? string.Empty;
         _cppCompilerPath = _config.CppCompilerPath ?? string.Empty;
         _pythonInterpreterPath = _config.PythonInterpreterPath ?? string.Empty;
+        _defaultIdeForC = string.IsNullOrWhiteSpace(_config.DefaultIdeForC) ? "Auto" : _config.DefaultIdeForC;
+        _defaultIdeForCpp = string.IsNullOrWhiteSpace(_config.DefaultIdeForCpp) ? "Auto" : _config.DefaultIdeForCpp;
+        _defaultIdeForPython = string.IsNullOrWhiteSpace(_config.DefaultIdeForPython) ? "Auto" : _config.DefaultIdeForPython;
         _selectedCStandard = _config.CStandard;
         _selectedCppStandard = _config.CppStandard;
         _executionTimeoutMs = _config.ExecutionTimeoutMs;

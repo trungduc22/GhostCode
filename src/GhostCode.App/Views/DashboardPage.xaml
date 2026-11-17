@@ -271,61 +271,33 @@
                 <Button Content="{x:Bind ViewModel.Strings.OpenReadyButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenReadyFolderCommand}" />
             </StackPanel>
 
-            <!-- 5. Discovered IDEs & Compilers Side-by-Side -->
-            <Grid ColumnSpacing="16">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.RunningIdesTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ItemsControl ItemsSource="{x:Bind ViewModel.IdeStatuses}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:IdeStatusRow">
-                                    <Grid Padding="0,6" ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0">
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
-                                            <TextBlock Text="{x:Bind ToolchainText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-                                        <Border Grid.Column="1" Padding="8,2" CornerRadius="4" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
-                                            <TextBlock Text="{x:Bind StatusBadge}" FontSize="11" FontWeight="SemiBold" />
-                                        </Border>
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
-
-                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.DiscoveredToolchainsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ItemsControl ItemsSource="{x:Bind ViewModel.Toolchains}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:ToolchainRow">
-                                    <Grid Padding="0,6" ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0">
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
-                                            <TextBlock Text="{x:Bind DetailText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind StatusBadge}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
-            </Grid>
+            <!-- 5. Compact Development Tools Summary Bar (Navigates to Dedicated DevTools Page) -->
+            <Border
+                x:Name="DevToolsSummaryCard"
+                Padding="14"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon Grid.Column="0" Glyph="&#xE943;" FontSize="16" VerticalAlignment="Center" />
+                    <TextBlock
+                        Grid.Column="1"
+                        Text="{x:Bind ViewModel.CompactToolchainSummaryText, Mode=OneWay}"
+                        FontSize="13"
+                        VerticalAlignment="Center"
+                        TextTrimming="CharacterEllipsis" />
+                    <Button
+                        Grid.Column="2"
+                        Content="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}"
+                        Command="{x:Bind ViewModel.OpenDevToolsPageCommand}" />
+                </Grid>
+            </Border>
 
             <!-- 6. Monitoring Health & Diagnostics -->
             <Border Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
