@@ -1108,7 +1108,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _infoBarDismissCts?.Cancel();
         _infoBarDismissCts?.Dispose();
         _infoBarDismissCts = null;
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = null;
+        _diffRecomputeCts?.Cancel();
+        _diffRecomputeCts?.Dispose();
+        _diffRecomputeCts = null;
+        _execCts?.Cancel();
         _execCts?.Dispose();
+        _oauthCts?.Cancel();
         _oauthCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;
         _monitor.EventRecorded -= OnMonitorEventRecorded;
