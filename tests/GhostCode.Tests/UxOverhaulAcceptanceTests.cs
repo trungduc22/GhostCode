@@ -5,6 +5,7 @@ using System.Text.Json;
 using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
+using GhostCode.Core.Cloud;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Notifications;
@@ -287,5 +288,49 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
 
         var authMapped = UserFriendlyErrorService.ClassifyAndMap(new Exception("401 Unauthorized invalid_grant"), UiLanguage.Vi);
         Assert.Equal(ErrorCategory.AuthenticationExpired, authMapped.Category);
+    }
+
+    [Fact]
+    public async Task P3_CloudProviderSwitchToLocalOnly_PreservesCredentialsAndSkipsSyncWithoutDeletingArchives()
+    {
+        var archiveDir = Path.Combine(_root, "Archive");
+        var readyDir = Path.Combine(_root, "Ready");
+        var credPath = Path.Combine(_root, "credentials.dpapi");
+        Directory.CreateDirectory(archiveDir);
+        Directory.CreateDirectory(readyDir);
+
+        var cfg = new GhostCodeConfig
+        {
+            ArchiveDir = archiveDir,
+            ReadyDir = readyDir,
+            DatabasePath = Path.Combine(archiveDir, "ghostcode.db"),
+            PrimaryCloudProvider = CloudProviderKind.GoogleDrive,
+            OAuthClient = new GoogleOAuthClientConfig("client-id.apps.googleusercontent.com", ""),
+            Language = UiLanguage.Vi
+        };
+
+        await using var store = new SqliteArchiveStore(cfg.DatabasePath);
+        await store.InitializeAsync();
+        var creds = new DpapiCredentialStore(credPath);
+        await creds.SaveAsync(new GoogleAuthTokens("tok", "ref", DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(), "dev@example.com", "Dev"));
+
+        var archiver = new LosslessArchiver(cfg, store);
+        var src = Path.Combine(_root, "sample.cpp");
+        await File.WriteAllTextAsync(src, "#include <iostream>\nint main(){ int x = 42; std::cout << x << \"\\n\"; return 0; }\n");
+        var res = await archiver.ProcessFileSaveAsync(src, await File.ReadAllBytesAsync(src), null);
+        Assert.Equal(ArchiveOutcome.CreatedVersion, res.Outcome);
+
+        // Switching to LocalOnly must not delete saved credentials or archived versions
+        cfg.PrimaryCloudProvider = CloudProviderKind.LocalOnly;
+        var loadedTok = await creds.LoadAsync();
+        Assert.NotNull(loadedTok);
+        Assert.Equal("dev@example.com", loadedTok!.Email);
+
+        var stats = await store.GetStatsAsync();
+        Assert.Equal(1, stats.TotalVersions);
+
+        await using var drive = new GoogleDriveService(cfg, store, creds);
+        var acct = await drive.GetAccountInfoAsync();
+        Assert.True(acct.IsConnected);
     }
 }

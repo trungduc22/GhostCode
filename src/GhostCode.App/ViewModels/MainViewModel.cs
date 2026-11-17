@@ -385,6 +385,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _browserSetupExtensionPath = string.Empty;
     private string _browserSetupPageUrl = string.Empty;
     private string _browserSetupStatusText = string.Empty;
+    private bool _isOAuthInProgress;
+    private CancellationTokenSource? _oauthCts;
 
     public MainViewModel(
         GhostCodeConfig config,
@@ -488,6 +490,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CloseBrowserSetupCommand = new RelayCommand(() => IsBrowserSetupOpen = false);
         CopyErrorDetailsCommand = new RelayCommand(CopyErrorDetails);
         ExecuteFriendlyErrorActionCommand = new RelayCommand(ExecuteFriendlyErrorAction);
+        CancelOAuthCommand = new RelayCommand(CancelOAuth);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -636,6 +639,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand CloseBrowserSetupCommand { get; }
     public IRelayCommand CopyErrorDetailsCommand { get; }
     public IRelayCommand ExecuteFriendlyErrorActionCommand { get; }
+    public IRelayCommand CancelOAuthCommand { get; }
 
     public UxOverhaulTextBundle UxStrings
     {
@@ -1112,9 +1116,43 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 return;
             _config.PrimaryCloudProvider = (CloudProviderKind)value;
             SaveConfigSafe();
-            OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+            NotifyCloudProviderChanged();
             _ = RefreshHealthAsync();
         }
+    }
+
+    public Visibility LocalOnlyCloudCardVisibility =>
+        _config.PrimaryCloudProvider == CloudProviderKind.LocalOnly ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility GoogleDriveCardVisibility =>
+        _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility OneDriveCardVisibility =>
+        _config.PrimaryCloudProvider == CloudProviderKind.OneDrive ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility ActiveCloudQueueVisibility =>
+        _config.PrimaryCloudProvider != CloudProviderKind.LocalOnly ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool IsOAuthInProgress
+    {
+        get => _isOAuthInProgress;
+        private set
+        {
+            if (SetProperty(ref _isOAuthInProgress, value))
+                OnPropertyChanged(nameof(OAuthStageVisibility));
+        }
+    }
+
+    public Visibility OAuthStageVisibility =>
+        IsOAuthInProgress && !string.IsNullOrWhiteSpace(OAuthStageText) ? Visibility.Visible : Visibility.Collapsed;
+
+    private void NotifyCloudProviderChanged()
+    {
+        OnPropertyChanged(nameof(LocalOnlyCloudCardVisibility));
+        OnPropertyChanged(nameof(GoogleDriveCardVisibility));
+        OnPropertyChanged(nameof(OneDriveCardVisibility));
+        OnPropertyChanged(nameof(ActiveCloudQueueVisibility));
+        OnPropertyChanged(nameof(TitleBarDriveBadgeText));
     }
 
     public string OneDriveClientId { get => _oneDriveClientId; set => SetProperty(ref _oneDriveClientId, value); }
@@ -1789,6 +1827,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UploadQueue.Clear();
         foreach (var q in queue)
             UploadQueue.Add(new UploadQueueRow(q, _config.Language));
+
+        if (!IsOAuthInProgress)
+        {
+            OAuthStageText = string.Empty;
+            OnPropertyChanged(nameof(OAuthStageVisibility));
+        }
+        NotifyCloudProviderChanged();
     }
 
     public async Task RunSelectedVersionAsync()
@@ -2117,15 +2162,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        CancelOAuth();
+        _oauthCts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         IsBusy = true;
+        IsOAuthInProgress = true;
         try
         {
-            var tokens = await _drive.ConnectWithBrowserAsync();
+            var tokens = await _drive.ConnectWithBrowserAsync(ct: _oauthCts.Token);
+            IsOAuthInProgress = false;
+            OAuthStageText = string.Empty;
             await RefreshCloudStateAsync();
             ShowInfoBar(
                 _config.Language == UiLanguage.Vi ? "Đã kết nối Google Drive" : "Google Drive Connected",
                 _config.Language == UiLanguage.Vi ? $"Đã đăng nhập: {tokens.Email}" : $"Signed in as {tokens.Email}.",
                 InfoBarSeverity.Success);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowInfoBar(
+                _config.Language == UiLanguage.Vi ? "Đã hủy đăng nhập Google" : "Google Sign-In Cancelled",
+                _config.Language == UiLanguage.Vi ? "Quá trình xác thực đã được hủy hoặc hết thời gian chờ." : "Authorization was cancelled or timed out.",
+                InfoBarSeverity.Informational);
         }
         catch (Exception ex)
         {
@@ -2134,8 +2191,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsBusy = false;
-            if (IsDriveConnected) OAuthStageText = string.Empty;
+            IsOAuthInProgress = false;
+            OAuthStageText = string.Empty;
+            OnPropertyChanged(nameof(OAuthStageVisibility));
+            _oauthCts?.Dispose();
+            _oauthCts = null;
         }
+    }
+
+    private void CancelOAuth()
+    {
+        try { _oauthCts?.Cancel(); } catch { }
+        IsOAuthInProgress = false;
+        OAuthStageText = string.Empty;
+        OnPropertyChanged(nameof(OAuthStageVisibility));
     }
 
     public async Task DisconnectGoogleAsync()
@@ -2181,15 +2250,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        CancelOAuth();
+        _oauthCts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         IsBusy = true;
+        IsOAuthInProgress = true;
         try
         {
-            var tokens = await _oneDrive.ConnectWithBrowserAsync();
+            var tokens = await _oneDrive.ConnectWithBrowserAsync(ct: _oauthCts.Token);
+            IsOAuthInProgress = false;
+            OAuthStageText = string.Empty;
             await RefreshCloudStateAsync();
             ShowInfoBar(
                 _config.Language == UiLanguage.Vi ? "Đã kết nối OneDrive" : "OneDrive Connected",
                 _config.Language == UiLanguage.Vi ? $"Đã đăng nhập: {tokens.Email}" : $"Signed in as {tokens.Email}.",
                 InfoBarSeverity.Success);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowInfoBar(
+                _config.Language == UiLanguage.Vi ? "Đã hủy đăng nhập OneDrive" : "OneDrive Sign-In Cancelled",
+                _config.Language == UiLanguage.Vi ? "Quá trình xác thực đã được hủy hoặc hết thời gian chờ." : "Authorization was cancelled or timed out.",
+                InfoBarSeverity.Informational);
         }
         catch (Exception ex)
         {
@@ -2198,7 +2279,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsBusy = false;
-            if (IsOneDriveConnected) OAuthStageText = string.Empty;
+            IsOAuthInProgress = false;
+            OAuthStageText = string.Empty;
+            OnPropertyChanged(nameof(OAuthStageVisibility));
+            _oauthCts?.Dispose();
+            _oauthCts = null;
         }
     }
 
@@ -3065,7 +3150,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnDriveSyncCompleted(DriveSyncReport report) => _dispatch(() => { _ = RefreshAllAsync(); });
 
-    private void OnAuthStageChanged(OAuthConnectionStage stage, string message) => _dispatch(() => { OAuthStageText = $"{stage}: {message}"; });
+    private void OnAuthStageChanged(OAuthConnectionStage stage, string message) => _dispatch(() =>
+    {
+        bool vi = _config.Language == UiLanguage.Vi;
+        OAuthStageText = stage switch
+        {
+            OAuthConnectionStage.WaitingForBrowserCallback => vi
+                ? "Đang chờ bạn xác nhận đăng nhập trong trình duyệt..."
+                : "Waiting for sign-in confirmation in your browser...",
+            OAuthConnectionStage.CallbackReceivedExchangingToken => vi
+                ? "Đã nhận phản hồi, đang hoàn tất đăng nhập..."
+                : "Authorization received, completing sign-in...",
+            _ => string.Empty
+        };
+        OnPropertyChanged(nameof(OAuthStageVisibility));
+    });
 
     private static void OpenFolder(string path)
     {
@@ -3080,6 +3179,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _discoveryRefreshTimer?.Dispose();
         _discoveryRefreshTimer = null;
         _execCts?.Dispose();
+        _oauthCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;
         _monitor.EventRecorded -= OnMonitorEventRecorded;
         _monitor.ReconciliationCompleted -= OnReconciliationCompleted;
