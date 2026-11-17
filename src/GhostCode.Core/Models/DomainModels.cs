@@ -105,6 +105,21 @@ public enum BackupProtectionState
     Unhealthy
 }
 
+public enum CloudSyncState
+{
+    LocalOnly,
+    NotConnected,
+    AccountConnected,
+    Syncing,
+    PendingUpload,
+    DriveApiDisabled,
+    NetworkOffline,
+    AuthExpired,
+    QuotaExceeded,
+    SyncFailed,
+    Synced
+}
+
 public enum SubmissionVerdict
 {
     NotSubmitted,

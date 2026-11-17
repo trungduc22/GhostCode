@@ -24,7 +24,8 @@ public sealed record DriveSyncReport(
     int FailedCount,
     int SkippedDuplicateCount,
     bool Connected,
-    string? LastError);
+    string? LastError,
+    CloudServiceErrorDetails? ErrorDetails = null);
 
 public sealed record DrivePullReport(
     int DiscoveredRemoteVersions,
@@ -32,7 +33,8 @@ public sealed record DrivePullReport(
     int ConflictBranchCount,
     int HistoryEventsImported,
     bool Connected,
-    string? Error);
+    string? Error,
+    CloudServiceErrorDetails? ErrorDetails = null);
 
 public sealed record DriveDownloadResult(
     bool Success,
@@ -70,6 +72,8 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
 
     private CancellationTokenSource? _bgCts;
     private Task? _bgTask;
+    private DateTimeOffset? _apiPausedUntilUtc;
+    private CloudServiceErrorDetails? _lastServiceError;
 
     public GoogleDriveService(
         GhostCodeConfig config,
@@ -89,6 +93,19 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
     public string DisplayName => "Google Drive";
     public bool IsConfigured => HasOAuthClientConfigured;
     public bool HasOAuthClientConfigured => !string.IsNullOrWhiteSpace(_config.OAuthClient?.ClientId);
+    public CloudServiceErrorDetails? LastServiceError => _lastServiceError;
+    public DateTimeOffset? ApiConfigurationPausedUntilUtc => _apiPausedUntilUtc;
+    public bool IsAwaitingApiActivation =>
+        _lastServiceError?.Category == ErrorCategory.CloudApiDisabled
+        && _apiPausedUntilUtc is DateTimeOffset until
+        && until > DateTimeOffset.UtcNow;
+
+    public void ClearApiConfigurationPause()
+    {
+        _apiPausedUntilUtc = null;
+        if (_lastServiceError?.Category == ErrorCategory.CloudApiDisabled)
+            _lastServiceError = null;
+    }
 
     public async Task<CloudAccountInfo> GetAccountInfoAsync(CancellationToken ct = default)
     {
@@ -157,15 +174,10 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             {
                 bool activeProvider = !_config.SyncPausedManually
                     && _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive
-                    && _config.DriveEnabled;
-                await Task.Delay(TimeSpan.FromSeconds(activeProvider ? 20 : 60), ct);
-                if (!_config.SyncPausedManually
-                    && _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive
                     && _config.DriveEnabled
-                    && await GetConnectedAccountAsync(ct) is not null)
-                {
-                    await SyncPendingAsync(progress: null, ct);
-                }
+                    && !IsAwaitingApiActivation;
+                await Task.Delay(TimeSpan.FromSeconds(activeProvider ? 20 : 60), ct);
+                await TryBackgroundSyncOnceAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -173,6 +185,20 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             }
             catch { }
         }
+    }
+
+    public async Task TryBackgroundSyncOnceAsync(CancellationToken ct = default)
+    {
+        if (_config.SyncPausedManually
+            || _config.PrimaryCloudProvider != CloudProviderKind.GoogleDrive
+            || !_config.DriveEnabled
+            || IsAwaitingApiActivation)
+        {
+            return;
+        }
+
+        if (await GetConnectedAccountAsync(ct) is not null)
+            await SyncPendingAsync(progress: null, ct);
     }
 
     /// <summary>
@@ -338,7 +364,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         using var resp = await _http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(form), ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"OAuth token exchange failed ({(int)resp.StatusCode}): {body}");
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, body, _config.OAuthClient?.ClientId);
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
@@ -396,7 +422,10 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
 
         using var resp = await _http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(form), ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Failed to refresh Google OAuth token ({(int)resp.StatusCode}). Please reconnect.");
+        {
+            var errBody = await resp.Content.ReadAsStringAsync(ct);
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, errBody, _config.OAuthClient?.ClientId);
+        }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var access = doc.RootElement.GetProperty("access_token").GetString() ?? tokens.AccessToken;
@@ -484,9 +513,14 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             }
             catch (Exception ex)
             {
+                var details = ClassifyDriveException(ex);
+                _lastServiceError = details;
                 if (_notifications is not null)
-                    await _notifications.NotifyAsync("cloud", "Error", "GhostCode — Google Drive Authorization Lost", ex.Message, "gdrive_auth_lost", "open", ct);
-                return new DriveSyncReport(0, 0, 0, false, ex.Message);
+                {
+                    var mapped = UserFriendlyErrorService.MapError(details, _config.Language);
+                    await _notifications.NotifyAsync("cloud", "Error", mapped.Title, mapped.Explanation, "gdrive_auth_lost", "open", ct);
+                }
+                return new DriveSyncReport(0, 0, 0, Connected: false, LastError: details.ShortMessage, ErrorDetails: details);
             }
 
             if (tokens is null)
@@ -495,7 +529,11 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var items = await _store.GetPendingOrRetryableUploadsAsync(nowMs, ct);
             if (items.Count == 0)
+            {
+                _lastServiceError = null;
+                _apiPausedUntilUtc = null;
                 return new DriveSyncReport(0, 0, 0, true, null);
+            }
 
             string folderId;
             try
@@ -504,11 +542,26 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                return new DriveSyncReport(0, items.Count, 0, true, $"Cannot access Drive folder '{_config.DriveFolderName}': {ex.Message}");
+                var details = ClassifyDriveException(ex);
+                _lastServiceError = details;
+                if (details.Category == ErrorCategory.CloudApiDisabled)
+                    _apiPausedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+
+                bool stillConnected = details.Category != ErrorCategory.AuthenticationExpired;
+                var reportEarly = new DriveSyncReport(0, items.Count, 0, stillConnected, details.ShortMessage, details);
+                if (_notifications is not null)
+                {
+                    var mapped = UserFriendlyErrorService.MapError(details, _config.Language);
+                    await _notifications.NotifyAsync("cloud", "Error", mapped.Title, mapped.Explanation, $"gdrive_{details.Category}", "open", ct);
+                }
+                SyncCompleted?.Invoke(reportEarly);
+                return reportEarly;
             }
 
             int uploaded = 0, failed = 0, deduped = 0;
             string? lastError = null;
+            CloudServiceErrorDetails? lastErrorDetails = null;
+            bool stillConnectedAfterLoop = true;
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -543,34 +596,65 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
                     await _store.MarkUploadAttemptAsync(item.Version.Id, UploadStatus.Synced, driveId, null, 0, ct);
                     uploaded++;
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    lastError = ex.Message;
+                    var details = ClassifyDriveException(ex);
+                    lastError = details.ShortMessage;
+                    lastErrorDetails = details;
+                    _lastServiceError = details;
+
+                    if (details.Category is ErrorCategory.CloudApiDisabled
+                        or ErrorCategory.AuthenticationExpired
+                        or ErrorCategory.CloudInsufficientPermissions)
+                    {
+                        if (details.Category == ErrorCategory.CloudApiDisabled)
+                            _apiPausedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+                        if (details.Category is ErrorCategory.AuthenticationExpired or ErrorCategory.CloudInsufficientPermissions)
+                            stillConnectedAfterLoop = false;
+
+                        // Keep queued items untouched as Pending when API activation / OAuth re-auth is required.
+                        failed += items.Count - i;
+                        break;
+                    }
+
                     var nextRetry = ComputeNextRetry(item.Queue.AttemptCount);
-                    await _store.MarkUploadAttemptAsync(item.Version.Id, UploadStatus.Failed, null, ex.Message, nextRetry, ct);
+                    await _store.MarkUploadAttemptAsync(item.Version.Id, UploadStatus.Failed, null, details.ShortMessage, nextRetry, ct);
                     failed++;
+
+                    if (details.Category is ErrorCategory.CloudQuotaExceeded or ErrorCategory.CloudRateLimited)
+                    {
+                        failed += items.Count - i - 1;
+                        break;
+                    }
                 }
+            }
+
+            if (failed == 0)
+            {
+                _lastServiceError = null;
+                _apiPausedUntilUtc = null;
             }
 
             progress?.Report(new DriveSyncProgress(items.Count, items.Count, string.Empty, 100.0));
             if (_notifications is not null)
             {
+                var errMapped = lastErrorDetails is not null ? UserFriendlyErrorService.MapError(lastErrorDetails, _config.Language) : null;
                 await _notifications.NotifyRepeatedFailureOrRecoveryAsync(
                     "cloud",
                     "gdrive_upload",
                     failed > 0,
-                    "GhostCode — Google Drive Sync Interrupted",
-                    $"Cannot upload {failed} file(s) to Google Drive. Local backups remain safe and queued ({lastError}).",
+                    errMapped?.Title ?? "GhostCode — Google Drive Sync Interrupted",
+                    errMapped?.Explanation ?? $"Cannot upload {failed} file(s) to Google Drive. Local backups remain safe and queued ({lastError}).",
                     "GhostCode — Google Drive Sync Recovered",
                     $"Successfully uploaded {uploaded} queued file(s) to Google Drive.",
                     thresholdBeforeAlert: 2,
                     ct: ct);
             }
-            var report = new DriveSyncReport(uploaded, failed, deduped, true, lastError);
+            var report = new DriveSyncReport(uploaded, failed, deduped, stillConnectedAfterLoop, lastError, lastErrorDetails);
             SyncCompleted?.Invoke(report);
             return report;
         }
@@ -601,7 +685,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         using var resp = await _http.SendAsync(req, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Drive folder search failed ({(int)resp.StatusCode}): {body}");
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, body, _config.OAuthClient?.ClientId);
 
         using (var doc = JsonDocument.Parse(body))
         {
@@ -628,7 +712,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         using var createResp = await _http.SendAsync(createReq, ct);
         var createBody = await createResp.Content.ReadAsStringAsync(ct);
         if (!createResp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Drive mkdir failed ({(int)createResp.StatusCode}): {createBody}");
+            throw GoogleApiErrorParser.CreateException(createResp.StatusCode, createBody, _config.OAuthClient?.ClientId);
 
         using var createdDoc = JsonDocument.Parse(createBody);
         var createdId = createdDoc.RootElement.GetProperty("id").GetString()
@@ -710,7 +794,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         using var resp = await _http.SendAsync(req, ct);
         var body = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Drive upload failed ({(int)resp.StatusCode}): {body}");
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, body, _config.OAuthClient?.ClientId);
 
         using var doc = JsonDocument.Parse(body);
         if (doc.RootElement.TryGetProperty("sha256Checksum", out var shaProp))
@@ -772,7 +856,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Manifest publish failed ({(int)resp.StatusCode}): {err}");
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, err, _config.OAuthClient?.ClientId);
         }
     }
 
@@ -793,7 +877,9 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             }
             catch (Exception ex)
             {
-                return new DrivePullReport(0, 0, 0, 0, false, ex.Message);
+                var details = ClassifyDriveException(ex);
+                _lastServiceError = details;
+                return new DrivePullReport(0, 0, 0, 0, false, details.ShortMessage, details);
             }
 
             if (tokens is null)
@@ -819,7 +905,11 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            return new DrivePullReport(0, 0, 0, 0, true, $"Cannot access Drive folder '{_config.DriveFolderName}': {ex.Message}");
+            var details = ClassifyDriveException(ex);
+            _lastServiceError = details;
+            if (details.Category == ErrorCategory.CloudApiDisabled)
+                _apiPausedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+            return new DrivePullReport(0, 0, 0, 0, details.Category != ErrorCategory.AuthenticationExpired, details.ShortMessage, details);
         }
 
         var remoteFiles = await ListFolderFilesAsync(accessToken, folderId, ct);
@@ -950,12 +1040,12 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         IProgress<DriveSyncProgress>? progress = null,
         CancellationToken ct = default)
     {
-        var push = await SyncPendingAsync(progress, ct);
-        if (!push.Connected)
-            return (push, new DrivePullReport(0, 0, 0, 0, false, push.LastError));
+        var (push, pull) = (await SyncPendingAsync(progress, ct), default(DrivePullReport));
+        if (!push.Connected || push.ErrorDetails is not null)
+            return (push, new DrivePullReport(0, 0, 0, 0, push.Connected, push.LastError, push.ErrorDetails));
 
         await PublishManifestAsync(ct);
-        var pull = await PullAndReconcileFromDriveAsync(progress, ct);
+        pull = await PullAndReconcileFromDriveAsync(progress, ct);
         return (push, pull);
     }
 
@@ -1000,7 +1090,7 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             using var resp = await _http.SendAsync(req, ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (!resp.IsSuccessStatusCode)
-                throw new InvalidOperationException($"Drive file list failed ({(int)resp.StatusCode}): {body}");
+                throw GoogleApiErrorParser.CreateException(resp.StatusCode, body, _config.OAuthClient?.ClientId);
 
             using var doc = JsonDocument.Parse(body);
             pageToken = doc.RootElement.TryGetProperty("nextPageToken", out var pt) ? pt.GetString() : null;
@@ -1048,9 +1138,64 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Drive download failed ({(int)resp.StatusCode}): {err}");
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, err, _config.OAuthClient?.ClientId);
         }
         return await resp.Content.ReadAsByteArrayAsync(ct);
+    }
+
+    private CloudServiceErrorDetails ClassifyDriveException(Exception ex)
+    {
+        if (ex is CloudServiceException cex)
+            return cex.Details;
+
+        if (ex is TimeoutException or TaskCanceledException)
+        {
+            return new CloudServiceErrorDetails(
+                ErrorCategory.ConnectionTimeout,
+                "Google Drive",
+                0,
+                "DEADLINE_EXCEEDED",
+                "timeout",
+                "drive.googleapis.com",
+                ex.Message,
+                GoogleApiErrorParser.ExtractProjectNumberFromClientId(_config.OAuthClient?.ClientId),
+                null,
+                null,
+                string.Empty);
+        }
+
+        if (ex is HttpRequestException hre && hre.StatusCode is HttpStatusCode sc)
+            return GoogleApiErrorParser.Parse(sc, ex.Message, _config.OAuthClient?.ClientId);
+
+        if (ex is HttpRequestException or SocketException)
+        {
+            return new CloudServiceErrorDetails(
+                ErrorCategory.NetworkOffline,
+                "Google Drive",
+                0,
+                "UNAVAILABLE",
+                "networkUnavailable",
+                "drive.googleapis.com",
+                ex.Message,
+                GoogleApiErrorParser.ExtractProjectNumberFromClientId(_config.OAuthClient?.ClientId),
+                null,
+                null,
+                string.Empty);
+        }
+
+        var mapped = UserFriendlyErrorService.ClassifyAndMap(ex, _config.Language, ErrorCategory.PermissionDenied);
+        return new CloudServiceErrorDetails(
+            mapped.Category,
+            "Google Drive",
+            0,
+            string.Empty,
+            string.Empty,
+            "drive.googleapis.com",
+            ex.Message,
+            GoogleApiErrorParser.ExtractProjectNumberFromClientId(_config.OAuthClient?.ClientId),
+            mapped.ActionUrl,
+            null,
+            string.Empty);
     }
 
     private static ArchiveVersionRecord? ParseDriveFileMetadata(RemoteDriveFileEntry rf)

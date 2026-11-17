@@ -1,6 +1,8 @@
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.RegularExpressions;
+using GhostCode.Core.Cloud;
 using GhostCode.Core.Models;
 using Microsoft.Data.Sqlite;
 
@@ -12,6 +14,9 @@ public enum ErrorCategory
     NetworkOffline,
     ConnectionTimeout,
     CloudQuotaExceeded,
+    CloudApiDisabled,
+    CloudInsufficientPermissions,
+    CloudRateLimited,
     PermissionDenied,
     InvalidFilePath,
     WatchedFolderUnavailable,
@@ -33,7 +38,8 @@ public sealed record FriendlyErrorInfo(
     string Explanation,
     string ActionLabel,
     string ActionKey,
-    string RedactedTechnicalDetails);
+    string RedactedTechnicalDetails,
+    string? ActionUrl = null);
 
 /// <summary>
 /// Converts raw technical exceptions/errors across 17 domain categories into
@@ -64,6 +70,18 @@ public static partial class UserFriendlyErrorService
             ErrorCategory.CloudQuotaExceeded => vi
                 ? ("Dung lượng đám mây đã đầy", "Kho lưu trữ đám mây không còn đủ dung lượng trống cho bản sao lưu mới.", "Mở cài đặt Drive", "open_cloud")
                 : ("Cloud Storage Quota Full", "Your cloud drive does not have enough free space for new backups.", "Open Drive", "open_cloud"),
+
+            ErrorCategory.CloudApiDisabled => vi
+                ? ("Google Drive API chưa được kích hoạt", "GhostCode chưa thể đồng bộ mã nguồn vì Google Drive API chưa được bật trong dự án Google Cloud đang sử dụng. Các phiên bản vẫn được lưu cục bộ.", "Bật Google Drive API", "open_google_drive_api")
+                : ("Google Drive API Not Enabled", "GhostCode cannot sync yet because Google Drive API is disabled in the active Google Cloud project. Local versions remain safely saved.", "Enable Google Drive API", "open_google_drive_api"),
+
+            ErrorCategory.CloudInsufficientPermissions => vi
+                ? ("Thiếu quyền truy cập Google Drive", "Tài khoản chưa cấp đủ quyền tệp cho GhostCode. Hãy ngắt kết nối và đăng nhập lại để cấp quyền.", "Đăng nhập lại", "connect_cloud")
+                : ("Insufficient Google Drive Permissions", "The authorized session lacks Drive file permissions. Disconnect and sign in again to grant access.", "Sign In Again", "connect_cloud"),
+
+            ErrorCategory.CloudRateLimited => vi
+                ? ("Google Drive đang giới hạn tần suất", "Yêu cầu đồng bộ tạm thời vượt ngưỡng giới hạn của Google Drive; GhostCode sẽ tự thử lại sau.", "Thử lại", "retry_sync")
+                : ("Google Drive Rate Limit Reached", "Sync requests temporarily hit Google Drive's rate limit; GhostCode will retry safely later.", "Retry", "retry_sync"),
 
             ErrorCategory.PermissionDenied => vi
                 ? ("Không có quyền truy cập tệp hoặc thư mục", "Hệ thống từ chối quyền đọc/ghi tại đường dẫn được chọn; hãy kiểm tra quyền hoặc chọn thư mục khác.", "Chọn thư mục khác", "open_settings")
@@ -128,7 +146,33 @@ public static partial class UserFriendlyErrorService
             explanation,
             actionLabel,
             actionKey,
-            RedactSecrets(rawTechnicalDetails));
+            RedactSecrets(rawTechnicalDetails),
+            category == ErrorCategory.CloudApiDisabled ? GoogleApiErrorParser.DefaultDriveApiConsoleUrl : null);
+    }
+
+    public static FriendlyErrorInfo MapError(
+        CloudServiceErrorDetails details,
+        UiLanguage language)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Provider: {details.Provider} (HTTP {details.HttpStatusCode})");
+        if (!string.IsNullOrWhiteSpace(details.ErrorStatus))
+            sb.AppendLine($"Status: {details.ErrorStatus}");
+        if (!string.IsNullOrWhiteSpace(details.Reason))
+            sb.AppendLine($"Reason: {details.Reason}");
+        if (!string.IsNullOrWhiteSpace(details.ServiceName))
+            sb.AppendLine($"Service: {details.ServiceName}");
+        if (!string.IsNullOrWhiteSpace(details.ProjectNumber))
+            sb.AppendLine($"Google Cloud Project: {details.ProjectNumber}");
+        if (!string.IsNullOrWhiteSpace(details.OAuthProjectNote))
+            sb.AppendLine($"OAuth Check: {details.OAuthProjectNote}");
+        if (!string.IsNullOrWhiteSpace(details.ShortMessage))
+            sb.AppendLine($"Message: {details.ShortMessage}");
+        if (!string.IsNullOrWhiteSpace(details.ValidatedActivationUrl))
+            sb.AppendLine($"Activation URL: {details.ValidatedActivationUrl}");
+
+        var mapped = MapError(details.Category, sb.ToString().TrimEnd(), language);
+        return mapped with { ActionUrl = details.ValidatedActivationUrl ?? mapped.ActionUrl };
     }
 
     public static FriendlyErrorInfo ClassifyAndMap(
@@ -136,6 +180,9 @@ public static partial class UserFriendlyErrorService
         UiLanguage language,
         ErrorCategory fallback = ErrorCategory.RuntimeError)
     {
+        if (ex is CloudServiceException cex)
+            return MapError(cex.Details, language);
+
         var msg = ex.Message ?? string.Empty;
         ErrorCategory cat = fallback;
 
@@ -145,12 +192,20 @@ public static partial class UserFriendlyErrorService
             cat = ErrorCategory.PermissionDenied;
         else if (ex is SqliteException)
             cat = ErrorCategory.DatabaseError;
-        else if (ex is HttpRequestException or SocketException)
+        else if (ex is HttpRequestException hre)
+            cat = hre.StatusCode is System.Net.HttpStatusCode sc
+                ? GoogleApiErrorParser.Parse(sc, msg).Category
+                : ErrorCategory.NetworkOffline;
+        else if (ex is SocketException)
             cat = ErrorCategory.NetworkOffline;
-        else if (msg.Contains("401", StringComparison.OrdinalIgnoreCase) || msg.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase) || msg.Contains("token", StringComparison.OrdinalIgnoreCase) || msg.Contains("unauthorized", StringComparison.OrdinalIgnoreCase))
+        else if (msg.Contains("SERVICE_DISABLED", StringComparison.OrdinalIgnoreCase) || msg.Contains("accessNotConfigured", StringComparison.OrdinalIgnoreCase))
+            cat = ErrorCategory.CloudApiDisabled;
+        else if (msg.Contains("401", StringComparison.OrdinalIgnoreCase) || msg.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase) || msg.Contains("UNAUTHENTICATED", StringComparison.OrdinalIgnoreCase) || msg.Contains("unauthorized", StringComparison.OrdinalIgnoreCase))
             cat = ErrorCategory.AuthenticationExpired;
         else if (msg.Contains("quota", StringComparison.OrdinalIgnoreCase) || msg.Contains("storageQuotaExceeded", StringComparison.OrdinalIgnoreCase))
             cat = ErrorCategory.CloudQuotaExceeded;
+        else if (msg.Contains("rateLimitExceeded", StringComparison.OrdinalIgnoreCase) || msg.Contains("userRateLimitExceeded", StringComparison.OrdinalIgnoreCase))
+            cat = ErrorCategory.CloudRateLimited;
         else if (msg.Contains("sha", StringComparison.OrdinalIgnoreCase) || msg.Contains("corrupt", StringComparison.OrdinalIgnoreCase) || msg.Contains("integrity", StringComparison.OrdinalIgnoreCase))
             cat = ErrorCategory.ArchiveIntegrityFailure;
         else if (msg.Contains("compiler", StringComparison.OrdinalIgnoreCase) || msg.Contains("gcc", StringComparison.OrdinalIgnoreCase) || msg.Contains("g++", StringComparison.OrdinalIgnoreCase) || msg.Contains("python", StringComparison.OrdinalIgnoreCase))

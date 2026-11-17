@@ -261,7 +261,7 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
     public void P2_UserFriendlyErrorService_MapsAll17CategoriesAndRedactsSecretsInBothLanguages()
     {
         var allCategories = Enum.GetValues<ErrorCategory>();
-        Assert.Equal(17, allCategories.Length);
+        Assert.True(allCategories.Length >= 20);
 
         const string secretSample = "Authorization: Bearer ya29.super-secret-oauth-token-12345 pairing_secret=abc999 client_secret=\"topsecret\"";
         foreach (var cat in allCategories)

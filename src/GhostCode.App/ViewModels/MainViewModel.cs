@@ -408,6 +408,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _infoBarTechnicalDetails = string.Empty;
     private string _infoBarActionLabel = string.Empty;
     private string _infoBarActionKey = string.Empty;
+    private string? _infoBarActionUrl;
+    private CloudServiceErrorDetails? _lastCloudServiceError;
     private InfoBarSeverity _infoBarSeverity = InfoBarSeverity.Informational;
     private bool _isBusy;
     private bool _suppressFolderSync;
@@ -545,6 +547,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ResetToolchainsToAutoCommand = new RelayCommand(ResetToolchainsToAuto);
         OpenLatestBackupCommand = new AsyncRelayCommand(OpenLatestBackupAsync);
         ToggleProblemDetailsCommand = new RelayCommand(() => IsProblemDetailsExpanded = !IsProblemDetailsExpanded);
+        OpenDriveApiConsoleCommand = new RelayCommand(OpenDriveApiConsole);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -802,6 +805,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand ResetToolchainsToAutoCommand { get; }
     public IAsyncRelayCommand OpenLatestBackupCommand { get; }
     public IRelayCommand ToggleProblemDetailsCommand { get; }
+    public IRelayCommand OpenDriveApiConsoleCommand { get; }
 
     public UxOverhaulTextBundle UxStrings
     {
@@ -1127,6 +1131,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(TitleBarStatsWarningVisibility));
         OnPropertyChanged(nameof(TitleBarStatsNormalVisibility));
         OnPropertyChanged(nameof(StatsFlyoutCloudStatusText));
+        NotifyCloudSyncStateChanged();
     }
 
     private void NotifyLatestBackupAndDashboardLabelsChanged()
@@ -1635,6 +1640,131 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(OneDriveCardVisibility));
         OnPropertyChanged(nameof(ActiveCloudQueueVisibility));
         OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+        NotifyCloudSyncStateChanged();
+    }
+
+    public CloudSyncState CurrentCloudSyncState
+    {
+        get
+        {
+            if (_config.PrimaryCloudProvider == CloudProviderKind.LocalOnly || !_config.DriveEnabled)
+                return CloudSyncState.LocalOnly;
+            if (IsSyncing)
+                return CloudSyncState.Syncing;
+
+            bool isGoogle = _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive;
+            bool connected = isGoogle ? IsDriveConnected : IsOneDriveConnected;
+            var err = _lastCloudServiceError ?? (isGoogle ? _drive.LastServiceError : null);
+            if (err is not null)
+            {
+                return err.Category switch
+                {
+                    ErrorCategory.CloudApiDisabled => CloudSyncState.DriveApiDisabled,
+                    ErrorCategory.AuthenticationExpired or ErrorCategory.CloudInsufficientPermissions => CloudSyncState.AuthExpired,
+                    ErrorCategory.CloudQuotaExceeded => CloudSyncState.QuotaExceeded,
+                    ErrorCategory.NetworkOffline or ErrorCategory.ConnectionTimeout => CloudSyncState.NetworkOffline,
+                    _ => CloudSyncState.SyncFailed
+                };
+            }
+
+            if (!connected)
+                return CloudSyncState.NotConnected;
+            if (FailedUploads > 0)
+                return CloudSyncState.SyncFailed;
+            if (PendingUploads > 0)
+                return CloudSyncState.PendingUpload;
+            if (SyncedUploads > 0)
+                return CloudSyncState.Synced;
+            return CloudSyncState.AccountConnected;
+        }
+    }
+
+    public string CloudSyncStatusText
+    {
+        get
+        {
+            bool vi = _config.Language == UiLanguage.Vi;
+            return CurrentCloudSyncState switch
+            {
+                CloudSyncState.LocalOnly => vi ? "Chỉ lưu trên máy" : "Local Storage Only",
+                CloudSyncState.NotConnected => vi ? "Chưa kết nối tài khoản" : "Not Connected",
+                CloudSyncState.AccountConnected => vi ? "Đã kết nối tài khoản" : "Account Connected",
+                CloudSyncState.Syncing => vi ? "Đang đồng bộ" : "Syncing",
+                CloudSyncState.PendingUpload => vi ? $"Đang chờ tải lên ({PendingUploads})" : $"Pending Upload ({PendingUploads})",
+                CloudSyncState.DriveApiDisabled => vi ? "Chưa bật Google Drive API" : "Google Drive API Disabled",
+                CloudSyncState.NetworkOffline => vi ? "Mất kết nối Internet" : "Internet Disconnected",
+                CloudSyncState.AuthExpired => vi ? "Cần đăng nhập lại" : "Re-authentication Required",
+                CloudSyncState.QuotaExceeded => vi ? "Hết dung lượng" : "Cloud Storage Full",
+                CloudSyncState.SyncFailed => vi ? "Đồng bộ thất bại" : "Sync Failed",
+                CloudSyncState.Synced => vi ? "Đã đồng bộ" : "Synced",
+                _ => vi ? "Chưa rõ" : "Unknown"
+            };
+        }
+    }
+
+    public string CloudSyncStatusDetailText
+    {
+        get
+        {
+            bool vi = _config.Language == UiLanguage.Vi;
+            return CurrentCloudSyncState switch
+            {
+                CloudSyncState.DriveApiDisabled => vi
+                    ? "GhostCode chưa thể đồng bộ mã nguồn vì Google Drive API chưa được bật trong dự án Google Cloud đang sử dụng. Các phiên bản vẫn được lưu cục bộ."
+                    : "Google Drive API is disabled in the active Google Cloud project. Local versions remain safely saved.",
+                CloudSyncState.PendingUpload => vi
+                    ? $"{PendingUploads} phiên bản đang chờ tải lên; đã đồng bộ {SyncedUploads}."
+                    : $"{PendingUploads} version(s) waiting to upload; {SyncedUploads} synced.",
+                CloudSyncState.Synced => vi
+                    ? $"Tất cả {SyncedUploads} phiên bản đã đồng bộ an toàn."
+                    : $"All {SyncedUploads} version(s) safely synchronized.",
+                CloudSyncState.AuthExpired => vi
+                    ? "Phiên xác thực đã hết hạn hoặc thiếu quyền Drive. Hãy đăng nhập lại."
+                    : "Authorization expired or lacks Drive scope. Please sign in again.",
+                _ => _lastCloudServiceError?.ShortMessage ?? DriveConnectionStatusText
+            };
+        }
+    }
+
+    public Visibility CloudSyncStateOkVisibility =>
+        CurrentCloudSyncState is CloudSyncState.Synced or CloudSyncState.AccountConnected
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility CloudSyncStateWarnVisibility =>
+        CurrentCloudSyncState is CloudSyncState.Syncing or CloudSyncState.PendingUpload or CloudSyncState.DriveApiDisabled or CloudSyncState.NetworkOffline
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility CloudSyncStateErrorVisibility =>
+        CurrentCloudSyncState is CloudSyncState.AuthExpired or CloudSyncState.QuotaExceeded or CloudSyncState.SyncFailed
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility DriveApiDisabledBannerVisibility =>
+        CurrentCloudSyncState == CloudSyncState.DriveApiDisabled ? Visibility.Visible : Visibility.Collapsed;
+
+    public string DriveApiDisabledTitleText => _config.Language == UiLanguage.Vi
+        ? "Google Drive API chưa được kích hoạt"
+        : "Google Drive API Not Enabled";
+
+    public string DriveApiEnableButtonText => _config.Language == UiLanguage.Vi
+        ? "Bật Google Drive API"
+        : "Enable Google Drive API";
+
+    public string DriveRetrySyncButtonText => _config.Language == UiLanguage.Vi
+        ? "Thử lại"
+        : "Retry";
+
+    private void NotifyCloudSyncStateChanged()
+    {
+        OnPropertyChanged(nameof(CurrentCloudSyncState));
+        OnPropertyChanged(nameof(CloudSyncStatusText));
+        OnPropertyChanged(nameof(CloudSyncStatusDetailText));
+        OnPropertyChanged(nameof(CloudSyncStateOkVisibility));
+        OnPropertyChanged(nameof(CloudSyncStateWarnVisibility));
+        OnPropertyChanged(nameof(CloudSyncStateErrorVisibility));
+        OnPropertyChanged(nameof(DriveApiDisabledBannerVisibility));
+        OnPropertyChanged(nameof(DriveApiDisabledTitleText));
+        OnPropertyChanged(nameof(DriveApiEnableButtonText));
+        OnPropertyChanged(nameof(DriveRetrySyncButtonText));
     }
 
     public string OneDriveClientId { get => _oneDriveClientId; set => SetProperty(ref _oneDriveClientId, value); }
@@ -1642,7 +1772,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string OAuthClientId { get => _oAuthClientId; set => SetProperty(ref _oAuthClientId, value); }
     public string OAuthClientSecret { get => _oAuthClientSecret; set => SetProperty(ref _oAuthClientSecret, value); }
-    public bool IsSyncing { get => _isSyncing; private set => SetProperty(ref _isSyncing, value); }
+    public bool IsSyncing
+    {
+        get => _isSyncing;
+        private set
+        {
+            if (SetProperty(ref _isSyncing, value))
+                NotifyCloudSyncStateChanged();
+        }
+    }
     public double SyncProgressPercent { get => _syncProgressPercent; private set => SetProperty(ref _syncProgressPercent, value); }
     public string SyncProgressText { get => _syncProgressText; private set => SetProperty(ref _syncProgressText, value); }
     public bool HasOAuthClientConfigured => _drive.HasOAuthClientConfigured;
@@ -2735,9 +2873,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await RefreshAllAsync();
 
             if (!pull.Connected)
-                ShowFriendlyError(ErrorCategory.AuthenticationExpired, pull.Error, InfoBarSeverity.Warning);
+            {
+                if (pull.ErrorDetails is not null)
+                    ShowFriendlyErrorDetails(pull.ErrorDetails, InfoBarSeverity.Warning);
+                else
+                    ShowFriendlyError(ErrorCategory.AuthenticationExpired, pull.Error, InfoBarSeverity.Warning);
+            }
+            else if (pull.ErrorDetails is not null)
+            {
+                ShowFriendlyErrorDetails(pull.ErrorDetails, InfoBarSeverity.Error);
+            }
             else if (!string.IsNullOrEmpty(pull.Error))
-                ShowFriendlyError(ErrorCategory.NetworkOffline, pull.Error, InfoBarSeverity.Error);
+            {
+                var mapped = UserFriendlyErrorService.ClassifyAndMap(new InvalidOperationException(pull.Error), _config.Language, ErrorCategory.NetworkOffline);
+                ShowFriendlyInfo(mapped, InfoBarSeverity.Error);
+            }
             else
                 ShowInfoBar(
                     _config.Language == UiLanguage.Vi ? "Đã đồng bộ danh mục đám mây" : "Cloud Archive Reconciled",
@@ -3080,6 +3230,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        _drive.ClearApiConfigurationPause();
+        _lastCloudServiceError = null;
         IsSyncing = true;
         SyncProgressPercent = 0;
         SyncProgressText = vi
@@ -3094,19 +3246,36 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             });
             var (report, pull) = await provider.SyncBidirectionalAsync(progress);
             SaveConfigSafe();
+            _lastCloudServiceError = report.ErrorDetails ?? pull.ErrorDetails;
             await RefreshAllAsync();
 
-            if (!report.Connected)
+            var effectiveDetails = report.ErrorDetails ?? pull.ErrorDetails;
+            if (effectiveDetails is not null)
+            {
+                ShowFriendlyErrorDetails(effectiveDetails, effectiveDetails.Category == ErrorCategory.CloudApiDisabled ? InfoBarSeverity.Warning : InfoBarSeverity.Error);
+            }
+            else if (!report.Connected)
+            {
                 ShowFriendlyError(ErrorCategory.AuthenticationExpired, report.LastError, InfoBarSeverity.Warning);
+            }
             else if (report.FailedCount > 0 || !string.IsNullOrEmpty(pull.Error))
-                ShowFriendlyError(ErrorCategory.NetworkOffline, report.LastError ?? pull.Error, InfoBarSeverity.Warning);
+            {
+                var mapped = UserFriendlyErrorService.ClassifyAndMap(
+                    new InvalidOperationException(report.LastError ?? pull.Error ?? "Sync failed"),
+                    _config.Language,
+                    ErrorCategory.NetworkOffline);
+                ShowFriendlyInfo(mapped, InfoBarSeverity.Warning);
+            }
             else
+            {
+                _lastCloudServiceError = null;
                 ShowInfoBar(
                     _config.Language == UiLanguage.Vi ? "Đồng bộ thành công" : "Bidirectional Sync Complete",
                     _config.Language == UiLanguage.Vi
                         ? $"{provider.DisplayName}: Đã tải lên {report.UploadedCount} (Bỏ qua trùng lặp: {report.SkippedDuplicateCount}) • Đám mây mới: {pull.NewCloudOnlyCount}"
                         : $"{provider.DisplayName}: Uploaded {report.UploadedCount} (Deduped: {report.SkippedDuplicateCount}) • Cloud Discovered: {pull.NewCloudOnlyCount} • Conflicts: {pull.ConflictBranchCount}",
                     InfoBarSeverity.Success);
+            }
         }
         catch (Exception ex)
         {
@@ -3115,6 +3284,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             IsSyncing = false;
+            NotifyCloudSyncStateChanged();
         }
     }
 
@@ -3246,7 +3416,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string ExportConfigJson() => _config.ExportToJson();
 
-    public void ShowInfoBar(string title, string message, InfoBarSeverity severity, string technicalDetails = "", string actionLabel = "", string actionKey = "")
+    public void ShowInfoBar(string title, string message, InfoBarSeverity severity, string technicalDetails = "", string actionLabel = "", string actionKey = "", string? actionUrl = null)
     {
         _dispatch(() =>
         {
@@ -3255,6 +3425,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 && string.Equals(InfoBarTitle, title, StringComparison.Ordinal)
                 && string.Equals(InfoBarMessage, message, StringComparison.Ordinal))
             {
+                _infoBarActionUrl = actionUrl;
                 RestartInfoBarAutoDismissTimerLocked(severity);
                 return;
             }
@@ -3265,6 +3436,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             InfoBarTechnicalDetails = UserFriendlyErrorService.RedactSecrets(technicalDetails);
             InfoBarActionLabel = actionLabel;
             _infoBarActionKey = actionKey;
+            _infoBarActionUrl = actionUrl;
             InfoBarOpen = true;
             RestartInfoBarAutoDismissTimerLocked(severity);
         });
@@ -3304,13 +3476,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void ShowFriendlyError(ErrorCategory category, string? rawTechnicalDetails = null, InfoBarSeverity severity = InfoBarSeverity.Error)
     {
         var info = UserFriendlyErrorService.MapError(category, rawTechnicalDetails, _config.Language);
-        ShowInfoBar(info.Title, info.Explanation, severity, info.RedactedTechnicalDetails, info.ActionLabel, info.ActionKey);
+        ShowFriendlyInfo(info, severity);
     }
+
+    public void ShowFriendlyErrorDetails(CloudServiceErrorDetails details, InfoBarSeverity severity = InfoBarSeverity.Error)
+    {
+        _lastCloudServiceError = details;
+        NotifyCloudSyncStateChanged();
+        var info = UserFriendlyErrorService.MapError(details, _config.Language);
+        ShowFriendlyInfo(info, severity);
+    }
+
+    public void ShowFriendlyInfo(FriendlyErrorInfo info, InfoBarSeverity severity = InfoBarSeverity.Error) =>
+        ShowInfoBar(info.Title, info.Explanation, severity, info.RedactedTechnicalDetails, info.ActionLabel, info.ActionKey, info.ActionUrl);
 
     public void ShowFriendlyException(Exception ex, ErrorCategory fallback = ErrorCategory.RuntimeError)
     {
         var info = UserFriendlyErrorService.ClassifyAndMap(ex, _config.Language, fallback);
-        ShowInfoBar(info.Title, info.Explanation, InfoBarSeverity.Error, info.RedactedTechnicalDetails, info.ActionLabel, info.ActionKey);
+        ShowFriendlyInfo(info, InfoBarSeverity.Error);
+    }
+
+    private void OpenDriveApiConsole()
+    {
+        var proj = _lastCloudServiceError?.ProjectNumber ?? GoogleApiErrorParser.ExtractProjectNumberFromClientId(_config.OAuthClient.ClientId);
+        var safeUrl = GoogleApiErrorParser.ValidateGoogleConsoleUrl(_lastCloudServiceError?.ValidatedActivationUrl ?? _infoBarActionUrl, proj);
+        try
+        {
+            Process.Start(new ProcessStartInfo(safeUrl) { UseShellExecute = true });
+        }
+        catch { }
     }
 
     private void CopyErrorDetails()
@@ -3326,6 +3520,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             case "retry_sync":
                 _ = SyncNowAsync();
+                break;
+            case "open_google_drive_api":
+                OpenDriveApiConsole();
                 break;
             case "connect_cloud":
                 NavigationRequested?.Invoke("Cloud");
