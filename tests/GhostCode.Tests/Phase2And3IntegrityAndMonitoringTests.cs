@@ -114,11 +114,12 @@ public sealed class Phase2And3IntegrityAndMonitoringTests : IDisposable
         // Save File A -> v1
         var rA = await archiver.ProcessFileSaveAsync(srcA, bytesA, null);
 
-        // Pre-place an immutable file at the exact History path that srcB would compute if no collision guard existed
+        // Pre-place an immutable file at the exact clean slot path that srcB would compute if no collision guard existed
         var shaB = SourceAnalyzer.ComputeSha256Hex(bytesB);
-        var expectedNameB = $"{SourceAnalyzer.BuildProblemBaseName(null, srcB, Encoding.UTF8.GetString(bytesB), SourceLanguage.Cpp)}_v1_{shaB[..8]}.cpp";
-        var historyDir = Path.GetDirectoryName(rA.Version!.ArchivePath)!;
-        var collidingPath = Path.Combine(historyDir, expectedNameB);
+        var cleanNameB = SourceAnalyzer.BuildCleanFileName(null, srcB, Encoding.UTF8.GetString(bytesB), SourceLanguage.Cpp);
+        var slotDirB = Path.Combine(cfg.GetInternalHistoryRoot(), DateTime.Now.ToString("yyyy-MM-dd"), $"v1_{shaB[..8]}");
+        Directory.CreateDirectory(slotDirB);
+        var collidingPath = Path.Combine(slotDirB, cleanNameB);
         var sentinelBytes = Encoding.UTF8.GetBytes("// DO NOT OVERWRITE ME\n");
         await File.WriteAllBytesAsync(collidingPath, sentinelBytes);
 

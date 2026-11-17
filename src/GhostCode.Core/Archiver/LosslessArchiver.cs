@@ -54,17 +54,21 @@ public sealed class LosslessArchiver
         await _archiverLock.WaitAsync(ct);
         try
         {
-            var latest = await _store.GetLatestVersionForSourceAsync(fullSource, ct);
+            var platformLabel = activeContext?.Platform.ToString() ?? OjPlatform.Offline.ToString();
+            var latest = activeContext is not null
+                ? await _store.GetLatestVersionForProblemAsync(platformLabel, activeContext.Code, ct)
+                : await _store.GetLatestOfflineVersionForSourceAsync(fullSource, ct);
 
             // Empty or template boilerplate reset: NEVER clobber or erase the previous good snapshot!
             if (SourceAnalyzer.IsTrivialOrTemplate(text, lang.Value))
             {
-                if (latest is not null)
+                var fallbackLatest = latest ?? await _store.GetLatestVersionForSourceAsync(fullSource, ct);
+                if (fallbackLatest is not null)
                 {
                     return new ArchiveResult(
                         ArchiveOutcome.PreservedPreviousOnReset,
-                        latest,
-                        $"Preserved previous v{latest.VersionNum} ({latest.FileName}) after template/empty reset");
+                        fallbackLatest,
+                        $"Preserved previous v{fallbackLatest.VersionNum} ({fallbackLatest.FileName}) after template/empty reset");
                 }
                 return new ArchiveResult(ArchiveOutcome.UnsupportedFile, null, "Empty or boilerplate template ignored");
             }
@@ -78,41 +82,58 @@ public sealed class LosslessArchiver
                 return new ArchiveResult(ArchiveOutcome.Deduplicated, latest, $"Duplicate content (v{latest.VersionNum})");
             }
 
+            // If offline (no browser context), do not fork an unwanted offline copy when the source file on disk
+            // is byte-identical to its last problem-tagged snapshot (e.g., background reconcile after closing browser).
+            if (activeContext is null)
+            {
+                var snap = await _store.GetSnapshotAsync(fullSource, ct);
+                if (snap is not null && snap.Sha256 == sha256)
+                {
+                    var existingForSource = await _store.GetLatestVersionForSourceAsync(fullSource, ct);
+                    if (existingForSource is not null)
+                    {
+                        return new ArchiveResult(ArchiveOutcome.Deduplicated, existingForSource, $"Duplicate content (v{existingForSource.VersionNum})");
+                    }
+                }
+            }
+
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var versionNum = (latest?.VersionNum ?? 0) + 1;
             var targetExt = SourceAnalyzer.TargetExtension(activeContext, lang.Value, text);
             var baseStem = SourceAnalyzer.BuildProblemBaseName(activeContext, fullSource, text, lang.Value);
+            var cleanFileName = $"{baseStem}.{targetExt}";
             var shortHash = sha256[..8];
             var versionId = Guid.NewGuid().ToString("N");
 
-            // 1. Strictly immutable historical version (exclusive create, never overwrites existing historical files)
+            // 1. Strictly immutable historical version inside isolated internal version directory
+            //    keeping the actual filename 100% clean (ProblemID_Title.ext)
             var dateFolder = DateTime.Now.ToString("yyyy-MM-dd");
-            var historyDir = Path.Combine(_config.ArchiveDir, "History", dateFolder);
-            var (historyPath, historyFileName) = await WriteImmutableHistoricalFileAsync(
-                historyDir,
-                baseStem,
+            var (historyPath, _) = await WriteCleanHistoricalFileAsync(
+                _config.GetInternalHistoryRoot(),
+                dateFolder,
                 versionNum,
                 shortHash,
                 versionId,
-                targetExt,
+                cleanFileName,
                 rawBytes,
                 ct);
 
-            // 2. Replaceable latest clean copy in category directory (collision-safe for distinct files)
+            // 2. Clean organized copy under GhostCode/<platform>/ (ptitcode, codeforces, vnoj, leetcode, hackerrank, offline)
             var categoryDir = Path.Combine(_config.ArchiveDir, SourceAnalyzer.GetCategoryFolder(activeContext));
-            var latestFileName = ResolveNonCollidingLatestName(categoryDir, baseStem, targetExt, sha256, normHash, fullSource);
+            var latestFileName = ResolveNonCollidingLatestName(categoryDir, baseStem, targetExt, sha256, normHash, fullSource, activeContext);
             var latestCopyPath = Path.Combine(categoryDir, latestFileName);
             await WriteReplaceableCopyAtomicallyAsync(latestCopyPath, rawBytes, ct);
 
-            // 3. Replaceable submission copy (`CodePTIT_Ready`) updated atomically for immediate upload/copy
-            string? readyPath = null;
-            if (!string.IsNullOrWhiteSpace(_config.ReadyDir))
+            // 3. Ready path points directly to the unified GhostCode/<platform>/ file;
+            //    honor explicit custom ReadyDir only if configured separately (e.g., legacy tests).
+            string readyPath = latestCopyPath;
+            if (!string.IsNullOrWhiteSpace(_config.ReadyDir)
+                && !string.Equals(Path.GetFullPath(_config.ReadyDir), Path.GetFullPath(categoryDir), StringComparison.OrdinalIgnoreCase))
             {
                 readyPath = Path.Combine(_config.ReadyDir, latestFileName);
                 await WriteReplaceableCopyAtomicallyAsync(readyPath, rawBytes, ct);
             }
 
-            var platformLabel = activeContext?.Platform.ToString() ?? OjPlatform.Offline.ToString();
             var snapshot = new FileSnapshotRecord(
                 fullSource,
                 sha256,
@@ -130,7 +151,7 @@ public sealed class LosslessArchiver
                 SourcePath: fullSource,
                 ArchivePath: historyPath,
                 ReadyPath: readyPath,
-                FileName: historyFileName,
+                FileName: cleanFileName,
                 Sha256: sha256,
                 NormHash: normHash,
                 SizeBytes: rawBytes.LongLength,
@@ -154,7 +175,7 @@ public sealed class LosslessArchiver
             return new ArchiveResult(
                 ArchiveOutcome.CreatedVersion,
                 version,
-                $"Archived v{versionNum}: {historyFileName}");
+                $"Archived v{versionNum}: {cleanFileName}");
         }
         finally
         {
@@ -223,63 +244,74 @@ public sealed class LosslessArchiver
         SweepTempFiles(_config.ReadyDir);
 
         int recovered = 0;
-        var historyRoot = Path.Combine(_config.ArchiveDir, "History");
-        if (!Directory.Exists(historyRoot))
-            return 0;
+        var roots = new[] { _config.GetInternalHistoryRoot(), Path.Combine(_config.ArchiveDir, "History") }
+            .Where(Directory.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var file in Directory.EnumerateFiles(historyRoot, "*", SearchOption.AllDirectories))
+        foreach (var historyRoot in roots)
         {
-            ct.ThrowIfCancellationRequested();
-            var name = Path.GetFileName(file);
-            if (name.StartsWith('.') || name.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (SourceAnalyzer.LanguageFromPath(file) is null)
-                continue;
-
-            var fullArchive = Path.GetFullPath(file);
-            if (await _store.GetVersionByArchivePathAsync(fullArchive, ct) is not null)
-                continue;
-
-            byte[] bytes;
-            try
+            foreach (var file in Directory.EnumerateFiles(historyRoot, "*", SearchOption.AllDirectories))
             {
-                bytes = await File.ReadAllBytesAsync(fullArchive, ct);
+                ct.ThrowIfCancellationRequested();
+                var name = Path.GetFileName(file);
+                if (name.StartsWith('.') || name.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (SourceAnalyzer.LanguageFromPath(file) is null)
+                    continue;
+
+                var fullArchive = Path.GetFullPath(file);
+                if (await _store.GetVersionByArchivePathAsync(fullArchive, ct) is not null)
+                    continue;
+
+                byte[] bytes;
+                try
+                {
+                    bytes = await File.ReadAllBytesAsync(fullArchive, ct);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (bytes.Length == 0)
+                    continue;
+
+                var sha = SourceAnalyzer.ComputeSha256Hex(bytes);
+                var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+                var normHash = SourceAnalyzer.ComputeNormalizedHash(text);
+                int verNum = 1;
+                var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileNameWithoutExtension(name), @"_v(\d+)_");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int parsedVer) && parsedVer > 0)
+                    verNum = parsedVer;
+                else
+                {
+                    var parentDirName = Path.GetFileName(Path.GetDirectoryName(fullArchive) ?? string.Empty);
+                    var dirMatch = System.Text.RegularExpressions.Regex.Match(parentDirName, @"^v(\d+)_");
+                    if (dirMatch.Success && int.TryParse(dirMatch.Groups[1].Value, out int dirVer) && dirVer > 0)
+                        verNum = dirVer;
+                }
+
+                var cleanName = SourceAnalyzer.StripLegacyVersionAndHashSuffix(name);
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var rec = new ArchiveVersionRecord(
+                    Id: Guid.NewGuid().ToString("N"),
+                    VersionNum: verNum,
+                    SourcePath: fullArchive,
+                    ArchivePath: fullArchive,
+                    ReadyPath: null,
+                    FileName: cleanName,
+                    Sha256: sha,
+                    NormHash: normHash,
+                    SizeBytes: bytes.LongLength,
+                    ProblemCode: null,
+                    ProblemTitle: "Recovered Orphan",
+                    Platform: "Recovered",
+                    CreatedAtUnixMs: nowMs);
+
+                var queue = new UploadQueueItem(rec.Id, UploadStatus.Pending, 0, 0, null, null, nowMs);
+                await _store.InsertRecoveredVersionAsync(rec, queue, ct);
+                recovered++;
             }
-            catch
-            {
-                continue;
-            }
-
-            if (bytes.Length == 0)
-                continue;
-
-            var sha = SourceAnalyzer.ComputeSha256Hex(bytes);
-            var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
-            var normHash = SourceAnalyzer.ComputeNormalizedHash(text);
-            int verNum = 1;
-            var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileNameWithoutExtension(name), @"_v(\d+)_");
-            if (match.Success && int.TryParse(match.Groups[1].Value, out int parsedVer) && parsedVer > 0)
-                verNum = parsedVer;
-
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var rec = new ArchiveVersionRecord(
-                Id: Guid.NewGuid().ToString("N"),
-                VersionNum: verNum,
-                SourcePath: fullArchive,
-                ArchivePath: fullArchive,
-                ReadyPath: null,
-                FileName: name,
-                Sha256: sha,
-                NormHash: normHash,
-                SizeBytes: bytes.LongLength,
-                ProblemCode: null,
-                ProblemTitle: "Recovered Orphan",
-                Platform: "Recovered",
-                CreatedAtUnixMs: nowMs);
-
-            var queue = new UploadQueueItem(rec.Id, UploadStatus.Pending, 0, 0, null, null, nowMs);
-            await _store.InsertRecoveredVersionAsync(rec, queue, ct);
-            recovered++;
         }
 
         return recovered;
@@ -304,6 +336,63 @@ public sealed class LosslessArchiver
         catch { }
     }
 
+    public static async Task<(string Path, string FileName)> WriteCleanHistoricalFileAsync(
+        string historyRoot,
+        string dateFolder,
+        int versionNum,
+        string shortHash,
+        string versionId,
+        string cleanFileName,
+        byte[] bytes,
+        CancellationToken ct = default)
+    {
+        var baseSlot = System.IO.Path.Combine(historyRoot, dateFolder);
+        Directory.CreateDirectory(baseSlot);
+        var idTag = string.IsNullOrEmpty(versionId) ? "ver" : (versionId.Length >= 8 ? versionId[..8] : versionId);
+        string[] slotDirs =
+        {
+            System.IO.Path.Combine(baseSlot, $"v{versionNum}_{shortHash}"),
+            System.IO.Path.Combine(baseSlot, $"v{versionNum}_{shortHash}_{idTag}"),
+            System.IO.Path.Combine(baseSlot, $"v{versionNum}_{shortHash}_{Guid.NewGuid():N}")
+        };
+
+        foreach (var slotDir in slotDirs)
+        {
+            Directory.CreateDirectory(slotDir);
+            var targetPath = System.IO.Path.Combine(slotDir, cleanFileName);
+            if (File.Exists(targetPath))
+                continue;
+
+            var tempPath = System.IO.Path.Combine(slotDir, $".tmp.{Guid.NewGuid():N}");
+            try
+            {
+                await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 8192, FileOptions.Asynchronous | FileOptions.WriteThrough))
+                {
+                    await fs.WriteAsync(bytes, ct);
+                    await fs.FlushAsync(ct);
+                    fs.Flush(flushToDisk: true);
+                }
+
+                try
+                {
+                    File.Move(tempPath, targetPath, overwrite: false);
+                    return (targetPath, cleanFileName);
+                }
+                catch (IOException) when (File.Exists(targetPath))
+                {
+                    try { File.Delete(tempPath); } catch { }
+                }
+            }
+            catch
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                throw;
+            }
+        }
+
+        throw new IOException($"Unable to allocate unique immutable archive slot inside '{baseSlot}'.");
+    }
+
     public static async Task<(string Path, string FileName)> WriteImmutableHistoricalFileAsync(
         string historyDir,
         string baseStem,
@@ -325,10 +414,11 @@ public sealed class LosslessArchiver
                 fs.Flush(flushToDisk: true);
             }
 
+            var idTag = string.IsNullOrEmpty(versionId) ? "ver" : (versionId.Length >= 8 ? versionId[..8] : versionId);
             string[] candidates =
             {
                 $"{baseStem}_v{versionNum}_{shortHash}.{ext}",
-                $"{baseStem}_v{versionNum}_{shortHash}_{versionId[..8]}.{ext}",
+                $"{baseStem}_v{versionNum}_{shortHash}_{idTag}.{ext}",
                 $"{baseStem}_v{versionNum}_{shortHash}_{Guid.NewGuid():N}.{ext}"
             };
 
@@ -400,12 +490,25 @@ public sealed class LosslessArchiver
         string ext,
         string sha256,
         string normHash,
-        string sourcePath)
+        string sourcePath,
+        ProblemContext? activeContext = null)
     {
-        // Always group distinctly by source stem when offline so two different scratch files don't collide.
+        // Clean user-facing filename first: ProblemID_Title.ext
+        var primary = $"{baseStem}.{ext}";
+        var primaryFull = Path.Combine(categoryDir, primary);
+        if (!File.Exists(primaryFull))
+            return primary;
+
+        if (activeContext is not null)
+        {
+            // When associated with an explicit problem context, always keep its organized clean filename up to date
+            // (all immutable previous versions live safely in .ghostcode/history/).
+            return primary;
+        }
+
         for (int idx = 1; idx <= 99; idx++)
         {
-            var candidate = idx == 1 ? $"{baseStem}.{ext}" : $"{baseStem}_v{idx}.{ext}";
+            var candidate = idx == 1 ? primary : $"{baseStem}_{idx}.{ext}";
             var full = Path.Combine(categoryDir, candidate);
             if (!File.Exists(full))
                 return candidate;
@@ -419,8 +522,6 @@ public sealed class LosslessArchiver
                 if (SourceAnalyzer.ComputeNormalizedHash(existingText) == normHash)
                     return candidate;
 
-                // If same source file is updating its own latest clean copy, allow updating in place
-                // (all historical versions remain immutable under ArchiveDir/History/).
                 if (baseStem.EndsWith("_" + SourceAnalyzer.SafeStem(Path.GetFileNameWithoutExtension(sourcePath)), StringComparison.OrdinalIgnoreCase))
                     return candidate;
             }
@@ -429,6 +530,6 @@ public sealed class LosslessArchiver
                 return candidate;
             }
         }
-        return $"{baseStem}_{sha256[..6]}.{ext}";
+        return primary;
     }
 }

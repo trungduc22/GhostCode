@@ -60,7 +60,7 @@ public static class SourceAnalyzer
             return false;
 
         var normalized = Path.GetFullPath(path);
-        string[] systemExcludes = { @"\.git\", @"\node_modules\", @"\bin\", @"\obj\", @"\target\", @"\.vs\", @"\CodeArchive\", @"\GhostCodeArchive\", @"\CodePTIT_Ready\" };
+        string[] systemExcludes = { @"\.git\", @"\node_modules\", @"\bin\", @"\obj\", @"\target\", @"\.vs\", @"\.ghostcode\", @"\CodeArchive\", @"\GhostCodeArchive\", @"\CodePTIT_Ready\", @"\GhostCode\" };
         foreach (var ex in systemExcludes)
         {
             if (normalized.Contains(ex, StringComparison.OrdinalIgnoreCase))
@@ -217,6 +217,8 @@ public static class SourceAnalyzer
 
         static string TitleWord(string w)
         {
+            if (w.Any(char.IsUpper) && w.Any(char.IsLower))
+                return char.ToUpperInvariant(w[0]) + w[1..];
             var lower = w.ToLowerInvariant();
             return char.ToUpperInvariant(lower[0]) + lower[1..];
         }
@@ -267,17 +269,53 @@ public static class SourceAnalyzer
         return DefaultExtension(sourceLang);
     }
 
-    public static string GetCategoryFolder(ProblemContext? ctx)
+    public static string GetCategoryFolder(ProblemContext? ctx) =>
+        ctx is null ? "offline" : GetCategoryFolderForPlatform(ctx.Platform.ToString());
+
+    public static string GetCategoryFolderForPlatform(string? platform)
     {
-        if (ctx is null)
-            return "Offline";
-        if (ctx.Platform == OjPlatform.Ptit)
+        if (string.IsNullOrWhiteSpace(platform))
+            return "offline";
+
+        return platform.Trim().ToLowerInvariant() switch
         {
-            var letters = new string(ctx.Code.TakeWhile(char.IsAsciiLetter).ToArray()).ToUpperInvariant();
-            return Path.Combine("PTIT", string.IsNullOrEmpty(letters) ? "Other" : letters);
-        }
-        return ctx.Platform.ToString();
+            "ptit" or "ptitcode" or "codeptit" => "ptitcode",
+            "codeforces" or "cf" => "codeforces",
+            "vnoj" or "spoj" => "vnoj",
+            "leetcode" or "lc" => "leetcode",
+            "hackerrank" or "hr" => "hackerrank",
+            "offline" or "recovered" or "other" => "offline",
+            _ => SafeStem(platform).ToLowerInvariant()
+        };
     }
+
+    public static string BuildCleanFileName(
+        ProblemContext? ctx,
+        string sourcePath,
+        string text,
+        SourceLanguage lang)
+    {
+        var ext = TargetExtension(ctx, lang, text);
+        var baseStem = BuildProblemBaseName(ctx, sourcePath, text, lang);
+        return $"{baseStem}.{ext}";
+    }
+
+    public static string StripLegacyVersionAndHashSuffix(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return "untitled";
+        var ext = Path.GetExtension(fileName);
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var cleaned = Regex.Replace(stem, @"_v\d+_[0-9a-f]{6,12}(?:_[0-9a-f]{6,32})?$", string.Empty, RegexOptions.IgnoreCase);
+        if (string.IsNullOrWhiteSpace(cleaned))
+            cleaned = stem;
+        return string.IsNullOrEmpty(ext) ? SafeStem(cleaned) : $"{SafeStem(cleaned)}{ext}";
+    }
+
+    public static string BuildLogicalGroupKey(ArchiveVersionRecord version) =>
+        !string.IsNullOrWhiteSpace(version.ProblemCode)
+            ? $"{GetCategoryFolderForPlatform(version.Platform)}:{version.ProblemCode.ToUpperInvariant()}"
+            : $"offline:{Path.GetFullPath(version.SourcePath)}";
 
     public static string DescribeOffline(string src, SourceLanguage lang)
     {

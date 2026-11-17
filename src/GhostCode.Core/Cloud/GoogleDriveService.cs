@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Models;
 using GhostCode.Core.Notifications;
@@ -904,20 +905,17 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             return new DriveDownloadResult(false, null, $"Downloaded SHA-256 mismatch for {version.FileName}: expected {version.Sha256}, got {actualSha}.");
         }
 
-        var historyDir = Path.Combine(_config.ArchiveDir, "History");
-        var stem = Path.GetFileNameWithoutExtension(version.FileName);
-        if (string.IsNullOrWhiteSpace(stem)) stem = "restored";
-        var ext = Path.GetExtension(version.FileName).TrimStart('.');
-        if (string.IsNullOrWhiteSpace(ext)) ext = "txt";
+        var cleanName = SourceAnalyzer.StripLegacyVersionAndHashSuffix(version.FileName);
         var shortHash = actualSha[..Math.Min(8, actualSha.Length)];
+        var dateFolder = DateTimeOffset.FromUnixTimeMilliseconds(version.CreatedAtUnixMs).ToLocalTime().ToString("yyyy-MM-dd");
 
-        var (archivePath, _) = await LosslessArchiver.WriteImmutableHistoricalFileAsync(
-            historyDir,
-            stem,
+        var (archivePath, _) = await LosslessArchiver.WriteCleanHistoricalFileAsync(
+            _config.GetInternalHistoryRoot(),
+            dateFolder,
             version.VersionNum,
             shortHash,
             version.Id,
-            ext,
+            cleanName,
             bytes,
             ct);
 

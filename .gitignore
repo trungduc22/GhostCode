@@ -25,3 +25,4 @@ browser-extension-firefox/pairing.generated.json
 *.corrupt.*.bak
 artifacts/Release/
 artifacts/*.zip
+.worktrees/

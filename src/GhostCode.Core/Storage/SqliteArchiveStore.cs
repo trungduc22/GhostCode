@@ -135,6 +135,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             );
 
             CREATE INDEX IF NOT EXISTS idx_versions_source ON archive_versions(source_path, version_num DESC);
+            CREATE INDEX IF NOT EXISTS idx_versions_problem ON archive_versions(platform, problem_code, version_num DESC);
             CREATE INDEX IF NOT EXISTS idx_versions_created ON archive_versions(created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_archive_path ON archive_versions(archive_path);
 
@@ -296,6 +297,141 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.Parameters.AddWithValue("$p", sourcePath);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+    }
+
+    public async Task<ArchiveVersionRecord?> GetLatestVersionForProblemAsync(
+        string platform,
+        string problemCode,
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+            FROM archive_versions
+            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE
+            ORDER BY version_num DESC, created_at DESC LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$plat", platform);
+        cmd.Parameters.AddWithValue("$code", problemCode);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+    }
+
+    public async Task<ArchiveVersionRecord?> GetLatestOfflineVersionForSourceAsync(
+        string sourcePath,
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+            FROM archive_versions
+            WHERE source_path = $p COLLATE NOCASE
+              AND (problem_code IS NULL OR problem_code = '' OR platform = 'Offline' COLLATE NOCASE)
+            ORDER BY version_num DESC, created_at DESC LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$p", sourcePath);
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+    }
+
+    public async Task<List<ArchiveVersionRecord>> GetVersionsByProblemAsync(
+        string platform,
+        string problemCode,
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+            FROM archive_versions
+            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE
+            ORDER BY version_num DESC, created_at DESC;
+            """;
+        cmd.Parameters.AddWithValue("$plat", platform);
+        cmd.Parameters.AddWithValue("$code", problemCode);
+        var list = new List<ArchiveVersionRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(ReadVersion(reader));
+        return list;
+    }
+
+    public async Task<List<ArchiveVersionRecord>> GetOfflineVersionsBySourceAsync(
+        string sourcePath,
+        CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+            FROM archive_versions
+            WHERE source_path = $p COLLATE NOCASE
+              AND (problem_code IS NULL OR problem_code = '' OR platform = 'Offline' COLLATE NOCASE)
+            ORDER BY version_num DESC, created_at DESC;
+            """;
+        cmd.Parameters.AddWithValue("$p", sourcePath);
+        var list = new List<ArchiveVersionRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            list.Add(ReadVersion(reader));
+        return list;
+    }
+
+    public async Task<int> ApplyMigratedVersionsAsync(
+        IReadOnlyList<(string VersionId, string NewArchivePath, string? NewReadyPath, string NewFileName, string SourcePath)> updates,
+        CancellationToken ct = default)
+    {
+        if (updates.Count == 0)
+            return 0;
+
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+            int updated = 0;
+
+            foreach (var u in updates)
+            {
+                await using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    UPDATE archive_versions
+                    SET archive_path = $ap,
+                        ready_path = $rp,
+                        file_name = $fn
+                    WHERE id = $id;
+                    """;
+                cmd.Parameters.AddWithValue("$ap", u.NewArchivePath);
+                cmd.Parameters.AddWithValue("$rp", (object?)u.NewReadyPath ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$fn", u.NewFileName);
+                cmd.Parameters.AddWithValue("$id", u.VersionId);
+                updated += await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                Guid.NewGuid().ToString("N"),
+                "ArchiveMigrated",
+                updates[0].SourcePath,
+                updates[0].VersionId,
+                $"Migrated {updated} archive version(s) to unified GhostCode folder cleanly",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Environment.MachineName), ct);
+
+            await tx.CommitAsync(ct);
+            return updated;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
     }
 
     public async Task InsertVersionAndEnqueueAsync(

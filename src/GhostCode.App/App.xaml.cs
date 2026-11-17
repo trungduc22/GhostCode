@@ -153,6 +153,9 @@ public partial class App : Application
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
             await store.InitializeAsync();
 
+            try { await UnifiedArchiveMigrationService.MigrateIfNeededAsync(config, configPath, store); }
+            catch (Exception ex) { vmStartupWarnings.Add($"Migration: {ex.Message}"); }
+
             var archiver = _serviceProvider.GetRequiredService<LosslessArchiver>();
             await archiver.ReconcileAfterCrashAsync();
 

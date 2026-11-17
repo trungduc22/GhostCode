@@ -402,6 +402,7 @@ public sealed class GhostCodeConfig
     public bool TrimTrailingWhitespaceOnCompare { get; set; } = true;
     public bool EstimateActiveCodingTime { get; set; } = false;
     public int AutoRecoveryCheckIntervalMinutes { get; set; } = 0;
+    public int NotificationDurationSeconds { get; set; } = 15;
 
     // Browser Onboarding & Connection Preferences
     public List<string> DismissedBrowserPrompts { get; set; } = new();
@@ -417,16 +418,19 @@ public sealed class GhostCodeConfig
     public static string DefaultConfigPath(string? localAppDataOverride = null) =>
         Path.Combine(KnownFoldersResolver.ResolveAppDataDir(localAppDataOverride), "config.json");
 
+    public string GetInternalMetaDir() => Path.Combine(ArchiveDir, ".ghostcode");
+    public string GetInternalHistoryRoot() => Path.Combine(ArchiveDir, ".ghostcode", "history");
+
     public static GhostCodeConfig CreateDefault(string? userProfileOverride = null, string? localAppDataOverride = null)
     {
         var baseDocs = KnownFoldersResolver.ResolveDefaultStorageBase(userProfileOverride);
         var appData = KnownFoldersResolver.ResolveAppDataDir(localAppDataOverride);
-        var archiveDir = Path.Combine(baseDocs, "GhostCodeArchive");
+        var archiveDir = Path.Combine(baseDocs, "GhostCode");
         return new GhostCodeConfig
         {
             WatchedFolders = KnownFoldersResolver.DiscoverDefaultWatchedFolders(userProfileOverride),
             ArchiveDir = archiveDir,
-            ReadyDir = Path.Combine(baseDocs, "CodePTIT_Ready"),
+            ReadyDir = string.Empty,
             DatabasePath = Path.Combine(appData, "ghostcode.db"),
             Language = UiLanguage.Vi,
             Theme = ThemePreference.System,
@@ -487,8 +491,9 @@ public sealed class GhostCodeConfig
 
         if (string.IsNullOrWhiteSpace(ArchiveDir))
             ArchiveDir = def.ArchiveDir;
-        if (string.IsNullOrWhiteSpace(ReadyDir))
-            ReadyDir = def.ReadyDir;
+        ReadyDir ??= string.Empty;
+        if (NotificationDurationSeconds < 0)
+            NotificationDurationSeconds = 15;
         if (string.IsNullOrWhiteSpace(DatabasePath))
             DatabasePath = def.DatabasePath;
         if (HttpPort <= 0 || HttpPort > 65535)
@@ -585,6 +590,7 @@ public sealed class GhostCodeConfig
             TrimTrailingWhitespaceOnCompare = TrimTrailingWhitespaceOnCompare,
             EstimateActiveCodingTime = EstimateActiveCodingTime,
             AutoRecoveryCheckIntervalMinutes = AutoRecoveryCheckIntervalMinutes,
+            NotificationDurationSeconds = NotificationDurationSeconds,
             DismissedBrowserPrompts = DismissedBrowserPrompts.ToList(),
             KnownConnectedBrowsers = KnownConnectedBrowsers.ToList(),
             MicaKind = MicaKind,

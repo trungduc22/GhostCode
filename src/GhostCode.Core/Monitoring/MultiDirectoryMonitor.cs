@@ -218,7 +218,14 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
     }
 
     private string[] ExcludedDirectories() =>
-        new[] { _config.ArchiveDir, _config.ReadyDir };
+        new[]
+        {
+            _config.ArchiveDir,
+            _config.GetInternalMetaDir(),
+            _config.ReadyDir
+        }
+        .Where(p => !string.IsNullOrWhiteSpace(p))
+        .ToArray();
 
     private void OnRawFsEvent(string watchedRoot, string fullPath, string eventType)
     {
