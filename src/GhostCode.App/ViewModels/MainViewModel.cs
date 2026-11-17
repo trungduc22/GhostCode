@@ -491,6 +491,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CopyErrorDetailsCommand = new RelayCommand(CopyErrorDetails);
         ExecuteFriendlyErrorActionCommand = new RelayCommand(ExecuteFriendlyErrorAction);
         CancelOAuthCommand = new RelayCommand(CancelOAuth);
+        RunOrStopCodeCommand = new AsyncRelayCommand(RunOrStopCodeAsync, () => IsExecuting || CanRunSelectedVersion);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -640,6 +641,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand CopyErrorDetailsCommand { get; }
     public IRelayCommand ExecuteFriendlyErrorActionCommand { get; }
     public IRelayCommand CancelOAuthCommand { get; }
+    public IAsyncRelayCommand RunOrStopCodeCommand { get; }
 
     public UxOverhaulTextBundle UxStrings
     {
@@ -681,6 +683,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(DriveConnectionStatusText));
                 OnPropertyChanged(nameof(NoFoldersVisible));
                 OnPropertyChanged(nameof(OnboardingCardVisibility));
+                OnPropertyChanged(nameof(PrimaryRunButtonText));
                 _ = RefreshHealthAsync();
             }
         }
@@ -815,6 +818,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(CanRunSelectedVersion));
                 OnPropertyChanged(nameof(SelectedVersionHeaderText));
                 RunCodeCommand.NotifyCanExecuteChanged();
+                RunOrStopCodeCommand.NotifyCanExecuteChanged();
                 _ = LoadSelectedVersionSourceAsync(value);
             }
         }
@@ -832,6 +836,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public bool SelectedVersionIsCloudOnly => SelectedVersion is not null && !SelectedVersion.IsLocalAvailable;
     public bool CanRunSelectedVersion => SelectedVersion is not null && SelectedVersion.IsLocalAvailable && !IsExecuting;
+    public string PrimaryRunButtonText => IsExecuting ? Strings.StopRunButton : Strings.RunCodeButton;
+
+    public Visibility ArchiveEmptyStateVisibility =>
+        (ArchiveFileGroups.Count == 0
+         && string.IsNullOrWhiteSpace(SearchQuery)
+         && SelectedPlatformFilter == "All"
+         && SelectedAvailabilityFilterIndex == 0)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    public Visibility ArchiveWorkspaceVisibility =>
+        ArchiveEmptyStateVisibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
 
     public string StdinText { get => _stdinText; set => SetProperty(ref _stdinText, value); }
     public string StdoutText
@@ -849,9 +865,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         private set
         {
             if (SetProperty(ref _stderrText, value))
+            {
                 OnPropertyChanged(nameof(IoOutputText));
+                OnPropertyChanged(nameof(StderrPanelVisibility));
+            }
         }
     }
+    public Visibility StderrPanelVisibility => string.IsNullOrWhiteSpace(StderrText) ? Visibility.Collapsed : Visibility.Visible;
     public string IoOutputText
     {
         get
@@ -1047,7 +1067,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _isExecuting, value))
             {
                 OnPropertyChanged(nameof(CanRunSelectedVersion));
+                OnPropertyChanged(nameof(PrimaryRunButtonText));
                 RunCodeCommand.NotifyCanExecuteChanged();
+                RunOrStopCodeCommand.NotifyCanExecuteChanged();
                 StopExecutionCommand.NotifyCanExecuteChanged();
             }
         }
@@ -1481,9 +1503,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _selectedQuickActionTarget, value))
+            {
+                OnPropertyChanged(nameof(HasQuickActionTarget));
                 _ = RefreshQuickActionsPreviewAsync();
+            }
         }
     }
+
+    public bool HasQuickActionTarget => SelectedQuickActionTarget is not null && SelectedQuickActionTarget.Latest.IsLocalAvailable;
 
     public string QuickActionsLatestPreview { get => _quickActionsLatestPreview; private set => SetProperty(ref _quickActionsLatestPreview, value); }
     public string QuickActionsAmbiguityNote { get => _quickActionsAmbiguityNote; private set => SetProperty(ref _quickActionsAmbiguityNote, value); }
@@ -1747,6 +1774,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language));
         }
 
+        OnPropertyChanged(nameof(ArchiveEmptyStateVisibility));
+        OnPropertyChanged(nameof(ArchiveWorkspaceVisibility));
+
         if (!string.IsNullOrEmpty(selectedId))
         {
             var foundVer = ArchiveVersions.FirstOrDefault(x => x.Id == selectedId);
@@ -1836,6 +1866,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         NotifyCloudProviderChanged();
     }
 
+    public void RequestNavigate(string tag) => NavigationRequested?.Invoke(tag);
+
+    public async Task RunOrStopCodeAsync()
+    {
+        if (IsExecuting)
+        {
+            StopExecution();
+            return;
+        }
+        await RunSelectedVersionAsync();
+    }
+
     public async Task RunSelectedVersionAsync()
     {
         if (SelectedVersion is null || IsExecuting)
@@ -1877,11 +1919,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
             RunnerMetricsText = $"Exit {res.ExitCode?.ToString() ?? "-"} • {res.ElapsedMs} ms • {(res.PeakMemoryMb ?? 0):F2} MB";
             RunnerStatusText = res.Status == ExecutionStatus.Finished && res.ExitCode == 0 ? Strings.StatusPassed : res.StatusBadgeText;
+            if (res.Status == ExecutionStatus.TimeLimitExceeded)
+                ShowFriendlyError(ErrorCategory.ExecutionTimeout, $"{res.ElapsedMs} ms");
+            else if (res.Status == ExecutionStatus.CompileError
+                && (res.CompilerOutput.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                    || res.CompilerOutput.Contains("not detected", StringComparison.OrdinalIgnoreCase)))
+                ShowFriendlyError(ErrorCategory.CompilerMissing, res.CompilerOutput);
         }
         catch (OperationCanceledException)
         {
             RunnerStatusText = Strings.StatusFailed;
-            RunnerMetricsText = "Stopped by user";
+            RunnerMetricsText = _config.Language == UiLanguage.Vi ? "Người dùng đã dừng" : "Stopped by user";
             ConsoleLogText += "\n[STOPPED BY USER]\n";
         }
         finally

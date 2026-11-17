@@ -51,8 +51,36 @@
                 Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
         </Grid>
 
+        <!-- Empty State when 0 source versions exist yet -->
+        <Border
+            x:Name="ArchiveEmptyStateCard"
+            Grid.Row="1"
+            Visibility="{x:Bind ViewModel.ArchiveEmptyStateVisibility, Mode=OneWay}"
+            Padding="32"
+            MaxWidth="560"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            CornerRadius="12"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1">
+            <StackPanel Spacing="12" HorizontalAlignment="Center">
+                <FontIcon Glyph="&#xE8B7;" FontSize="36" Foreground="{ThemeResource AccentFillColorDefaultBrush}" HorizontalAlignment="Center" />
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.ArchiveEmptyTitle, Mode=OneWay}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" TextAlignment="Center" />
+                <TextBlock Text="{x:Bind ViewModel.UxStrings.ArchiveEmptyBody, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" TextAlignment="Center" />
+                <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center" Margin="0,4,0,0">
+                    <Button Content="{x:Bind ViewModel.UxStrings.ArchiveEmptySetupFolders, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Click="SetupFoldersFromArchive_Click" />
+                    <Button Content="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
         <!-- 3-Pane Workspace: File Explorer | Source + Version Viewer | Console & Split I/O Runner -->
-        <Grid Grid.Row="1" ColumnSpacing="12">
+        <Grid
+            x:Name="ArchiveWorkspaceGrid"
+            Grid.Row="1"
+            ColumnSpacing="12"
+            Visibility="{x:Bind ViewModel.ArchiveWorkspaceVisibility, Mode=OneWay}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="290" MinWidth="220" />
                 <ColumnDefinition Width="1.2*" MinWidth="300" />
@@ -119,58 +147,72 @@
                             SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
                             DisplayMemberPath="SelectorLabel" />
 
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <SplitButton
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.CopySelectedCodeCommand}">
-                                <SplitButton.Flyout>
-                                    <MenuFlyout>
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyLatestCode, Mode=OneWay}" Command="{x:Bind ViewModel.CopyLatestProblemCodeCommand}" />
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySourcePath, Mode=OneWay}" Command="{x:Bind ViewModel.CopySourcePathCommand}" />
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyProblemUrl, Mode=OneWay}" Command="{x:Bind ViewModel.CopyProblemUrlCommand}" />
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleInput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleInputCommand}" />
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleOutput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleOutputCommand}" />
-                                    </MenuFlyout>
-                                </SplitButton.Flyout>
-                            </SplitButton>
-                            <SplitButton
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.OpenInIdeCommand}">
-                                <SplitButton.Flyout>
-                                    <MenuFlyout>
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.OpenWorkingCopyInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenInIdeCommand}" />
-                                        <MenuFlyoutItem Text="{x:Bind ViewModel.UxStrings.OpenOriginalSourceMenu, Mode=OneWay}" Command="{x:Bind ViewModel.OpenOriginalInIdeCommand}" />
-                                    </MenuFlyout>
-                                </SplitButton.Flyout>
-                            </SplitButton>
-                            <Button
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.ToggleDiffModeCommand}" />
-                            <Button
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
-                                Click="RestoreVersion_Click" />
-                            <Button
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.DownloadVersionButton, Mode=OneWay}"
-                                Visibility="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.DownloadSelectedVersionCommand}" />
-                            <Button
-                                x:Name="RunSourceButton"
-                                Padding="8,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
-                                Style="{ThemeResource AccentButtonStyle}"
-                                Command="{x:Bind ViewModel.RunCodeCommand}" />
-                        </StackPanel>
+                        <!-- Clean Action Hierarchy: Primary (Run + Copy) & Secondary Actions -->
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Primary Actions -->
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                                <Button
+                                    x:Name="RunSourceButton"
+                                    Padding="12,5"
+                                    FontSize="12"
+                                    FontWeight="SemiBold"
+                                    Content="{x:Bind ViewModel.PrimaryRunButtonText, Mode=OneWay}"
+                                    Style="{ThemeResource AccentButtonStyle}"
+                                    Command="{x:Bind ViewModel.RunOrStopCodeCommand}" />
+                                <SplitButton
+                                    Padding="8,4"
+                                    FontSize="12"
+                                    Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.CopySelectedCodeCommand}">
+                                    <SplitButton.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyLatestCode, Mode=OneWay}" Command="{x:Bind ViewModel.CopyLatestProblemCodeCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySourcePath, Mode=OneWay}" Command="{x:Bind ViewModel.CopySourcePathCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopyProblemUrl, Mode=OneWay}" Command="{x:Bind ViewModel.CopyProblemUrlCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleInput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleInputCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.CopySampleOutput, Mode=OneWay}" Command="{x:Bind ViewModel.CopySampleOutputCommand}" />
+                                        </MenuFlyout>
+                                    </SplitButton.Flyout>
+                                </SplitButton>
+                            </StackPanel>
+
+                            <!-- Secondary Actions -->
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                                <SplitButton
+                                    Padding="8,4"
+                                    FontSize="12"
+                                    Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.OpenInIdeCommand}">
+                                    <SplitButton.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.OpenWorkingCopyInIde, Mode=OneWay}" Command="{x:Bind ViewModel.OpenInIdeCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.UxStrings.OpenOriginalSourceMenu, Mode=OneWay}" Command="{x:Bind ViewModel.OpenOriginalInIdeCommand}" />
+                                        </MenuFlyout>
+                                    </SplitButton.Flyout>
+                                </SplitButton>
+                                <Button
+                                    Padding="8,4"
+                                    FontSize="12"
+                                    Content="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.ToggleDiffModeCommand}" />
+                                <Button
+                                    Padding="8,4"
+                                    FontSize="12"
+                                    Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
+                                    Click="RestoreVersion_Click" />
+                                <Button
+                                    Padding="8,4"
+                                    FontSize="12"
+                                    Content="{x:Bind ViewModel.Strings.DownloadVersionButton, Mode=OneWay}"
+                                    Visibility="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.DownloadSelectedVersionCommand}" />
+                            </StackPanel>
+                        </Grid>
                     </StackPanel>
 
                     <!-- Version Integrity Header -->
@@ -304,45 +346,29 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <!-- Tab & Execution Action Bar -->
-                    <StackPanel Grid.Row="0" Spacing="6">
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <Button
-                                x:Name="ConsoleTabBtn"
-                                Padding="10,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.RunnerTabConsole, Mode=OneWay}"
-                                Click="ConsoleTab_Click" />
-                            <Button
-                                x:Name="IoTabBtn"
-                                Padding="10,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.RunnerTabIo, Mode=OneWay}"
-                                Style="{ThemeResource AccentButtonStyle}"
-                                Click="IoTab_Click" />
-                            <Button
-                                x:Name="SamplesTabBtn"
-                                Padding="10,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.ExpStrings.SamplesTabLabel, Mode=OneWay}"
-                                Click="SamplesTab_Click" />
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <Button
-                                x:Name="PanelRunButton"
-                                Padding="10,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
-                                Style="{ThemeResource AccentButtonStyle}"
-                                Command="{x:Bind ViewModel.RunCodeCommand}" />
-                            <Button
-                                x:Name="PanelStopButton"
-                                Padding="10,4"
-                                FontSize="12"
-                                Content="{x:Bind ViewModel.Strings.StopRunButton, Mode=OneWay}"
-                                Command="{x:Bind ViewModel.StopExecutionCommand}" />
-                        </StackPanel>
+                    <!-- Consistent Non-Competing Tab Strip (Single Run Button Remains in Source Toolbar) -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6">
+                        <Button
+                            x:Name="ConsoleTabBtn"
+                            Height="30"
+                            Padding="12,4"
+                            FontSize="12"
+                            Content="{x:Bind ViewModel.Strings.RunnerTabConsole, Mode=OneWay}"
+                            Click="ConsoleTab_Click" />
+                        <Button
+                            x:Name="IoTabBtn"
+                            Height="30"
+                            Padding="12,4"
+                            FontSize="12"
+                            Content="{x:Bind ViewModel.Strings.RunnerTabIo, Mode=OneWay}"
+                            Click="IoTab_Click" />
+                        <Button
+                            x:Name="SamplesTabBtn"
+                            Height="30"
+                            Padding="12,4"
+                            FontSize="12"
+                            Content="{x:Bind ViewModel.ExpStrings.SamplesTabLabel, Mode=OneWay}"
+                            Click="SamplesTab_Click" />
                     </StackPanel>
 
                     <!-- Status & Metrics Strip -->
@@ -432,11 +458,12 @@
                                 Background="{ThemeResource ControlStrokeColorDefaultBrush}" />
                         </Border>
 
-                        <!-- Bottom: OUTPUT -->
-                        <Grid Grid.Row="2" RowSpacing="4">
+                        <!-- Bottom: STDOUT & Distinct Compiler/Stderr Diagnostics -->
+                        <Grid Grid.Row="2" RowSpacing="6">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <TextBlock
                                 Grid.Row="0"
@@ -447,7 +474,7 @@
                             <TextBox
                                 x:Name="IoOutputBox"
                                 Grid.Row="1"
-                                Text="{x:Bind ViewModel.IoOutputText, Mode=OneWay}"
+                                Text="{x:Bind ViewModel.StdoutText, Mode=OneWay}"
                                 IsReadOnly="True"
                                 AcceptsReturn="True"
                                 TextWrapping="NoWrap"
@@ -455,6 +482,26 @@
                                 FontSize="12"
                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                            <StackPanel
+                                Grid.Row="2"
+                                Spacing="4"
+                                Visibility="{x:Bind ViewModel.StderrPanelVisibility, Mode=OneWay}">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.UxStrings.CompilerDiagnosticsHeader, Mode=OneWay}"
+                                    FontSize="11"
+                                    FontWeight="SemiBold"
+                                    Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                                <TextBox
+                                    x:Name="StderrDiagnosticsBox"
+                                    Text="{x:Bind ViewModel.StderrText, Mode=OneWay}"
+                                    IsReadOnly="True"
+                                    AcceptsReturn="True"
+                                    TextWrapping="Wrap"
+                                    FontFamily="Consolas"
+                                    FontSize="11"
+                                    MaxHeight="110"
+                                    ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                            </StackPanel>
                         </Grid>
                     </Grid>
 
