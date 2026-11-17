@@ -145,14 +145,34 @@ function InitializeUninstall(): Boolean;
 var
   ResultCode: Integer;
 begin
+  UnregisterAllNativeMessagingHosts();
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(250);
+  Sleep(350);
   Result := True;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
 begin
-  if CurStep = ssPostInstall then
+  // Prevent open browsers (Thorium/Edge/Chrome/Firefox) from respawning Native Messaging host while files upgrade
+  UnregisterAllNativeMessagingHosts();
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(350);
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssInstall then
+  begin
+    UnregisterAllNativeMessagingHosts();
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(250);
+  end
+  else if CurStep = ssPostInstall then
   begin
     RegisterAllNativeMessagingHosts(ExpandConstant('{app}\GhostCode.App.exe'));
   end;
