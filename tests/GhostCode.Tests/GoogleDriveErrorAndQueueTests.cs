@@ -25,10 +25,10 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
         {
           "error": {
             "code": 403,
-            "message": "Google Drive API has not been used in project 1085876972632 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632 then retry.",
+            "message": "Google Drive API has not been used in project 999000111222 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=999000111222 then retry.",
             "errors": [
               {
-                "message": "Google Drive API has not been used in project 1085876972632 before or it is disabled.",
+                "message": "Google Drive API has not been used in project 999000111222 before or it is disabled.",
                 "domain": "usageLimits",
                 "reason": "accessNotConfigured",
                 "extendedHelp": "https://console.developers.google.com"
@@ -42,8 +42,8 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
                 "domain": "googleapis.com",
                 "metadata": {
                   "service": "drive.googleapis.com",
-                  "consumer": "projects/1085876972632",
-                  "activationUrl": "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632"
+                  "consumer": "projects/999000111222",
+                  "activationUrl": "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=999000111222"
                 }
               }
             ]
@@ -57,17 +57,17 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
         var parsed = GoogleApiErrorParser.Parse(
             HttpStatusCode.Forbidden,
             ExactServiceDisabled403Json,
-            "1085876972632-abcdefg.apps.googleusercontent.com");
+            "999000111222-abcdefg.apps.googleusercontent.com");
 
         Assert.Equal(ErrorCategory.CloudApiDisabled, parsed.Category);
         Assert.Equal(403, parsed.HttpStatusCode);
         Assert.Equal("PERMISSION_DENIED", parsed.ErrorStatus);
         Assert.Equal("SERVICE_DISABLED", parsed.Reason);
         Assert.Equal("drive.googleapis.com", parsed.ServiceName);
-        Assert.Equal("1085876972632", parsed.ProjectNumber);
+        Assert.Equal("999000111222", parsed.ProjectNumber);
         Assert.True(parsed.OAuthProjectMatchesError);
         Assert.Equal(
-            "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632",
+            "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=999000111222",
             parsed.ValidatedActivationUrl);
 
         var friendly = UserFriendlyErrorService.MapError(parsed, UiLanguage.Vi);
@@ -92,8 +92,8 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
                     "reason": "SERVICE_DISABLED",
                     "metadata": {
                       "service": "drive.googleapis.com",
-                      "consumer": "projects/1085876972632",
-                      "activationUrl": "https://evil-phishing.example.com/drive?project=1085876972632"
+                      "consumer": "projects/999000111222",
+                      "activationUrl": "https://evil-phishing.example.com/drive?project=999000111222"
                     }
                   }
                 ]
@@ -107,10 +107,10 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
             "999888777666-otherproject.apps.googleusercontent.com");
 
         Assert.Equal(ErrorCategory.CloudApiDisabled, parsed.Category);
-        Assert.Equal("https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632", parsed.ValidatedActivationUrl);
+        Assert.Equal("https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=999000111222", parsed.ValidatedActivationUrl);
         Assert.False(parsed.OAuthProjectMatchesError);
         Assert.Contains("999888777666", parsed.OAuthProjectNote, StringComparison.Ordinal);
-        Assert.Contains("1085876972632", parsed.OAuthProjectNote, StringComparison.Ordinal);
+        Assert.Contains("999000111222", parsed.OAuthProjectNote, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -142,7 +142,7 @@ public sealed class GoogleDriveErrorAndQueueTests : IDisposable
             DatabasePath = Path.Combine(_root, "ghostcode.db"),
             PrimaryCloudProvider = CloudProviderKind.GoogleDrive,
             DriveEnabled = true,
-            OAuthClient = new GoogleOAuthClientConfig { ClientId = "1085876972632-test.apps.googleusercontent.com" }
+            OAuthClient = new GoogleOAuthClientConfig { ClientId = "999000111222-test.apps.googleusercontent.com" }
         };
 
         await using var store = new SqliteArchiveStore(cfg.DatabasePath);

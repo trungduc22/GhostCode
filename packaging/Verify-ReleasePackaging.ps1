@@ -1,13 +1,17 @@
 [CmdletBinding()]
 param(
     [string]$ReleaseDir,
+    [string]$RestoreExePath,
     [switch]$SkipInstallerTest
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if ([string]::IsNullOrWhiteSpace($ReleaseDir)) {
-    $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
     $ReleaseDir = Join-Path $repoRoot "artifacts\Release"
+}
+if ([string]::IsNullOrWhiteSpace($RestoreExePath)) {
+    $RestoreExePath = Join-Path $ReleaseDir "GhostCode-win-x64\GhostCode.App.exe"
 }
 
 $portableZip = Join-Path $ReleaseDir "GhostCode-Portable-win-x64.zip"
@@ -139,8 +143,8 @@ try {
 }
 finally {
     Get-Process -Name "GhostCode.App" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Restore live AppData NativeMessaging wrapper pointing to main repo Release executable so Thorium keeps working cleanly
-    $repoReleaseExe = "C:\Users\Duc\Documents\ssh\artifacts\Release\GhostCode-win-x64\GhostCode.App.exe"
+    # Restore live AppData NativeMessaging wrapper if a companion executable exists
+    $repoReleaseExe = $RestoreExePath
     $nmDir = Join-Path $env:LOCALAPPDATA "GhostCode\NativeMessaging"
     if (Test-Path $repoReleaseExe) {
         New-Item -ItemType Directory -Force -Path $nmDir | Out-Null

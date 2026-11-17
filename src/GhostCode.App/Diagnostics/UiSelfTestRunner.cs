@@ -449,8 +449,8 @@ public static class UiSelfTestRunner
             // Simulated Google Drive SERVICE_DISABLED 403 UI diagnosis verification
             var simDetails = GoogleApiErrorParser.Parse(
                 System.Net.HttpStatusCode.Forbidden,
-                """{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Google Drive API has not been used in project 1085876972632 before or it is disabled.","errors":[{"reason":"accessNotConfigured"}],"details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"drive.googleapis.com","consumer":"projects/1085876972632","activationUrl":"https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632"}}]}}""",
-                "1085876972632-selftest.apps.googleusercontent.com");
+                """{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Google Drive API has not been used in project 999000111222 before or it is disabled.","errors":[{"reason":"accessNotConfigured"}],"details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"drive.googleapis.com","consumer":"projects/999000111222","activationUrl":"https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=999000111222"}}]}}""",
+                "999000111222-selftest.apps.googleusercontent.com");
             vm.ShowFriendlyErrorDetails(simDetails, InfoBarSeverity.Warning);
             await Task.Delay(80);
             bool apiDisabledUiOk = vm.InfoBarTitle == "Google Drive API chưa được kích hoạt"

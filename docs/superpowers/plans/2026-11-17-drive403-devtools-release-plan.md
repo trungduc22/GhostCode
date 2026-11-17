@@ -20,7 +20,7 @@
 - Test: `tests/GhostCode.Tests/GoogleDriveErrorAndQueueTests.cs` (new)
 
 - [ ] Write failing TDD tests in `tests/GhostCode.Tests/GoogleDriveErrorAndQueueTests.cs`:
-  - Parse exact Google Drive 403 `SERVICE_DISABLED` / `accessNotConfigured` JSON payload -> `CloudApiDisabled`, extract project `1085876972632`, extract & validate `activationUrl`.
+  - Parse exact Google Drive 403 `SERVICE_DISABLED` / `accessNotConfigured` JSON payload -> `CloudApiDisabled`, extract project `999000111222`, extract & validate `activationUrl`.
   - Reject untrusted non-Google `activationUrl` (`https://evil.example/...`) -> falls back safely to official Google Cloud Drive API Console URL.
   - Parse `UNAUTHENTICATED`/`invalid_grant` (401), `storageQuotaExceeded` (403), `insufficientPermissions` (403), `rateLimitExceeded` (429), and verify project consistency check (`ClientId` project match vs mismatch).
   - Simulated `SERVICE_DISABLED` HTTP response in `GoogleDriveService.SyncPendingAsync()` preserves all pending queue items intact (never deletes, never marks `Synced`), stops hammering remaining items, enters `PausedUntilUtc` API-disabled cooldown, and recovers immediately when `Retry` succeeds later without restart!
