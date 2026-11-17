@@ -1,0 +1,164 @@
+name: Release Windows x64
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version without leading v (e.g. 0.1.0-beta.1)'
+        required: false
+        default: '0.1.0-beta.1'
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-release:
+    name: Build, Package & Release (win-x64)
+    runs-on: windows-latest
+    shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release version and tag
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $ver = "${{ github.event.inputs.version }}".Trim()
+            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "0.1.0-beta.1" }
+            $ver = $ver.TrimStart('v')
+            $tag = "v$ver"
+          } else {
+            $tag = "$env:GITHUB_REF_NAME".Trim()
+            $ver = $tag.TrimStart('v')
+          }
+          $isPre = ($ver -match '-').ToString().ToLowerInvariant()
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TAG_NAME=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "IS_PRERELEASE=$isPre" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Release version: $ver (tag: $tag, prerelease: $isPre)"
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore NuGet dependencies
+        run: dotnet restore GhostCode.sln -p:Platform=x64
+
+      - name: Build solution (Release x64)
+        run: dotnet build GhostCode.sln -c Release -p:Platform=x64 -warnaserror --no-restore
+
+      - name: Run automated unit and integration tests
+        # Phase7WinUiFunctionalTests launches an interactive WinUI 3 window and RenderTargetBitmap,
+        # which requires a graphical desktop session not available on headless CI runners.
+        run: dotnet test GhostCode.sln -c Release -p:Platform=x64 --no-build --filter "FullyQualifiedName!~Phase7WinUiFunctionalTests"
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y --no-progress
+
+      - name: Package Portable ZIP, Installer EXE, and SHA256SUMS
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/Build-PortableBundle.ps1 -Version "$env:RELEASE_VERSION"
+
+      - name: Verify release package integrity and checksums
+        run: |
+          $ErrorActionPreference = "Stop"
+          $relRoot = Join-Path $PWD "artifacts\Release"
+          $zip = Join-Path $relRoot "GhostCode-Portable-win-x64.zip"
+          $exe = Join-Path $relRoot "GhostCode-Setup-x64.exe"
+          $sumFile = Join-Path $relRoot "SHA256SUMS.txt"
+
+          foreach ($path in @($zip, $exe, $sumFile)) {
+            if (-not (Test-Path $path)) { throw "Missing expected release asset: $path" }
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP "ghostcode_portable_check"
+          if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $extractDir -Force
+
+          foreach ($req in @(
+            "GhostCode.App.exe",
+            "GhostCode.Core.dll",
+            "GhostCode.App.pri",
+            "Assets\app.ico",
+            "Assets\ghostcode_logo.png",
+            "browser-extension\manifest.json",
+            "browser-extension-firefox\manifest.json"
+          )) {
+            $full = Join-Path $extractDir $req
+            if (-not (Test-Path $full)) { throw "Extracted portable ZIP missing $req" }
+          }
+
+          $xbfCount = (Get-ChildItem -Path $extractDir -Recurse -Filter "*.xbf").Count
+          if ($xbfCount -lt 6) { throw "Expected >= 6 compiled .xbf files in ZIP, found $xbfCount" }
+
+          $leaks = @(Get-ChildItem -Path $extractDir -Recurse -File | Where-Object {
+            $_.Name -ieq "pairing.generated.json" -or $_.Extension -iin @(".dpapi", ".db")
+          })
+          if ($leaks.Count -gt 0) { throw "Secret or user state leaked into portable ZIP!" }
+
+          $expectedHashes = @{}
+          foreach ($line in Get-Content $sumFile) {
+            if ($line -match '^([0-9a-f]{64})\s+(.+)$') {
+              $expectedHashes[$matches[2].Trim()] = $matches[1]
+            }
+          }
+          foreach ($asset in @($zip, $exe)) {
+            $name = [System.IO.Path]::GetFileName($asset)
+            $actual = (Get-FileHash -Path $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($expectedHashes[$name] -ne $actual) {
+              throw "SHA256 mismatch for $name (expected $($expectedHashes[$name]), got $actual)"
+            }
+          }
+          Write-Host "Verified Portable ZIP ($xbfCount .xbf), Setup EXE, zero secrets, and matching SHA256SUMS.txt."
+
+      - name: Generate Release Notes
+        run: |
+          $checksums = (Get-Content "artifacts\Release\SHA256SUMS.txt" -Raw).Trim()
+          $noteLines = @(
+            "# GhostCode $($env:TAG_NAME)",
+            "",
+            "Native Windows 10/11 (x64) WinUI 3 companion for local-first source-code preservation, active competitive programming problem detection, integrated C/C++/Python compilation & execution, and optional cloud archive sync.",
+            "",
+            "## Downloads",
+            '- **`GhostCode-Setup-x64.exe`** *(Recommended)* — Per-user Windows installer (no administrator privileges required). Installs to `%LOCALAPPDATA%\Programs\GhostCode`, creates Start Menu shortcut (optional Desktop icon), and registers Native Messaging for Edge, Chrome, Thorium, and Firefox while preserving existing local archives across upgrades and uninstalls.',
+            '- **`GhostCode-Portable-win-x64.zip`** — Self-contained portable archive (no installation required, extracts cleanly anywhere with .NET 10 & Windows App SDK bundled).',
+            '- **`SHA256SUMS.txt`** — SHA-256 verification checksums.',
+            "",
+            "## Minimum System Requirements",
+            "- Windows 10 version 2004 (Build 19041) or Windows 11 (x64)",
+            '- No separate `.NET` runtime installation required (`self-contained win-x64`)',
+            "",
+            "## Key Highlights in $($env:TAG_NAME)",
+            '- **Accurate Google Drive API Error Diagnosis (HTTP 403 `SERVICE_DISABLED`)**: Structured Google JSON error classification separates disabled Cloud APIs from offline network errors, provides a one-click Google Cloud Console activation link (`console.developers.google.com` / `console.cloud.google.com`), verifies OAuth Client ID project consistency, pauses rapid retries safely, and preserves every queued local archive item.',
+            '- **Compact Development Tools Workspace**: Streamlined 46px IDE and compiler rows with path tooltips, responsive 3-column `IDE mặc định` grid, and collapsible advanced compiler/execution settings.',
+            "- **Release Packaging & Checksums**: Self-contained installer + portable ZIP verified zero user-data leaks.",
+            "",
+            "## Google Drive Setup Note",
+            'To sync with your own Google Drive, configure a **Desktop app** OAuth Client ID, add your Google account as a Test User while the OAuth consent screen is in Testing mode, and ensure **Google Drive API (`drive.googleapis.com`)** is enabled in the **same Google Cloud project** as your Client ID.',
+            "",
+            "## SHA-256 Checksums",
+            '```',
+            $checksums,
+            '```'
+          )
+          Set-Content -Path "artifacts\Release\RELEASE_NOTES.md" -Value ($noteLines -join "`n") -Encoding UTF8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: GhostCode ${{ env.TAG_NAME }}
+          body_path: artifacts/Release/RELEASE_NOTES.md
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          files: |
+            artifacts/Release/GhostCode-Setup-x64.exe
+            artifacts/Release/GhostCode-Portable-win-x64.zip
+            artifacts/Release/SHA256SUMS.txt
