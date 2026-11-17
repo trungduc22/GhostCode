@@ -28,17 +28,44 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Resolve release version and tag
+      - name: Resolve and validate release version and tag
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $ver = "${{ github.event.inputs.version }}".Trim()
-            if ([string]::IsNullOrWhiteSpace($ver)) { $ver = "0.1.0-beta.1" }
-            $ver = $ver.TrimStart('v')
+          $ErrorActionPreference = "Stop"
+          if ($env:EVENT_NAME -eq "workflow_dispatch") {
+            $ver = if ([string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) { "0.1.0-beta.1" } else { $env:INPUT_VERSION.Trim() }
+            $ver = $ver.TrimStart('v', 'V')
             $tag = "v$ver"
           } else {
             $tag = "$env:GITHUB_REF_NAME".Trim()
-            $ver = $tag.TrimStart('v')
+            $ver = $tag.TrimStart('v', 'V')
           }
+
+          if ($ver -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Invalid release version '$ver'. Expected strict SemVer (for example 0.1.0-beta.1)."
+          }
+          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "Invalid tag '$tag'. Expected tag matching v<SemVer>."
+          }
+
+          # Refuse to silently overwrite an already published release or conflicting tag
+          $null = gh release view "$tag" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "GitHub Release '$tag' already exists. Refusing to overwrite an existing release."
+          }
+          if ($env:EVENT_NAME -eq "workflow_dispatch") {
+            $remoteTagLine = git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" 2>$null | Select-Object -Last 1
+            if (-not [string]::IsNullOrWhiteSpace($remoteTagLine)) {
+              $remoteTagSha = ($remoteTagLine -split '\s+')[0]
+              if ($remoteTagSha -ne $env:GITHUB_SHA) {
+                throw "Tag '$tag' already exists at commit $remoteTagSha, which differs from checked-out HEAD $env:GITHUB_SHA."
+              }
+            }
+          }
+
           $isPre = ($ver -match '-').ToString().ToLowerInvariant()
           "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TAG_NAME=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -62,10 +89,16 @@ jobs:
         run: dotnet test GhostCode.sln -c Release -p:Platform=x64 --no-build --filter "FullyQualifiedName!~Phase7WinUiFunctionalTests"
 
       - name: Install Inno Setup 6
-        run: choco install innosetup -y --no-progress
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed with exit code $LASTEXITCODE" }
 
       - name: Package Portable ZIP, Installer EXE, and SHA256SUMS
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/Build-PortableBundle.ps1 -Version "$env:RELEASE_VERSION"
+        run: |
+          $ErrorActionPreference = "Stop"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/Build-PortableBundle.ps1 -Version "$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "Build-PortableBundle.ps1 failed with exit code $LASTEXITCODE" }
 
       - name: Verify release package integrity and checksums
         run: |
@@ -160,6 +193,8 @@ jobs:
           name: GhostCode ${{ env.TAG_NAME }}
           body_path: artifacts/Release/RELEASE_NOTES.md
           prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          make_latest: ${{ env.IS_PRERELEASE != 'true' }}
+          fail_on_unmatched_files: true
           files: |
             artifacts/Release/GhostCode-Setup-x64.exe
             artifacts/Release/GhostCode-Portable-win-x64.zip
