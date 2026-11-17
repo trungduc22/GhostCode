@@ -152,10 +152,24 @@ public static class UiSelfTestRunner
 
             window.NavigateToTag("DevTools");
             await Task.Delay(150);
-            bool devToolsBrowserRelocatedOk = window.CurrentPageContent is DevelopmentToolsPage dtPage
-                && dtPage.FindName("DevToolsBrowsersSection") is FrameworkElement
-                && vm.InstalledBrowserRows.Count >= 1;
+            bool devToolsBrowserRelocatedOk = false;
+            bool devToolsCompactOk = false;
+            if (window.CurrentPageContent is DevelopmentToolsPage dtPage)
+            {
+                dtPage.UpdateLayout();
+                devToolsBrowserRelocatedOk = dtPage.FindName("DevToolsBrowsersSection") is FrameworkElement
+                    && vm.InstalledBrowserRows.Count >= 1;
+                var devSv = dtPage.FindName("DevToolsScrollViewer") as ScrollViewer;
+                var defaultIdesGrid = dtPage.FindName("DefaultIdesGrid") as Grid;
+                var idesList = dtPage.FindName("DevToolsIdesList") as ItemsControl;
+                devToolsCompactOk = devSv is not null
+                    && devSv.ScrollableWidth <= 2.0
+                    && defaultIdesGrid is not null
+                    && idesList is not null
+                    && vm.IdeStatuses.All(r => !string.IsNullOrWhiteSpace(r.CompactSummary));
+            }
             Record("BrowserManagementInDevTools", devToolsBrowserRelocatedOk);
+            Record("DevToolsCompactAndResponsiveLayout", devToolsCompactOk, $"compact={devToolsCompactOk}");
             await CaptureAsync("08_devtools.png");
             window.NavigateToTag("Dashboard");
             await Task.Delay(150);
@@ -431,9 +445,26 @@ public static class UiSelfTestRunner
             await vm.SyncNowCommand.ExecuteAsync(null);
             await vm.PullCloudArchiveCommand.ExecuteAsync(null);
             await vm.RetryFailedCommand.ExecuteAsync(null);
+
+            // Simulated Google Drive SERVICE_DISABLED 403 UI diagnosis verification
+            var simDetails = GoogleApiErrorParser.Parse(
+                System.Net.HttpStatusCode.Forbidden,
+                """{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Google Drive API has not been used in project 1085876972632 before or it is disabled.","errors":[{"reason":"accessNotConfigured"}],"details":[{"reason":"SERVICE_DISABLED","metadata":{"service":"drive.googleapis.com","consumer":"projects/1085876972632","activationUrl":"https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1085876972632"}}]}}""",
+                "1085876972632-selftest.apps.googleusercontent.com");
+            vm.ShowFriendlyErrorDetails(simDetails, InfoBarSeverity.Warning);
+            await Task.Delay(80);
+            bool apiDisabledUiOk = vm.InfoBarTitle == "Google Drive API chưa được kích hoạt"
+                && vm.InfoBarActionLabel == "Bật Google Drive API"
+                && !vm.InfoBarTitle.Contains("kết nối mạng", StringComparison.OrdinalIgnoreCase)
+                && vm.CurrentCloudSyncState == CloudSyncState.DriveApiDisabled
+                && vm.DriveApiDisabledBannerVisibility == Visibility.Visible;
+            Record("CloudApiDisabledUiAndNoFalseOffline", apiDisabledUiOk,
+                $"title='{vm.InfoBarTitle}', state={vm.CurrentCloudSyncState}");
+
             await vm.DisconnectGoogleCommand.ExecuteAsync(null);
             Record("CloudControlsAndDpapi", connectGuardOk && dpapiSecretOk && !vm.IsDriveConnected);
             await CaptureAsync("04_cloud.png");
+            vm.InfoBarOpen = false;
 
             // 10. Live Mica Backdrop Switch
             window.NavigateToTag("Dashboard");

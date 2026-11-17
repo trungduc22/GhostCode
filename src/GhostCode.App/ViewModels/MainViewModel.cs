@@ -148,6 +148,8 @@ public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Languag
                 : $"{badge} • {Info.ExecutablePath}";
         }
     }
+    public string CompactDetailText => UiStrings.ForBrowserState(Info.ConnectionState, Language);
+    public string PathTooltip => string.IsNullOrWhiteSpace(Info.ExecutablePath) ? CompactDetailText : Info.ExecutablePath;
 }
 
 public sealed record IdeStatusRow(IdeStatusInfo Info, UiLanguage Language = UiLanguage.Vi)
@@ -156,6 +158,7 @@ public sealed record IdeStatusRow(IdeStatusInfo Info, UiLanguage Language = UiLa
     public string StatusBadge => Language == UiLanguage.Vi
         ? (Info.IsRunning ? "Đang chạy" : Info.IsInstalled ? "Đã cài đặt" : "Chưa cài đặt")
         : (Info.IsRunning ? "Running" : Info.IsInstalled ? "Installed" : "Not Installed");
+    public bool IsPositiveState => Info.IsRunning || Info.IsInstalled;
     public string VersionText => Info.Version ?? string.Empty;
     public string ToolchainText
     {
@@ -173,11 +176,29 @@ public sealed record IdeStatusRow(IdeStatusInfo Info, UiLanguage Language = UiLa
                 : $"{summary} • {Info.ExecutablePath}";
         }
     }
+    public string CompactSummary
+    {
+        get
+        {
+            var summary = Info.ToolchainSummary ?? string.Empty;
+            if (Language == UiLanguage.Vi && summary.StartsWith("Not installed (Python runtime:", StringComparison.OrdinalIgnoreCase))
+                summary = summary.Replace("Not installed (Python runtime:", "Chưa cài đặt (Môi trường Python:", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(summary))
+                return summary;
+            if (!string.IsNullOrWhiteSpace(Info.Version))
+                return $"v{Info.Version}";
+            return Info.IsInstalled
+                ? (Language == UiLanguage.Vi ? "Sẵn sàng" : "Ready")
+                : (Language == UiLanguage.Vi ? "Chưa cài đặt" : "Not installed");
+        }
+    }
+    public string PathTooltip => !string.IsNullOrWhiteSpace(Info.ExecutablePath) ? Info.ExecutablePath : CompactSummary;
 }
 
 public sealed record ToolchainRow(ToolchainInfo Info, UiLanguage Language = UiLanguage.Vi)
 {
     public string Name => Info.DisplayName;
+    public bool IsAvailable => Info.IsAvailable;
     public string StatusBadge => Language == UiLanguage.Vi
         ? (Info.IsAvailable ? "Sẵn sàng" : "Chưa có")
         : (Info.IsAvailable ? "Ready" : "Unavailable");
@@ -185,6 +206,10 @@ public sealed record ToolchainRow(ToolchainInfo Info, UiLanguage Language = UiLa
     public string DetailText => Info.IsAvailable
         ? $"{Info.ExecutablePath} ({Info.DefaultFlags})"
         : (Language == UiLanguage.Vi && string.IsNullOrWhiteSpace(Info.ExecutablePath) ? "Chưa tìm thấy trong PATH" : Info.StatusDetail);
+    public string CompactDetail => Info.IsAvailable
+        ? (!string.IsNullOrWhiteSpace(Info.DefaultFlags) ? $"{Info.DefaultFlags}" : (Language == UiLanguage.Vi ? "Sẵn sàng" : "Ready"))
+        : (Language == UiLanguage.Vi && string.IsNullOrWhiteSpace(Info.ExecutablePath) ? "Chưa tìm thấy trong PATH" : Info.StatusDetail);
+    public string PathTooltip => !string.IsNullOrWhiteSpace(Info.ExecutablePath) ? Info.ExecutablePath : CompactDetail;
 }
 
 public sealed record GlobalSearchSuggestion(ArchiveVersionRecord Record, string MatchKind, UiLanguage Language)
@@ -1065,6 +1090,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string OpenShortText => _config.Language == UiLanguage.Vi ? "Mở" : "Open";
     public string MoreActionsTooltipText => _config.Language == UiLanguage.Vi ? "Tùy chọn khác" : "More options";
     public string ProblemDetailsTooltipText => _config.Language == UiLanguage.Vi ? "Chi tiết trình duyệt & URL" : "Browser & URL details";
+    public string DefaultIdesHeaderText => _config.Language == UiLanguage.Vi ? "IDE mặc định" : "Default IDEs";
+    public string AdvancedToolchainExpanderText => _config.Language == UiLanguage.Vi
+        ? "Cấu hình nâng cao (đường dẫn, chuẩn ngôn ngữ & giới hạn chạy)"
+        : "Advanced Settings (Executable Paths, Standards & Limits)";
 
     public bool IsProblemDetailsExpanded
     {
@@ -1150,6 +1179,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(OpenShortText));
         OnPropertyChanged(nameof(MoreActionsTooltipText));
         OnPropertyChanged(nameof(ProblemDetailsTooltipText));
+        OnPropertyChanged(nameof(DefaultIdesHeaderText));
+        OnPropertyChanged(nameof(AdvancedToolchainExpanderText));
         OnPropertyChanged(nameof(HasLatestBackupVisibility));
         OnPropertyChanged(nameof(NoLatestBackupVisibility));
         OnPropertyChanged(nameof(LatestBackupTitle));
@@ -1602,6 +1633,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (value < 0 || value > 2 || !SetProperty(ref _selectedCloudProviderIndex, value))
                 return;
             _config.PrimaryCloudProvider = (CloudProviderKind)value;
+            DriveEnabled = _config.PrimaryCloudProvider != CloudProviderKind.LocalOnly;
             SaveConfigSafe();
             NotifyCloudProviderChanged();
             _ = RefreshHealthAsync();
@@ -1731,7 +1763,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility CloudSyncStateWarnVisibility =>
-        CurrentCloudSyncState is CloudSyncState.Syncing or CloudSyncState.PendingUpload or CloudSyncState.DriveApiDisabled or CloudSyncState.NetworkOffline
+        CurrentCloudSyncState is CloudSyncState.NotConnected or CloudSyncState.Syncing or CloudSyncState.PendingUpload or CloudSyncState.DriveApiDisabled or CloudSyncState.NetworkOffline
             ? Visibility.Visible : Visibility.Collapsed;
 
     public Visibility CloudSyncStateErrorVisibility =>
@@ -3090,13 +3122,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
+            var vi = _config.Language == UiLanguage.Vi;
+            _lastCloudServiceError = null;
+            _drive.ClearApiConfigurationPause();
             var res = await _drive.DisconnectAsync();
             SaveConfigSafe();
             await RefreshCloudStateAsync();
+            NotifyCloudSyncStateChanged();
             if (res.RemoteRevocationSucceeded)
-                ShowInfoBar("Disconnected", "Google OAuth tokens revoked remotely and wiped from DPAPI store.", InfoBarSeverity.Informational);
+                ShowInfoBar(
+                    vi ? "Đã ngắt kết nối" : "Disconnected",
+                    vi ? "Đã thu hồi phiên Google OAuth và xóa token khỏi kho lưu trữ an toàn DPAPI." : "Google OAuth tokens revoked remotely and wiped from DPAPI store.",
+                    InfoBarSeverity.Informational);
             else
-                ShowInfoBar("Disconnected Locally", $"DPAPI tokens cleared, but remote revocation failed: {res.RemoteError}", InfoBarSeverity.Warning);
+                ShowInfoBar(
+                    vi ? "Đã ngắt kết nối cục bộ" : "Disconnected Locally",
+                    vi ? $"Đã xóa token DPAPI, nhưng không thể thu hồi từ xa: {res.RemoteError}" : $"DPAPI tokens cleared, but remote revocation failed: {res.RemoteError}",
+                    InfoBarSeverity.Warning);
         }
         finally
         {
