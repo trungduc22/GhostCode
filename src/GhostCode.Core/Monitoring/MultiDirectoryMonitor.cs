@@ -11,7 +11,8 @@ public sealed record ActiveWatchInfo(
     string FolderPath,
     bool Recursive,
     bool IsWatching,
-    string? Error);
+    string? Error,
+    bool IsCoveredByParent = false);
 
 public sealed record MonitoringDiagnosticResult(
     bool Success,
@@ -31,7 +32,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
     private readonly Func<ProblemContext?> _contextProvider;
 
     private readonly object _watcherLock = new();
-    private readonly List<(WatchedFolderConfig Config, FileSystemWatcher? Watcher, string? Error)> _watchers = new();
+    private readonly List<(WatchedFolderConfig Config, FileSystemWatcher? Watcher, string? Error, bool CoveredByParent)> _watchers = new();
     private readonly ConcurrentDictionary<string, (long DueMs, string EventType, string FolderPath)> _pending =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -52,6 +53,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
     }
 
     public event Action<MonitorEventRecord>? EventRecorded;
+    public event Action<int>? ReconciliationCompleted;
 
     public string LastDetectedFile { get; private set; } = "None";
     public string LastSuccessfulBackup { get; private set; } = "None";
@@ -85,7 +87,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         lock (_watcherLock)
         {
             return _watchers
-                .Select(w => new ActiveWatchInfo(w.Config.Path, w.Config.Recursive, w.Watcher is not null, w.Error))
+                .Select(w => new ActiveWatchInfo(w.Config.Path, w.Config.Recursive, w.Watcher is not null, w.Error, w.CoveredByParent))
                 .ToList();
         }
     }
@@ -125,7 +127,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                     continue;
                 if (KnownFoldersResolver.IsDriveRoot(folder.Path))
                 {
-                    _watchers.Add((folder, null, "Skipped drive root for safety"));
+                    _watchers.Add((folder, null, "Skipped drive root for safety", false));
                     LastMonitoringError = $"Drive root blocked: {folder.Path}";
                     continue;
                 }
@@ -137,7 +139,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    _watchers.Add((folder, null, ex.Message));
+                    _watchers.Add((folder, null, ex.Message, false));
                     LastMonitoringError = ex.Message;
                     continue;
                 }
@@ -147,14 +149,14 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
 
                 if (IsExcludedOrOutputDirectory(fullRoot))
                 {
-                    _watchers.Add((folder, null, "Excluded archive/output directory"));
+                    _watchers.Add((folder, null, "Excluded archive/output directory", false));
                     LastMonitoringError = $"Excluded archive/output directory: {fullRoot}";
                     continue;
                 }
 
                 if (!Directory.Exists(fullRoot))
                 {
-                    _watchers.Add((folder, null, "Directory not found"));
+                    _watchers.Add((folder, null, "Directory not found", false));
                     LastMonitoringError = $"Directory not found: {fullRoot}";
                     continue;
                 }
@@ -164,7 +166,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                     && fullRoot.StartsWith(p + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
                 if (coveringParent is not null)
                 {
-                    _watchers.Add((folder, null, $"Covered by recursive parent '{coveringParent}'"));
+                    _watchers.Add((folder, null, $"Covered by recursive parent '{coveringParent}'", true));
                     continue;
                 }
 
@@ -191,11 +193,11 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                     };
 
                     fsw.EnableRaisingEvents = true;
-                    _watchers.Add((folder, fsw, null));
+                    _watchers.Add((folder, fsw, null, false));
                 }
                 catch (Exception ex)
                 {
-                    _watchers.Add((folder, null, ex.Message));
+                    _watchers.Add((folder, null, ex.Message, false));
                     LastMonitoringError = $"{fullRoot}: {ex.Message}";
                 }
             }
@@ -204,7 +206,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
 
     private void ClearWatchersLocked()
     {
-        foreach (var (_, w, _) in _watchers)
+        foreach (var (_, w, _, _) in _watchers)
         {
             if (w is not null)
             {
@@ -368,8 +370,11 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                 continue;
 
             int seenInFolder = 0;
+            var visitedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var stack = new Stack<(string Dir, int Depth)>();
-            stack.Push((Path.GetFullPath(folder.Path), 0));
+            var rootFull = Path.GetFullPath(folder.Path).TrimEnd(Path.DirectorySeparatorChar);
+            visitedDirs.Add(rootFull);
+            stack.Push((rootFull, 0));
 
             while (stack.Count > 0 && seenInFolder < maxFilesPerFolder && !ct.IsCancellationRequested)
             {
@@ -405,6 +410,11 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                     if (res.Outcome == ArchiveOutcome.CreatedVersion)
                     {
                         archivedCount++;
+                        if (res.Version is not null)
+                        {
+                            LastDetectedFile = $"{Path.GetFileName(file)} @ {DateTime.Now:HH:mm:ss}";
+                            LastSuccessfulBackup = $"{res.Version.FileName} (v{res.Version.VersionNum}) @ {DateTime.Now:HH:mm:ss}";
+                        }
                         await RecordEventSafeAsync(folder.Path, file, "Reconciled", res.Message);
                     }
                 }
@@ -416,7 +426,9 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
                         foreach (var sub in Directory.EnumerateDirectories(dir))
                         {
                             var info = new DirectoryInfo(sub);
-                            if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                            // OneDrive Cloud Filter folders set FileAttributes.ReparsePoint with LinkTarget == null.
+                            // Only skip actual symlink/junction loops where LinkTarget is non-empty.
+                            if (info.Attributes.HasFlag(FileAttributes.ReparsePoint) && !string.IsNullOrEmpty(info.LinkTarget))
                                 continue;
                             var subName = info.Name;
                             if (subName.StartsWith('.') || subName.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
@@ -427,9 +439,10 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
 
                             var fullSub = Path.GetFullPath(sub).TrimEnd(Path.DirectorySeparatorChar);
                             bool isExcluded = excluded.Any(ex => !string.IsNullOrWhiteSpace(ex) &&
-                                fullSub.Equals(Path.GetFullPath(ex).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
-                            if (!isExcluded)
-                                stack.Push((sub, depth + 1));
+                                (fullSub.Equals(Path.GetFullPath(ex).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)
+                                 || fullSub.StartsWith(Path.GetFullPath(ex).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)));
+                            if (!isExcluded && visitedDirs.Add(fullSub))
+                                stack.Push((fullSub, depth + 1));
                         }
                     }
                     catch { }
@@ -437,6 +450,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
             }
         }
 
+        ReconciliationCompleted?.Invoke(archivedCount);
         return archivedCount;
     }
 

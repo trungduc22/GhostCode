@@ -352,22 +352,27 @@ public static class UiStrings
         OpenVersionHistory: "Mở lịch sử phiên bản",
         OpenInIde: "Mở trong IDE",
         OpenWorkingCopyInIde: "Mở bản nháp trong IDE",
-        CompareDiffButton: "So sánh / Diff",
+        CompareDiffButton: "So sánh",
         DiffSideBySide: "Song song",
         DiffUnified: "Unified Diff",
-        BackupHealthTitle: "Sức khỏe sao lưu & Khôi phục",
-        RunRecoveryCheckButton: "Kiểm tra khôi phục",
+        BackupHealthTitle: "Trạng thái bảo vệ & Khôi phục",
+        RunRecoveryCheckButton: "Kiểm tra toàn vẹn",
         SyncPauseButton: "Tạm dừng đồng bộ",
         SyncResumeButton: "Tiếp tục đồng bộ",
         CloudProviderTitle: "Nhà cung cấp lưu trữ đám mây",
         MigrateCloudButton: "Chuyển đổi nhà cung cấp...",
-        SamplesTabLabel: "Samples",
-        TimelineTabLabel: "Timeline",
+        SamplesTabLabel: "Test mẫu",
+        TimelineTabLabel: "Dòng thời gian",
         RunSampleButton: "Chạy mẫu",
         RunAllSamplesButton: "Chạy tất cả mẫu",
         AddCustomTestButton: "Thêm test riêng",
-        SamplePassedBadge: "Sample Passed (Đạt mẫu)",
-        JudgeAcceptedBadge: "Judge Accepted (AC)");
+        SamplePassedBadge: "Đạt test mẫu",
+        JudgeAcceptedBadge: "Đã đạt (AC)",
+        OnboardingNoFolderTitle: "Chưa có thư mục được bảo vệ",
+        OnboardingNoFolderBody: "GhostCode chưa theo dõi thư mục chứa mã nguồn. Hãy chọn nơi bạn thường lưu code.",
+        OnboardingAutoDetectButton: "Tự tìm thư mục",
+        OnboardingChooseFolderButton: "Chọn thư mục",
+        OnboardingLaterButton: "Để sau");
 
     public static readonly ExpansionTextBundle ExpansionEnglish = new(
         QuickActionsButton: "Quick Actions",
@@ -381,7 +386,7 @@ public static class UiStrings
         OpenVersionHistory: "Open Version History",
         OpenInIde: "Open in IDE",
         OpenWorkingCopyInIde: "Open Working Copy in IDE",
-        CompareDiffButton: "Compare / Diff",
+        CompareDiffButton: "Compare",
         DiffSideBySide: "Side-by-Side",
         DiffUnified: "Unified Diff",
         BackupHealthTitle: "Backup Health & Recovery",
@@ -390,13 +395,35 @@ public static class UiStrings
         SyncResumeButton: "Resume Sync",
         CloudProviderTitle: "Cloud Storage Provider",
         MigrateCloudButton: "Migrate Provider...",
-        SamplesTabLabel: "Samples",
+        SamplesTabLabel: "Sample Tests",
         TimelineTabLabel: "Timeline",
         RunSampleButton: "Run Sample",
         RunAllSamplesButton: "Run All Samples",
         AddCustomTestButton: "Add Custom Test",
         SamplePassedBadge: "Sample Passed",
-        JudgeAcceptedBadge: "Judge Accepted (AC)");
+        JudgeAcceptedBadge: "Judge Accepted (AC)",
+        OnboardingNoFolderTitle: "No Protected Folders Configured",
+        OnboardingNoFolderBody: "GhostCode is not watching any source code folders yet. Choose where you save your code.",
+        OnboardingAutoDetectButton: "Auto-Detect Folders",
+        OnboardingChooseFolderButton: "Choose Folder",
+        OnboardingLaterButton: "Later");
+
+    public static string ForProtectionBadge(BackupProtectionState state, UiLanguage language) =>
+        language == UiLanguage.Vi
+            ? state switch
+            {
+                BackupProtectionState.Protected => "Đang bảo vệ",
+                BackupProtectionState.Degraded => "Cần chú ý",
+                BackupProtectionState.Paused => "Tạm dừng",
+                _ => "Lỗi sao lưu"
+            }
+            : state switch
+            {
+                BackupProtectionState.Protected => "Protected",
+                BackupProtectionState.Degraded => "Degraded",
+                BackupProtectionState.Paused => "Paused",
+                _ => "Attention Needed"
+            };
 
     public static string ForAvailability(VersionAvailability availability, UiLanguage language)
     {
@@ -439,4 +466,9 @@ public sealed record ExpansionTextBundle(
     string RunAllSamplesButton,
     string AddCustomTestButton,
     string SamplePassedBadge,
-    string JudgeAcceptedBadge);
+    string JudgeAcceptedBadge,
+    string OnboardingNoFolderTitle,
+    string OnboardingNoFolderBody,
+    string OnboardingAutoDetectButton,
+    string OnboardingChooseFolderButton,
+    string OnboardingLaterButton);

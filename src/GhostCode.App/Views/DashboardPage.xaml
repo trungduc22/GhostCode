@@ -9,6 +9,45 @@
     <ScrollViewer Padding="24,16,24,24" HorizontalScrollMode="Disabled">
         <StackPanel Spacing="16" MaxWidth="1080" HorizontalAlignment="Stretch">
 
+            <!-- 0. First-Run / No Protected Folders Onboarding Card -->
+            <Border
+                x:Name="OnboardingNoFolderCard"
+                Visibility="{x:Bind ViewModel.OnboardingCardVisibility, Mode=OneWay}"
+                Padding="16"
+                CornerRadius="8"
+                Background="{ThemeResource SystemFillColorAttentionBackgroundBrush}"
+                BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE8B7;" FontSize="20" Foreground="{ThemeResource AccentFillColorDefaultBrush}" VerticalAlignment="Center" />
+                        <StackPanel Spacing="2">
+                            <TextBlock
+                                Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderTitle, Mode=OneWay}"
+                                FontWeight="SemiBold"
+                                FontSize="15" />
+                            <TextBlock
+                                Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderBody, Mode=OneWay}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                FontSize="13" />
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button
+                            Content="{x:Bind ViewModel.ExpStrings.OnboardingAutoDetectButton, Mode=OneWay}"
+                            Style="{ThemeResource AccentButtonStyle}"
+                            Click="AutoDetectFolders_Click" />
+                        <Button
+                            Content="{x:Bind ViewModel.ExpStrings.OnboardingChooseFolderButton, Mode=OneWay}"
+                            Click="PickFolderOnboarding_Click" />
+                        <Button
+                            Content="{x:Bind ViewModel.ExpStrings.OnboardingLaterButton, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.DismissOnboardingCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <!-- 1. Connected Browsers (STRICTLY ABOVE Detected Problem) -->
             <Border
                 x:Name="ConnectedBrowsersCard"

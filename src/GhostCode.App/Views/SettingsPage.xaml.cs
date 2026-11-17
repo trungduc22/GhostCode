@@ -1,9 +1,8 @@
+using GhostCode.App.Interop;
 using GhostCode.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
 
 namespace GhostCode.App.Views;
 
@@ -17,17 +16,8 @@ public sealed partial class SettingsPage : Page
 
     public MainViewModel ViewModel { get; }
 
-    private async Task<string?> PickFolderAsync()
-    {
-        var picker = new FolderPicker
-        {
-            SuggestedStartLocation = PickerLocationId.DocumentsLibrary
-        };
-        picker.FileTypeFilter.Add("*");
-        InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
-        var folder = await picker.PickSingleFolderAsync();
-        return folder?.Path;
-    }
+    private Task<string?> PickFolderAsync() =>
+        FilePickerHelpers.PickSingleFolderAsync(App.MainWindowHandle);
 
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {

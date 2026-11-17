@@ -152,10 +152,6 @@ public partial class App : Application
 
             var monitor = _serviceProvider.GetRequiredService<MultiDirectoryMonitor>();
             monitor.Start();
-            _ = Task.Run(async () =>
-            {
-                try { await monitor.ReconcileOnceAsync(); } catch { }
-            });
 
             var drive = _serviceProvider.GetRequiredService<GoogleDriveService>();
             drive.StartBackgroundSync();
@@ -165,6 +161,11 @@ public partial class App : Application
 
             var vm = _serviceProvider.GetRequiredService<MainViewModel>();
             await vm.InitializeAsync();
+
+            _ = Task.Run(async () =>
+            {
+                try { await monitor.ReconcileOnceAsync(); } catch { }
+            });
 
             var selfTestReportPath = Environment.GetEnvironmentVariable("GHOSTCODE_SELF_TEST_REPORT");
             if (!string.IsNullOrWhiteSpace(selfTestReportPath))

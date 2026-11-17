@@ -74,14 +74,14 @@ public sealed class BackupHealthAndRecoveryService
     public async Task<BackupHealthSnapshot> EvaluateHealthAsync(bool attemptWatchRecovery = true, CancellationToken ct = default)
     {
         var watches = _monitor.GetActiveWatches();
-        if (attemptWatchRecovery && _config.WatchedFolders.Any(w => w.Enabled) && watches.Any(w => !w.IsWatching))
+        if (attemptWatchRecovery && _config.WatchedFolders.Any(w => w.Enabled) && watches.Any(w => !w.IsWatching && !w.IsCoveredByParent))
         {
             _monitor.ReloadWatches();
             watches = _monitor.GetActiveWatches();
         }
 
         int activeWatches = watches.Count(w => w.IsWatching);
-        int erroredWatches = watches.Count(w => !w.IsWatching);
+        int erroredWatches = watches.Count(w => !w.IsWatching && !w.IsCoveredByParent);
         bool enabledFolderConfigured = _config.WatchedFolders.Any(w => w.Enabled);
         bool monitoringActive = activeWatches > 0 && erroredWatches == 0;
 
@@ -91,6 +91,7 @@ public sealed class BackupHealthAndRecoveryService
         var stats = await _store.GetStatsAsync(ct);
         var allVersions = await _store.QueryVersionsAsync(limit: 5000, ct: ct);
         int cloudOnlyPending = allVersions.Count(v => !v.IsLocalAvailable);
+        bool isVi = _config.Language == UiLanguage.Vi;
 
         BackupProtectionState state;
         string summary;
@@ -98,27 +99,29 @@ public sealed class BackupHealthAndRecoveryService
         {
             state = BackupProtectionState.Unhealthy;
             summary = !dbOk
-                ? $"SQLite database unhealthy: {dbDetail}"
-                : $"Low disk space in ArchiveDir: {diskMb:F1} MB free (< {MinRequiredDiskMb:F0} MB)";
+                ? (isVi ? $"Cơ sở dữ liệu lưu trữ gặp lỗi: {dbDetail}" : $"SQLite database unhealthy: {dbDetail}")
+                : (isVi ? $"Dung lượng ổ đĩa lưu trữ thấp: còn {diskMb:F1} MB (< {MinRequiredDiskMb:F0} MB)" : $"Low disk space in ArchiveDir: {diskMb:F1} MB free (< {MinRequiredDiskMb:F0} MB)");
         }
         else if (!enabledFolderConfigured || erroredWatches > 0 || activeWatches == 0)
         {
             state = erroredWatches > 0 ? BackupProtectionState.Unhealthy : BackupProtectionState.Paused;
             summary = erroredWatches > 0
-                ? $"{erroredWatches} monitored folder watcher(s) failed — backup incomplete"
-                : "Monitoring is inactive (no active watched folders)";
+                ? (isVi ? $"{erroredWatches} thư mục giám sát gặp lỗi — sao lưu chưa đầy đủ" : $"{erroredWatches} monitored folder watcher(s) failed — backup incomplete")
+                : (isVi ? "Chưa theo dõi thư mục nào. Hãy chọn thư mục chứa mã nguồn để bắt đầu bảo vệ." : "Monitoring is inactive (no active watched folders)");
         }
         else if (stats.FailedUploads > 0 || _config.SyncPausedManually)
         {
             state = _config.SyncPausedManually ? BackupProtectionState.Paused : BackupProtectionState.Degraded;
             summary = _config.SyncPausedManually
-                ? $"Local backups protected ({activeWatches} folders) • Cloud sync paused by user"
-                : $"Local backups protected • {stats.FailedUploads} cloud upload(s) failed ({stats.PendingUploads} pending)";
+                ? (isVi ? $"Đã bảo vệ cục bộ ({activeWatches} thư mục) • Đồng bộ đám mây đang tạm dừng" : $"Local backups protected ({activeWatches} folders) • Cloud sync paused by user")
+                : (isVi ? $"Đã bảo vệ cục bộ • {stats.FailedUploads} tệp tải lên thất bại ({stats.PendingUploads} đang chờ)" : $"Local backups protected • {stats.FailedUploads} cloud upload(s) failed ({stats.PendingUploads} pending)");
         }
         else
         {
             state = BackupProtectionState.Protected;
-            summary = $"Protected ({activeWatches} active folder(s), {diskMb:F0} MB free, SQLite OK)";
+            summary = isVi
+                ? $"Đang bảo vệ {activeWatches} thư mục • {stats.TotalVersions} phiên bản • Còn {diskMb:F0} MB trống"
+                : $"Protected ({activeWatches} active folder(s), {stats.TotalVersions} version(s), {diskMb:F0} MB free)";
         }
 
         if (state == BackupProtectionState.Unhealthy && _notifications is not null)
@@ -126,7 +129,7 @@ public sealed class BackupHealthAndRecoveryService
             await _notifications.NotifyAsync(
                 "backup",
                 "Error",
-                "GhostCode — Backup Protection Warning",
+                isVi ? "GhostCode — Cảnh báo bảo vệ sao lưu" : "GhostCode — Backup Protection Warning",
                 summary,
                 $"health_{state}_{erroredWatches}_{dbOk}",
                 "open",
@@ -250,7 +253,9 @@ public sealed class BackupHealthAndRecoveryService
         var checkedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _lastRecoveryVerifiedUnixMs = checkedAt;
 
-        var summary = $"Checked {versions.Count} version(s): {localOk} local OK, {localMissing} missing, {localCorrupt} corrupted, {cloudOnlyCount} cloud-only; Remote: {remoteVerified} present, {remoteSampleVerified} byte-verified.";
+        var summary = _config.Language == UiLanguage.Vi
+            ? $"Đã kiểm tra {versions.Count} phiên bản: {localOk} hợp lệ cục bộ, {localMissing} thiếu tệp, {localCorrupt} lỗi toàn vẹn, {cloudOnlyCount} chỉ trên Cloud; Đám mây: {remoteVerified} hiện diện, {remoteSampleVerified} đã xác minh byte."
+            : $"Checked {versions.Count} version(s): {localOk} local OK, {localMissing} missing, {localCorrupt} corrupted, {cloudOnlyCount} cloud-only; Remote: {remoteVerified} present, {remoteSampleVerified} byte-verified.";
         await _store.RecordArchiveHistoryEventAsync(new ArchiveHistoryEvent(
             Guid.NewGuid().ToString("N"),
             "RecoveryCheck",
@@ -265,7 +270,7 @@ public sealed class BackupHealthAndRecoveryService
             await _notifications.NotifyAsync(
                 "integrity",
                 "Error",
-                "GhostCode — Recovery Check Found Issues",
+                _config.Language == UiLanguage.Vi ? "GhostCode — Phát hiện sự cố toàn vẹn sao lưu" : "GhostCode — Recovery Check Found Issues",
                 summary,
                 $"rec_{localCorrupt}_{localMissing}",
                 "open",

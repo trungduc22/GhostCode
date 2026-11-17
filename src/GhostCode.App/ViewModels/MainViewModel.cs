@@ -89,9 +89,12 @@ public sealed record ArchiveHistoryEventRow(ArchiveHistoryEvent Event)
 public sealed record ActiveWatchRow(ActiveWatchInfo Info)
 {
     public string FolderPath => Info.FolderPath;
+    public bool IsWatching => Info.IsWatching || Info.IsCoveredByParent;
     public string StatusText => Info.IsWatching
         ? (Info.Recursive ? "Watching (Recursive)" : "Watching (Top-Level)")
-        : $"Error: {Info.Error}";
+        : Info.IsCoveredByParent
+            ? (Info.Error ?? "Covered by parent folder")
+            : $"Error: {Info.Error}";
 }
 
 public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Language)
@@ -346,6 +349,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private InfoBarSeverity _infoBarSeverity = InfoBarSeverity.Informational;
     private bool _isBusy;
     private bool _suppressFolderSync;
+    private bool _onboardingDismissedForSession;
 
     public MainViewModel(
         GhostCodeConfig config,
@@ -433,9 +437,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RunSelectedSampleCommand = new AsyncRelayCommand(RunSelectedSampleAsync);
         RunAllSamplesCommand = new AsyncRelayCommand(RunAllSamplesAsync);
         DeleteSelectedSampleCommand = new AsyncRelayCommand(DeleteSelectedSampleAsync);
+        DismissOnboardingCommand = new RelayCommand(DismissOnboarding);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
+        _monitor.ReconciliationCompleted += OnReconciliationCompleted;
         _bridge.ContextChanged += OnContextChanged;
         _bridge.BrowserConnectionsChanged += OnBrowserConnectionsChanged;
         _bridge.ProblemStatementReceived += OnProblemStatementReceived;
@@ -541,6 +547,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand RunSelectedSampleCommand { get; }
     public IAsyncRelayCommand RunAllSamplesCommand { get; }
     public IAsyncRelayCommand DeleteSelectedSampleCommand { get; }
+    public IRelayCommand DismissOnboardingCommand { get; }
 
     public ExpansionTextBundle ExpStrings
     {
@@ -565,6 +572,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(TitleBarDriveBadgeText));
                 OnPropertyChanged(nameof(DriveConnectionStatusText));
                 OnPropertyChanged(nameof(NoFoldersVisible));
+                OnPropertyChanged(nameof(OnboardingCardVisibility));
+                _ = RefreshHealthAsync();
             }
         }
     }
@@ -590,6 +599,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool HasConnectedBrowser => ConnectedBrowsers.Count > 0;
     public Visibility NoConnectedBrowsersVisibility => HasConnectedBrowser ? Visibility.Collapsed : Visibility.Visible;
     public Visibility NoFoldersVisible => WatchedFolders.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility OnboardingCardVisibility => (WatchedFolders.Count(w => w.IsEnabled) == 0 && ActiveWatches.Count(w => w.IsWatching) == 0 && !_onboardingDismissedForSession)
+        ? Visibility.Visible
+        : Visibility.Collapsed;
 
     public string TitleBarBrowserBadgeText
     {
@@ -1348,8 +1360,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public async Task RefreshHealthAsync()
     {
         var snap = await _healthService.EvaluateHealthAsync(attemptWatchRecovery: false);
-        BackupProtectionBadge = snap.ProtectionState.ToString();
+        BackupProtectionBadge = UiStrings.ForProtectionBadge(snap.ProtectionState, _config.Language);
         BackupHealthSummary = snap.StatusSummary;
+        OnPropertyChanged(nameof(OnboardingCardVisibility));
     }
 
     public async Task RunRecoveryCheckAsync()
@@ -1435,6 +1448,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ActiveWatches.Clear();
         foreach (var w in watches)
             ActiveWatches.Add(new ActiveWatchRow(w));
+        OnPropertyChanged(nameof(OnboardingCardVisibility));
     }
 
     public async Task RefreshStatsAndEventsAsync()
@@ -2044,9 +2058,55 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _suppressFolderSync = true;
         WatchedFolders.Add(new WatchedFolderItem(new WatchedFolderConfig(folderPath, true, true, Path.GetFileName(folderPath)), SyncWatchedFoldersToConfigAndReload));
         _suppressFolderSync = false;
+        _onboardingDismissedForSession = false;
         SyncWatchedFoldersToConfigAndReload();
         OnPropertyChanged(nameof(NoFoldersVisible));
-        ShowInfoBar("Folder Added", $"Now monitoring: {folderPath}", InfoBarSeverity.Success);
+        OnPropertyChanged(nameof(OnboardingCardVisibility));
+        _ = Task.Run(async () => { try { await _monitor.ReconcileOnceAsync(); } catch { } });
+        _ = RefreshHealthAsync();
+        ShowInfoBar(
+            _config.Language == UiLanguage.Vi ? "Đã thêm thư mục theo dõi" : "Folder Added",
+            _config.Language == UiLanguage.Vi ? $"Đang theo dõi: {folderPath}" : $"Now monitoring: {folderPath}",
+            InfoBarSeverity.Success);
+    }
+
+    public IReadOnlyList<WatchedFolderConfig> DiscoverCandidateFolders()
+    {
+        return KnownFoldersResolver.DiscoverDefaultWatchedFolders()
+            .Where(d => !WatchedFolders.Any(w => string.Equals(w.Path, d.Path, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    public async Task AddWatchedFoldersAndReconcileAsync(IEnumerable<WatchedFolderConfig> folders)
+    {
+        int added = 0;
+        _suppressFolderSync = true;
+        foreach (var f in folders)
+        {
+            if (string.IsNullOrWhiteSpace(f.Path) || KnownFoldersResolver.IsDriveRoot(f.Path) || _monitor.IsExcludedOrOutputDirectory(f.Path))
+                continue;
+            if (WatchedFolders.Any(w => string.Equals(w.Path, f.Path, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            WatchedFolders.Add(new WatchedFolderItem(f, SyncWatchedFoldersToConfigAndReload));
+            added++;
+        }
+        _suppressFolderSync = false;
+
+        if (added > 0)
+        {
+            _onboardingDismissedForSession = false;
+            SyncWatchedFoldersToConfigAndReload();
+            OnPropertyChanged(nameof(NoFoldersVisible));
+            OnPropertyChanged(nameof(OnboardingCardVisibility));
+            await _monitor.ReconcileOnceAsync();
+            await RefreshAllAsync();
+        }
+    }
+
+    private void DismissOnboarding()
+    {
+        _onboardingDismissedForSession = true;
+        OnPropertyChanged(nameof(OnboardingCardVisibility));
     }
 
     public void RemoveWatchedFolder(WatchedFolderItem item)
@@ -2056,7 +2116,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _suppressFolderSync = false;
         SyncWatchedFoldersToConfigAndReload();
         OnPropertyChanged(nameof(NoFoldersVisible));
-        ShowInfoBar("Folder Removed", item.Path, InfoBarSeverity.Informational);
+        OnPropertyChanged(nameof(OnboardingCardVisibility));
+        _ = RefreshHealthAsync();
+        ShowInfoBar(
+            _config.Language == UiLanguage.Vi ? "Đã gỡ thư mục" : "Folder Removed",
+            item.Path,
+            InfoBarSeverity.Informational);
     }
 
     public void SetArchiveDirectory(string newPath)
@@ -2145,6 +2210,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveConfigSafe();
         _monitor.ReloadWatches();
         RefreshProcessesAndWatches();
+        _ = RefreshHealthAsync();
     }
 
     private void SaveConfigSafe()
@@ -2636,6 +2702,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         });
     }
 
+    private void OnReconciliationCompleted(int archivedCount)
+    {
+        _dispatch(() =>
+        {
+            _ = RefreshAllAsync();
+        });
+    }
+
     private void OnDriveSyncCompleted(DriveSyncReport report) => _dispatch(() => { _ = RefreshAllAsync(); });
 
     private void OnAuthStageChanged(OAuthConnectionStage stage, string message) => _dispatch(() => { OAuthStageText = $"{stage}: {message}"; });
@@ -2655,6 +2729,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _execCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;
         _monitor.EventRecorded -= OnMonitorEventRecorded;
+        _monitor.ReconciliationCompleted -= OnReconciliationCompleted;
         _bridge.ContextChanged -= OnContextChanged;
         _bridge.BrowserConnectionsChanged -= OnBrowserConnectionsChanged;
         _bridge.ProblemStatementReceived -= OnProblemStatementReceived;
