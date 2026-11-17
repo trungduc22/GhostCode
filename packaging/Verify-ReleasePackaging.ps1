@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+. (Join-Path $repoRoot "packaging\Shutdown-GhostCodeByPath.ps1")
 if ([string]::IsNullOrWhiteSpace($ReleaseDir)) {
     $ReleaseDir = Join-Path $repoRoot "artifacts\Release"
 }
@@ -43,6 +44,7 @@ function Assert-BackupWorksFromExe([string]$ExePath, [string]$Tag) {
     Set-Content -Path $cfgPath -Value $cfg -Encoding UTF8
 
     $prevEnv = $env:GHOSTCODE_CONFIG_PATH
+    $proc = $null
     try {
         $env:GHOSTCODE_CONFIG_PATH = $cfgPath
         $proc = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -PassThru
@@ -65,10 +67,21 @@ function Assert-BackupWorksFromExe([string]$ExePath, [string]$Tag) {
             throw "$Tag failed to detect and back up '$sampleCpp' outside developer repo tree."
         }
         Write-Host "  [PASS] $Tag launched outside repo and backed up $($archived[0].Name)."
+
+        $graceful = Stop-GhostCodeGracefullyByPath -ExecutablePath $ExePath -TimeoutSeconds 10
+        if (-not $graceful) {
+            throw "$Tag failed to respond to path-scoped graceful shutdown signal within 10 seconds."
+        }
+        if (-not $proc.HasExited) {
+            [void]$proc.WaitForExit(2000)
+        }
+        if ($proc.ExitCode -ne 0) {
+            throw "$Tag exited with non-zero code $($proc.ExitCode) after graceful shutdown."
+        }
+        Write-Host "  [PASS] $Tag exited cleanly (exit code 0) via path-scoped graceful shutdown."
     }
     finally {
-        Get-Process -Name "GhostCode.App" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 300
+        [void](Stop-GhostCodeGracefullyByPath -ExecutablePath $ExePath -TimeoutSeconds 5)
         $env:GHOSTCODE_CONFIG_PATH = $prevEnv
     }
 }
@@ -146,7 +159,12 @@ try {
     }
 }
 finally {
-    Get-Process -Name "GhostCode.App" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if ($portableExe -and (Test-Path $portableExe)) {
+        [void](Stop-GhostCodeGracefullyByPath -ExecutablePath $portableExe -TimeoutSeconds 3)
+    }
+    if ($installedExe -and (Test-Path $installedExe)) {
+        [void](Stop-GhostCodeGracefullyByPath -ExecutablePath $installedExe -TimeoutSeconds 3)
+    }
     # Restore live AppData NativeMessaging wrapper if a companion executable exists
     $repoReleaseExe = $RestoreExePath
     $nmDir = Join-Path $env:LOCALAPPDATA "GhostCode\NativeMessaging"

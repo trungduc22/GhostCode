@@ -56,6 +56,19 @@ Name: "{autodesktop}\GhostCode"; Filename: "{app}\GhostCode.App.exe"; WorkingDir
 Filename: "{app}\GhostCode.App.exe"; Description: "{cm:LaunchProgram,GhostCode}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+const
+  EVENT_MODIFY_STATE = $0002;
+
+var
+  WasInstalledAppRunning: Boolean;
+
+function OpenEventW(dwDesiredAccess: DWORD; bInheritHandle: BOOL; lpName: string): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(hEvent: THandle): BOOL;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseWinHandle(hObject: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
 function EscapeJsonBackslashes(const S: String): String;
 begin
   Result := S;
@@ -142,51 +155,180 @@ begin
   end;
 end;
 
+function BuildExitEventName(const ExePath: String): String;
+var
+  Normalized, FullHash: String;
+begin
+  Normalized := Lowercase(Trim(ExePath));
+  FullHash := Lowercase(GetSHA256OfUnicodeString(Normalized));
+  Result := 'Local\GhostCode_Exit_' + Copy(FullHash, 1, 16);
+end;
+
+function GetRunningProcessCountForExe(const ExePath: String): Integer;
+var
+  Locator, Services, Processes, Proc: Variant;
+  I: Integer;
+  TargetLower, ProcPath: String;
+begin
+  Result := 0;
+  TargetLower := Lowercase(Trim(ExePath));
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Services := Locator.ConnectServer('.', 'root\cimv2');
+    Processes := Services.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE Name = ''GhostCode.App.exe''');
+    for I := 0 to Processes.Count - 1 do
+    begin
+      Proc := Processes.ItemIndex(I);
+      if not VarIsNull(Proc.ExecutablePath) then
+      begin
+        ProcPath := Lowercase(Trim(String(Proc.ExecutablePath)));
+        if ProcPath = TargetLower then
+          Result := Result + 1;
+      end;
+    end;
+  except
+    Result := 0;
+  end;
+end;
+
+function TrySignalGracefulExitForExe(const ExePath: String): Boolean;
+var
+  EventName: String;
+  H: THandle;
+begin
+  Result := False;
+  EventName := BuildExitEventName(ExePath);
+  H := OpenEventW(EVENT_MODIFY_STATE, False, EventName);
+  if H <> 0 then
+  begin
+    try
+      Result := SetEvent(H);
+    finally
+      CloseWinHandle(H);
+    end;
+  end;
+end;
+
+function WaitForExeGracefulShutdown(const ExePath: String; MaxWaitMs: Integer): Boolean;
+var
+  Elapsed: Integer;
+begin
+  Elapsed := 0;
+  while Elapsed < MaxWaitMs do
+  begin
+    TrySignalGracefulExitForExe(ExePath);
+    Sleep(200);
+    Elapsed := Elapsed + 200;
+    if GetRunningProcessCountForExe(ExePath) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+  Result := GetRunningProcessCountForExe(ExePath) = 0;
+end;
+
+function EnsureInstalledExeStoppedGracefully(const ExePath, ActionLabel: String): Boolean;
+var
+  Choice: Integer;
+begin
+  if GetRunningProcessCountForExe(ExePath) = 0 then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  if WaitForExeGracefulShutdown(ExePath, 8000) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  while (not WizardSilent()) and (GetRunningProcessCountForExe(ExePath) > 0) do
+  begin
+    Choice := SuppressibleMsgBox(
+      'GhostCode running from "' + ExePath + '" is still flushing its database or sync queue before ' + ActionLabel + '.' + #13#10 + #13#10 +
+      'Click Retry to ask GhostCode to finish exiting cleanly, or Cancel to abort without losing data.',
+      mbError, MB_RETRYCANCEL, IDCANCEL);
+    if Choice <> IDRETRY then
+    begin
+      Result := False;
+      Exit;
+    end;
+    if WaitForExeGracefulShutdown(ExePath, 8000) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+
+  Result := GetRunningProcessCountForExe(ExePath) = 0;
+end;
+
 function InitializeUninstall(): Boolean;
 var
-  ResultCode: Integer;
+  InstalledExe: String;
 begin
+  InstalledExe := ExpandConstant('{app}\GhostCode.App.exe');
   UnregisterAllNativeMessagingHosts();
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(350);
+  if not EnsureInstalledExeStoppedGracefully(InstalledExe, 'uninstall') then
+  begin
+    if not WizardSilent() then
+      SuppressibleMsgBox('Uninstall cancelled because the installed GhostCode process did not exit cleanly.', mbInformation, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
   Result := True;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  ResultCode: Integer;
+  InstalledExe: String;
 begin
+  InstalledExe := ExpandConstant('{app}\GhostCode.App.exe');
+  WasInstalledAppRunning := GetRunningProcessCountForExe(InstalledExe) > 0;
+
   // Prevent open browsers (Thorium/Edge/Chrome/Firefox) from respawning Native Messaging host while files upgrade
   UnregisterAllNativeMessagingHosts();
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(350);
+
+  if not EnsureInstalledExeStoppedGracefully(InstalledExe, 'upgrade') then
+  begin
+    Result := 'GhostCode running at "' + InstalledExe + '" did not finish shutting down cleanly. Installation aborted safely without overwriting files.';
+    Exit;
+  end;
   Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  InstalledExe: String;
 begin
   if CurStep = ssInstall then
   begin
+    InstalledExe := ExpandConstant('{app}\GhostCode.App.exe');
     UnregisterAllNativeMessagingHosts();
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Sleep(250);
+    WaitForExeGracefulShutdown(InstalledExe, 4000);
   end
   else if CurStep = ssPostInstall then
   begin
-    RegisterAllNativeMessagingHosts(ExpandConstant('{app}\GhostCode.App.exe'));
+    InstalledExe := ExpandConstant('{app}\GhostCode.App.exe');
+    RegisterAllNativeMessagingHosts(InstalledExe);
+    if WasInstalledAppRunning and WizardSilent() and FileExists(InstalledExe) then
+    begin
+      Exec(InstalledExe, '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
+    end;
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  ResultCode: Integer;
+  InstalledExe: String;
 begin
   if CurUninstallStep = usUninstall then
   begin
+    InstalledExe := ExpandConstant('{app}\GhostCode.App.exe');
     UnregisterAllNativeMessagingHosts();
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM GhostCode.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Sleep(250);
+    WaitForExeGracefulShutdown(InstalledExe, 4000);
   end;
 end;

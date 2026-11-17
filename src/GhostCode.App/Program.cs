@@ -1,4 +1,5 @@
 using GhostCode.Core.Browser;
+using GhostCode.Core.Interop;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using WinRT;
@@ -12,7 +13,13 @@ public static class Program
     {
         if (NativeMessagingHost.IsNativeMessagingInvocation(args))
         {
-            return NativeMessagingHost.RunStdioHostAsync(args).GetAwaiter().GetResult();
+            using var shutdownCts = ProcessShutdownSignal.CreateLinkedCancellationTokenSource(
+                CancellationToken.None,
+                out var signalReg);
+            using (signalReg)
+            {
+                return NativeMessagingHost.RunStdioHostAsync(args, shutdownCts.Token).GetAwaiter().GetResult();
+            }
         }
 
         ComWrappersSupport.InitializeComWrappers();

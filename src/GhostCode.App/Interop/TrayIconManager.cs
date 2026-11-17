@@ -162,6 +162,12 @@ public sealed class TrayIconManager : IDisposable
         _onExitRequested();
     }
 
+    public void PrepareForExternalShutdown()
+    {
+        _isExiting = true;
+        RemoveTrayIcon();
+    }
+
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (!_isExiting && _viewModel.MinimizeToTrayOnClose)

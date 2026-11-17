@@ -326,6 +326,24 @@ public sealed partial class SqliteArchiveStore : IAsyncDisposable
         }
     }
 
+    public async Task CheckpointWalAsync(CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            _writeLock.Release();
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         _writeLock.Dispose();

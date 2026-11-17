@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+. (Join-Path $repoRoot "packaging\Shutdown-GhostCodeByPath.ps1")
 $releaseRoot = Join-Path $repoRoot "artifacts\Release"
 $stageRoot = Join-Path $releaseRoot "_stage"
 $stageDir = Join-Path $stageRoot "GhostCode-win-x64"
@@ -118,11 +119,20 @@ else {
 }
 
 # Sync staged payload into artifacts\Release\GhostCode-win-x64 cleanly after ZIP + EXE are already finalized
-Get-Process -Name "GhostCode.App" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-if (Test-Path $outDir) { Remove-Item -Path $outDir -Recurse -Force -ErrorAction SilentlyContinue }
-if (-not (Test-Path $outDir)) {
-    Move-Item -Path $stageDir -Destination $outDir -Force
+$outExe = Join-Path $outDir "GhostCode.App.exe"
+$canReplaceOutDir = $true
+if (Test-Path $outExe) {
+    $stopped = Stop-GhostCodeGracefullyByPath -ExecutablePath $outExe -TimeoutSeconds 6
+    if (-not $stopped) {
+        Write-Warning "Skipping replacement of '$outDir' because a GhostCode.App.exe instance from that exact directory did not exit cleanly."
+        $canReplaceOutDir = $false
+    }
+}
+if ($canReplaceOutDir) {
+    if (Test-Path $outDir) { Remove-Item -Path $outDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if (-not (Test-Path $outDir)) {
+        Move-Item -Path $stageDir -Destination $outDir -Force
+    }
 }
 if (Test-Path $stageRoot) { Remove-Item -Path $stageRoot -Recurse -Force -ErrorAction SilentlyContinue }
 

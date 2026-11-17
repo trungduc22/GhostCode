@@ -75,7 +75,15 @@ public sealed class NativeMessagingHost
         while (!ct.IsCancellationRequested)
         {
             var lenBuf = new byte[4];
-            int headerRead = await ReadExactAsync(input, lenBuf, ct);
+            int headerRead;
+            try
+            {
+                headerRead = await ReadExactAsync(input, lenBuf, ct).WaitAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return 0;
+            }
             if (headerRead == 0)
                 return 0;
             if (headerRead < 4)

@@ -6,6 +6,7 @@ using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
 using GhostCode.Core.Execution;
+using GhostCode.Core.Interop;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Notifications;
@@ -21,6 +22,7 @@ public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
     private MainWindow? _window;
+    private IDisposable? _shutdownSignalRegistration;
     private bool _shuttingDown;
 
     public App()
@@ -145,6 +147,19 @@ public partial class App : Application
 
         _window = _serviceProvider.GetRequiredService<MainWindow>();
         _window.AttachTray(() => _ = ShutdownAndExitAsync());
+        var dispatcherQueue = _window.DispatcherQueue;
+        _shutdownSignalRegistration = ProcessShutdownSignal.RegisterListener(() =>
+        {
+            try
+            {
+                if (!dispatcherQueue.TryEnqueue(() => _ = ShutdownAndExitAsync()))
+                    _ = ShutdownAndExitAsync();
+            }
+            catch
+            {
+                _ = ShutdownAndExitAsync();
+            }
+        });
         _window.Activate();
 
         var vmStartupWarnings = new List<string>();
@@ -234,6 +249,9 @@ public partial class App : Application
             return;
         _shuttingDown = true;
 
+        Interlocked.Exchange(ref _shutdownSignalRegistration, null)?.Dispose();
+        _window?.TrayManager?.PrepareForExternalShutdown();
+
         try
         {
             if (_serviceProvider is not null)
@@ -242,6 +260,7 @@ public partial class App : Application
                 await _serviceProvider.GetRequiredService<AuthenticatedBrowserBridge>().StopAsync();
                 await _serviceProvider.GetRequiredService<GoogleDriveService>().StopAsync();
                 await _serviceProvider.GetRequiredService<OneDriveService>().StopAsync();
+                await _serviceProvider.GetRequiredService<SqliteArchiveStore>().CheckpointWalAsync();
                 _serviceProvider.GetRequiredService<MainViewModel>().Dispose();
                 _window?.DisposeTray();
                 await _serviceProvider.DisposeAsync();
@@ -253,6 +272,7 @@ public partial class App : Application
         }
         finally
         {
+            try { _window?.Close(); } catch { }
             Exit();
         }
     }
