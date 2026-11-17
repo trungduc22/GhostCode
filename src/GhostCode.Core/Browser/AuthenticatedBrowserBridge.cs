@@ -110,6 +110,7 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
 
     public int HeartbeatTimeoutMs { get; set; } = 15_000;
     public int ListeningPort { get; private set; }
+    public string? ListenerStartError { get; private set; }
     public string PairingSecret => _config.BridgeAuthToken;
     public string BridgeToken => _config.BridgeAuthToken;
 
@@ -251,9 +252,20 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         if (_cts is not null)
             return;
         _cts = new CancellationTokenSource();
+        ListenerStartError = null;
 
-        _listener = new TcpListener(IPAddress.Loopback, _config.HttpPort);
-        _listener.Start();
+        try
+        {
+            _listener = new TcpListener(IPAddress.Loopback, _config.HttpPort);
+            _listener.Start();
+        }
+        catch (SocketException ex) when (_config.HttpPort != 0)
+        {
+            ListenerStartError = $"Port {_config.HttpPort} unavailable ({ex.Message}); using fallback port.";
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+        }
+
         ListeningPort = ((IPEndPoint)_listener.LocalEndpoint).Port;
         RotateSessionToken();
         WritePairingFileIfConfigured();

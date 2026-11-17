@@ -139,6 +139,7 @@ public partial class App : Application
         _window.AttachTray(() => _ = ShutdownAndExitAsync());
         _window.Activate();
 
+        var vmStartupWarnings = new List<string>();
         try
         {
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
@@ -148,19 +149,30 @@ public partial class App : Application
             await archiver.ReconcileAfterCrashAsync();
 
             var bridge = _serviceProvider.GetRequiredService<AuthenticatedBrowserBridge>();
-            bridge.Start();
+            try { bridge.Start(); }
+            catch (Exception ex) { vmStartupWarnings.Add($"Browser Bridge: {ex.Message}"); }
+            if (!string.IsNullOrWhiteSpace(bridge.ListenerStartError))
+                vmStartupWarnings.Add(bridge.ListenerStartError);
 
             var monitor = _serviceProvider.GetRequiredService<MultiDirectoryMonitor>();
-            monitor.Start();
+            try { monitor.Start(); }
+            catch (Exception ex) { vmStartupWarnings.Add($"Monitor: {ex.Message}"); }
 
-            var drive = _serviceProvider.GetRequiredService<GoogleDriveService>();
-            drive.StartBackgroundSync();
+            try { _serviceProvider.GetRequiredService<GoogleDriveService>().StartBackgroundSync(); }
+            catch (Exception ex) { vmStartupWarnings.Add($"Google Drive: {ex.Message}"); }
 
-            var oneDrive = _serviceProvider.GetRequiredService<OneDriveService>();
-            oneDrive.StartBackgroundSync();
+            try { _serviceProvider.GetRequiredService<OneDriveService>().StartBackgroundSync(); }
+            catch (Exception ex) { vmStartupWarnings.Add($"OneDrive: {ex.Message}"); }
 
             var vm = _serviceProvider.GetRequiredService<MainViewModel>();
             await vm.InitializeAsync();
+            if (vmStartupWarnings.Count > 0)
+            {
+                vm.ShowInfoBar(
+                    config.Language == UiLanguage.Vi ? "Cảnh báo khởi động" : "Startup Warning",
+                    string.Join(" ", vmStartupWarnings),
+                    InfoBarSeverity.Warning);
+            }
 
             _ = Task.Run(async () =>
             {

@@ -36,4 +36,18 @@
   <ItemGroup>
     <ProjectReference Include="..\GhostCode.Core\GhostCode.Core.csproj" />
   </ItemGroup>
+
+  <Target Name="IncludeCompiledXamlInPublish" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <_CompiledXbfFiles Include="$(OutDir)**\*.xbf" />
+      <ResolvedFileToPublish Include="@(_CompiledXbfFiles)">
+        <RelativePath>%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(OutDir)$(AssemblyName).pri" Condition="Exists('$(OutDir)$(AssemblyName).pri')">
+        <RelativePath>$(AssemblyName).pri</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>
