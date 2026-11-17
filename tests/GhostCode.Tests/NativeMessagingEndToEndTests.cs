@@ -55,7 +55,7 @@ public sealed class NativeMessagingEndToEndTests : IDisposable
             installedHostExeOverride: installedExe);
         Assert.True(installedRes.Success);
 
-        var cmdPath = Path.Combine(appDataDir, "NativeMessaging", "com.ghostcode.bridge.thorium.cmd");
+        var cmdPath = Path.Combine(Path.GetDirectoryName(installedRes.NativeManifestPath)!, "com.ghostcode.bridge.thorium.cmd");
         Assert.Contains(installedExe, File.ReadAllText(cmdPath));
 
         // Portable instance runs alongside installed copy: must preserve existing installed host wrapper!
@@ -133,10 +133,10 @@ public sealed class NativeMessagingEndToEndTests : IDisposable
                     platform = "Ptit",
                     problem_code = "C04032",
                     problem_title = "Liệt kê các số xuất hiện",
-                    problem_url = "https://code.ptit.edu.vn/student/question/C04032",
-                    tab_title = "C04032 - CodePTIT",
+                    url = "https://code.ptit.edu.vn/student/question/C04032",
+                    tab_active = true,
                     browser_name = "Thorium",
-                    detected_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 }
             });
             using var ctxDoc = await ReadNativeMessageAsync(stdout, TimeSpan.FromSeconds(10));
