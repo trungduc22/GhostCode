@@ -36,7 +36,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "[2/5] Staging clean browser extensions (zero user secrets)..."
+Write-Host "[2/5] Staging clean browser extensions & license notices (zero user secrets)..."
+foreach ($docFile in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+    $srcDoc = Join-Path $repoRoot $docFile
+    if (-not (Test-Path $srcDoc)) {
+        throw "Required license/notice file missing from repo root: $srcDoc"
+    }
+    Copy-Item -Path $srcDoc -Destination (Join-Path $stageDir $docFile) -Force
+}
 foreach ($extDir in @("browser-extension", "browser-extension-firefox")) {
     $src = Join-Path $repoRoot $extDir
     $dst = Join-Path $stageDir $extDir
@@ -48,11 +55,13 @@ foreach ($extDir in @("browser-extension", "browser-extension-firefox")) {
     }
 }
 
-Write-Host "[3/5] Verifying XAML .xbf/.pri, assets, and zero secret leaks..."
+Write-Host "[3/5] Verifying XAML .xbf/.pri, assets, licenses, and zero secret leaks..."
 $requiredPaths = @(
     "GhostCode.App.exe",
     "GhostCode.Core.dll",
     "GhostCode.App.pri",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "Assets\app.ico",
     "Assets\ghostcode_logo.png",
     "browser-extension\manifest.json",

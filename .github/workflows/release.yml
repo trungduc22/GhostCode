@@ -87,6 +87,8 @@ jobs:
             "GhostCode.App.exe",
             "GhostCode.Core.dll",
             "GhostCode.App.pri",
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
             "Assets\app.ico",
             "Assets\ghostcode_logo.png",
             "browser-extension\manifest.json",

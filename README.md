@@ -1,5 +1,7 @@
 # GhostCode
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Native Windows 10/11 (x64) WinUI 3 companion for automatic local-first source-code preservation, active problem detection, built-in compilation & test execution, and cloud archive sync.**
 
 ![GhostCode Dashboard](artifacts/screenshots/01_dashboard.png)
@@ -81,12 +83,33 @@ Prerequisites: **.NET 10 SDK** (`x64`) and **Inno Setup 6** (optional, required 
 # Restore & build Release x64
 dotnet build GhostCode.sln -c Release -p:Platform=x64 -warnaserror
 
-# Run automated test suite (97 tests on interactive desktop)
-dotnet test GhostCode.sln -c Release -p:Platform=x64
+# Run automated unit & integration tests (CI / headless-safe)
+dotnet test GhostCode.sln -c Release -p:Platform=x64 --no-build --filter "FullyQualifiedName!~Phase7WinUiFunctionalTests"
+
+# Run full test suite including interactive WinUI 3 UI test (Windows desktop session)
+dotnet test GhostCode.sln -c Release -p:Platform=x64 --no-build
 
 # Produce Portable ZIP + Setup EXE + SHA256SUMS.txt under artifacts\Release\
 pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/Build-PortableBundle.ps1 -Version "0.1.0-beta.1"
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a module-by-module overview of the solution, storage model, browser bridge, and cloud providers.
+
+---
+
+## Contributing
+
+Contributions are welcome via Pull Requests against `main`. Before submitting changes:
+1. Build cleanly with warnings as errors (`dotnet build GhostCode.sln -c Release -p:Platform=x64 -warnaserror`).
+2. Run the automated test suite (`dotnet test GhostCode.sln -c Release -p:Platform=x64`) and keep existing database migrations and user data preservation intact.
+
+---
+
+## License
+
+GhostCode is licensed under the **MIT License** — see [LICENSE](LICENSE) for full terms.
+
+Third-party libraries and redistributable runtimes remain under their own respective licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution details.
 
 ---
 

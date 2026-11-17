@@ -17,6 +17,7 @@ AppPublisher=trungduc22
 AppPublisherURL=https://github.com/trungduc22/GhostCode
 AppSupportURL=https://github.com/trungduc22/GhostCode/issues
 AppUpdatesURL=https://github.com/trungduc22/GhostCode/releases
+LicenseFile=..\LICENSE
 DefaultDirName={localappdata}\Programs\GhostCode
 DefaultGroupName=GhostCode
 PrivilegesRequired=lowest

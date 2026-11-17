@@ -79,6 +79,8 @@ try {
     Expand-Archive -Path $portableZip -DestinationPath $portableExtract -Force
     $portableExe = Join-Path $portableExtract "GhostCode.App.exe"
     if (-not (Test-Path $portableExe)) { throw "Portable ZIP missing GhostCode.App.exe" }
+    if (-not (Test-Path (Join-Path $portableExtract "LICENSE"))) { throw "Portable ZIP missing LICENSE" }
+    if (-not (Test-Path (Join-Path $portableExtract "THIRD_PARTY_NOTICES.md"))) { throw "Portable ZIP missing THIRD_PARTY_NOTICES.md" }
     Assert-BackupWorksFromExe -ExePath $portableExe -Tag "Portable"
 
     if (-not $SkipInstallerTest) {
@@ -92,6 +94,8 @@ try {
 
         $installedExe = Join-Path $installTarget "GhostCode.App.exe"
         if (-not (Test-Path $installedExe)) { throw "Installed GhostCode.App.exe missing at $installedExe" }
+        if (-not (Test-Path (Join-Path $installTarget "LICENSE"))) { throw "Installed LICENSE missing" }
+        if (-not (Test-Path (Join-Path $installTarget "THIRD_PARTY_NOTICES.md"))) { throw "Installed THIRD_PARTY_NOTICES.md missing" }
         if (-not (Test-Path (Join-Path $installTarget "GhostCode.App.pri"))) { throw "Installed GhostCode.App.pri missing" }
         if ((Get-ChildItem $installTarget -Recurse -Filter "*.xbf").Count -lt 6) { throw "Installed .xbf missing" }
 
