@@ -102,4 +102,41 @@ public static class CloudTransferHelpers
         progress?.Report(new DriveSyncProgress(pending.Count, pending.Count, string.Empty, 100.0));
         return (ok, failed, lastError);
     }
+
+    public static async Task<(int DeletedCount, int FailedCount, string? LastError)> ProcessPendingRemoteDeletionsAsync(
+        SqliteArchiveStore store,
+        Func<string, CancellationToken, Task<bool>> deleteRemoteFunc,
+        CancellationToken ct = default)
+    {
+        var pendingDeletes = await store.GetPendingRemoteDeletionsAsync(ct);
+        int deleted = 0, failed = 0;
+        string? lastError = null;
+
+        foreach (var tomb in pendingDeletes)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(tomb.DriveFileId))
+                continue;
+
+            try
+            {
+                bool ok = await deleteRemoteFunc(tomb.DriveFileId, ct);
+                await store.MarkRemoteDeletionResultAsync(tomb.Id, ok, ok ? null : "Remote provider rejected deletion.", ct);
+                if (ok) deleted++;
+                else { failed++; lastError = "Remote provider rejected deletion."; }
+            }
+            catch (CloudServiceException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                lastError = ex.Message;
+                await store.MarkRemoteDeletionResultAsync(tomb.Id, false, ex.Message, ct);
+            }
+        }
+
+        return (deleted, failed, lastError);
+    }
 }

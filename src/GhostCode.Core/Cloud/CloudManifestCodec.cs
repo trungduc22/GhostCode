@@ -21,6 +21,7 @@ public static class CloudManifestCodec
         var statements = await store.GetAllProblemStatementsAsync(1000, ct);
         var tests = await store.GetAllSampleTestsAsync(2000, ct);
         var submissions = await store.GetAllSubmissionsAsync(1000, ct);
+        var remoteTombstones = await store.GetTombstonesAsync(remoteDeleteOnly: true, ct);
 
         var obj = new
         {
@@ -93,6 +94,21 @@ public static class CloudManifestCodec
                 memory_kb = sub.MemoryKb,
                 version_id = sub.VersionId,
                 is_version_certain = sub.IsVersionCertain
+            }),
+            tombstones = remoteTombstones.Select(t => new
+            {
+                id = t.Id,
+                entity_type = t.EntityType,
+                version_id = t.VersionId,
+                problem_key = t.ProblemKey,
+                source_path = t.SourcePath,
+                platform = t.Platform,
+                problem_code = t.ProblemCode,
+                content_sha256 = t.ContentSha256,
+                drive_file_id = t.DriveFileId,
+                delete_remote = t.DeleteRemote,
+                deleted_at = t.DeletedAtUnixMs,
+                device = t.DeviceName
             })
         };
 
@@ -107,11 +123,23 @@ public static class CloudManifestCodec
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var beforeAll = await store.QueryVersionsAsync(limit: 10_000, ct: ct);
         var existingById = beforeAll.ToDictionary(v => v.Id, StringComparer.OrdinalIgnoreCase);
+        var conflictBeforeCount = beforeAll.Count(x => x.IsConflictBranch);
 
         int discovered = 0, newCloud = 0, conflicts = 0, eventsImported = 0;
 
         using var mdoc = JsonDocument.Parse(manifestBytes);
         var root = mdoc.RootElement;
+
+        // Reconcile explicit remote deletion tombstones first (conflict-safe: never erases newer local edits)
+        if (root.TryGetProperty("tombstones", out var tombArray) && tombArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var te in tombArray.EnumerateArray())
+            {
+                var tomb = ParseManifestTombstone(te);
+                if (tomb is not null && tomb.DeleteRemote)
+                    await store.ApplyRemoteTombstoneAsync(tomb, ct);
+            }
+        }
 
         if (root.TryGetProperty("versions", out var verArray) && verArray.ValueKind == JsonValueKind.Array)
         {
@@ -124,14 +152,18 @@ public static class CloudManifestCodec
                 if (!string.IsNullOrEmpty(rec.DriveFileId))
                     seenIds.Add(rec.DriveFileId);
 
-                var confBefore = (await store.QueryVersionsAsync(limit: 10_000, ct: ct)).Count(x => x.IsConflictBranch);
                 bool existed = existingById.ContainsKey(rec.Id);
                 await store.UpsertRemoteVersionMetadataAsync(rec, ct);
-                var afterAll = await store.QueryVersionsAsync(limit: 10_000, ct: ct);
-                if (!existed && afterAll.Any(x => x.Id == rec.Id && !x.IsLocalAvailable))
-                    newCloud++;
-                if (afterAll.Count(x => x.IsConflictBranch) > confBefore)
-                    conflicts++;
+                if (!existed)
+                {
+                    var inserted = await store.GetVersionByIdAsync(rec.Id, ct);
+                    if (inserted is not null)
+                    {
+                        existingById[inserted.Id] = inserted;
+                        if (!inserted.IsLocalAvailable) newCloud++;
+                        if (inserted.IsConflictBranch) conflicts++;
+                    }
+                }
             }
         }
 
@@ -200,6 +232,38 @@ public static class CloudManifestCodec
         return new ArchiveVersionRecord(
             id, ver, sp, $"cloud://{did ?? id}", null, fileName, sha, nh, sz, pc, pt, pl, ts,
             IsLocalAvailable: false, DriveFileId: did, IsConflictBranch: conf);
+    }
+
+    private static ArchiveTombstoneRecord? ParseManifestTombstone(JsonElement te)
+    {
+        var id = te.TryGetProperty("id", out var idp) ? idp.GetString() : null;
+        var et = te.TryGetProperty("entity_type", out var etp) ? etp.GetString() : null;
+        var vid = te.TryGetProperty("version_id", out var vip) ? vip.GetString() : null;
+        bool dr = te.TryGetProperty("delete_remote", out var drp) && drp.ValueKind == JsonValueKind.True;
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(et) || !dr)
+            return null;
+
+        long dt = te.TryGetProperty("deleted_at", out var dtp) ? dtp.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return new ArchiveTombstoneRecord(
+            id,
+            et,
+            vid,
+            te.TryGetProperty("problem_key", out var pkp) ? pkp.GetString() : null,
+            te.TryGetProperty("source_path", out var spp) ? spp.GetString() : null,
+            te.TryGetProperty("platform", out var plp) ? plp.GetString() : null,
+            te.TryGetProperty("problem_code", out var pcp) ? pcp.GetString() : null,
+            te.TryGetProperty("content_sha256", out var shp) ? shp.GetString() : null,
+            null,
+            te.TryGetProperty("drive_file_id", out var dfp) ? dfp.GetString() : null,
+            DeleteRemote: true,
+            RemoteDeleteStatus.RemoteDeleted,
+            0,
+            null,
+            dt,
+            now,
+            te.TryGetProperty("device", out var dvp) ? (dvp.GetString() ?? "Remote") : "Remote",
+            dt + 30L * 86_400_000L);
     }
 
     private static ArchiveHistoryEvent? ParseManifestEvent(JsonElement ee)

@@ -76,6 +76,14 @@ public sealed class LosslessArchiver
             var sha256 = SourceAnalyzer.ComputeSha256Hex(rawBytes);
             var normHash = SourceAnalyzer.ComputeNormalizedHash(text);
 
+            // Suppression check: if the user deleted this exact snapshot and the source file hasn't changed yet,
+            // do not silently recreate the deleted version on background reconciliation scans.
+            // Any future legitimate edit (with a different sha256/normHash) will bypass this check and archive normally.
+            if (await _store.IsContentSuppressedByDeletionAsync(fullSource, sha256, normHash, ct))
+            {
+                return new ArchiveResult(ArchiveOutcome.Deduplicated, latest, "Suppressed unchanged deleted version until next new edit");
+            }
+
             // Exact byte deduplication OR whitespace-only duplicate of the immediately preceding version
             if (latest is not null && (latest.Sha256 == sha256 || latest.NormHash == normHash))
             {
@@ -98,7 +106,8 @@ public sealed class LosslessArchiver
             }
 
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var versionNum = (latest?.VersionNum ?? 0) + 1;
+            var maxExistingVersionNum = await _store.GetMaxVersionNumAsync(platformLabel, activeContext?.Code, fullSource, ct);
+            var versionNum = Math.Max(latest?.VersionNum ?? 0, maxExistingVersionNum) + 1;
             var targetExt = SourceAnalyzer.TargetExtension(activeContext, lang.Value, text);
             var baseStem = SourceAnalyzer.BuildProblemBaseName(activeContext, fullSource, text, lang.Value);
             var cleanFileName = $"{baseStem}.{targetExt}";

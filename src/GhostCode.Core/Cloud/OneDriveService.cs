@@ -326,6 +326,18 @@ public sealed class OneDriveService : ICloudArchiveProvider, IAsyncDisposable
 
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var items = await _store.GetPendingOrRetryableUploadsAsync(nowMs, ct);
+            var pendingDeletes = await _store.GetPendingRemoteDeletionsAsync(ct);
+            if (items.Count == 0 && pendingDeletes.Count == 0)
+                return new DriveSyncReport(0, 0, 0, true, null);
+
+            if (pendingDeletes.Count > 0)
+            {
+                await CloudTransferHelpers.ProcessPendingRemoteDeletionsAsync(
+                    _store,
+                    (rid, tokCt) => DeleteOneDriveItemLockedAsync(tokens.AccessToken, rid, tokCt),
+                    ct);
+            }
+
             if (items.Count == 0)
                 return new DriveSyncReport(0, 0, 0, true, null);
 
@@ -676,6 +688,34 @@ public sealed class OneDriveService : ICloudArchiveProvider, IAsyncDisposable
             throw new InvalidOperationException($"OneDrive download failed ({(int)resp.StatusCode}): {err}");
         }
         return await resp.Content.ReadAsByteArrayAsync(ct);
+    }
+
+    public async Task<bool> DeleteRemoteFileAsync(string remoteId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(remoteId))
+            return false;
+
+        var tokens = await EnsureValidTokenAsync(ct);
+        if (tokens is null)
+            return false;
+
+        return await DeleteOneDriveItemLockedAsync(tokens.AccessToken, remoteId, ct);
+    }
+
+    private async Task<bool> DeleteOneDriveItemLockedAsync(string accessToken, string remoteId, CancellationToken ct)
+    {
+        var url = $"https://graph.microsoft.com/v1.0/me/drive/items/{Uri.EscapeDataString(remoteId)}";
+        using var req = new HttpRequestMessage(HttpMethod.Delete, url);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var resp = await _http.SendAsync(req, ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound || resp.StatusCode == HttpStatusCode.Gone)
+            return true;
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"OneDrive delete failed ({(int)resp.StatusCode}): {err}");
+        }
+        return true;
     }
 
     public async Task StopAsync()

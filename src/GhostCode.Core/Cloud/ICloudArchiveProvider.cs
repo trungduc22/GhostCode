@@ -35,4 +35,5 @@ public interface ICloudArchiveProvider
     Task<IReadOnlyList<CloudObjectMetadata>> ListRemoteObjectsAsync(CancellationToken ct = default);
     Task<byte[]> DownloadRawBytesAsync(string remoteId, CancellationToken ct = default);
     Task<string> UploadVersionBytesAsync(ArchiveVersionRecord version, byte[] rawBytes, CancellationToken ct = default);
+    Task<bool> DeleteRemoteFileAsync(string remoteId, CancellationToken ct = default);
 }

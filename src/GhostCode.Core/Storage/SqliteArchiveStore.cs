@@ -21,7 +21,7 @@ public sealed record ProblemTimelineEntry(
 /// Thread-safe, transactional SQLite WAL store for Last-Known-Good snapshots,
 /// immutable historical backup versions, upload queue, and monitoring events.
 /// </summary>
-public sealed class SqliteArchiveStore : IAsyncDisposable
+public sealed partial class SqliteArchiveStore : IAsyncDisposable
 {
     private readonly string _dbPath;
     private readonly string _connectionString;
@@ -53,7 +53,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             {
                 await CreateSchemaAndVerifyAsync(ct);
             }
-            catch (SqliteException)
+            catch (SqliteCorruptionException)
             {
                 BackupCorruptedDatabase();
                 await CreateSchemaAndVerifyAsync(ct);
@@ -64,6 +64,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             _writeLock.Release();
         }
     }
+
+    private sealed class SqliteCorruptionException(string message) : Exception(message);
 
     private void BackupCorruptedDatabase()
     {
@@ -91,9 +93,17 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using (var checkCmd = conn.CreateCommand())
         {
             checkCmd.CommandText = "PRAGMA quick_check;";
-            var checkResult = Convert.ToString(await checkCmd.ExecuteScalarAsync(ct));
+            string? checkResult;
+            try
+            {
+                checkResult = Convert.ToString(await checkCmd.ExecuteScalarAsync(ct));
+            }
+            catch (SqliteException ex)
+            {
+                throw new SqliteCorruptionException($"SQLite integrity error: {ex.Message}");
+            }
             if (!string.Equals(checkResult, "ok", StringComparison.OrdinalIgnoreCase))
-                throw new SqliteException($"Integrity check failed: {checkResult}", 11);
+                throw new SqliteCorruptionException($"Integrity check failed: {checkResult}");
         }
 
         await using var cmd = conn.CreateCommand();
@@ -131,13 +141,43 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 created_at INTEGER NOT NULL,
                 is_local_available INTEGER NOT NULL DEFAULT 1,
                 drive_file_id TEXT,
-                is_conflict INTEGER NOT NULL DEFAULT 0
+                is_conflict INTEGER NOT NULL DEFAULT 0,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                deleted_at INTEGER NOT NULL DEFAULT 0,
+                trash_batch_id TEXT,
+                delete_scope TEXT,
+                deleted_origin_device TEXT,
+                trash_archive_path TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_versions_source ON archive_versions(source_path, version_num DESC);
             CREATE INDEX IF NOT EXISTS idx_versions_problem ON archive_versions(platform, problem_code, version_num DESC);
             CREATE INDEX IF NOT EXISTS idx_versions_created ON archive_versions(created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_archive_path ON archive_versions(archive_path);
+
+            CREATE TABLE IF NOT EXISTS archive_tombstones (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                version_id TEXT,
+                problem_key TEXT,
+                source_path TEXT,
+                platform TEXT,
+                problem_code TEXT,
+                content_sha256 TEXT,
+                content_norm_hash TEXT,
+                drive_file_id TEXT,
+                delete_remote INTEGER NOT NULL DEFAULT 0,
+                remote_delete_state TEXT NOT NULL DEFAULT 'LocalOnly',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                deleted_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                device_name TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tombstones_version ON archive_tombstones(version_id);
+            CREATE INDEX IF NOT EXISTS idx_tombstones_source_sha ON archive_tombstones(source_path, content_sha256);
+            CREATE INDEX IF NOT EXISTS idx_tombstones_remote_state ON archive_tombstones(delete_remote, remote_delete_state);
 
             CREATE TABLE IF NOT EXISTS upload_queue (
                 version_id TEXT PRIMARY KEY,
@@ -248,7 +288,13 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         {
             cols.Contains("is_local_available") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_local_available INTEGER NOT NULL DEFAULT 1;",
             cols.Contains("drive_file_id") ? "" : "ALTER TABLE archive_versions ADD COLUMN drive_file_id TEXT;",
-            cols.Contains("is_conflict") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_conflict INTEGER NOT NULL DEFAULT 0;"
+            cols.Contains("is_conflict") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_conflict INTEGER NOT NULL DEFAULT 0;",
+            cols.Contains("is_deleted") ? "" : "ALTER TABLE archive_versions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;",
+            cols.Contains("deleted_at") ? "" : "ALTER TABLE archive_versions ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0;",
+            cols.Contains("trash_batch_id") ? "" : "ALTER TABLE archive_versions ADD COLUMN trash_batch_id TEXT;",
+            cols.Contains("delete_scope") ? "" : "ALTER TABLE archive_versions ADD COLUMN delete_scope TEXT;",
+            cols.Contains("deleted_origin_device") ? "" : "ALTER TABLE archive_versions ADD COLUMN deleted_origin_device TEXT;",
+            cols.Contains("trash_archive_path") ? "" : "ALTER TABLE archive_versions ADD COLUMN trash_archive_path TEXT;"
         };
         foreach (var sql in migrations.Where(s => !string.IsNullOrEmpty(s)))
         {
@@ -256,6 +302,10 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             alt.CommandText = sql;
             await alt.ExecuteNonQueryAsync(ct);
         }
+
+        await using var idxCmd = conn.CreateCommand();
+        idxCmd.CommandText = "CREATE INDEX IF NOT EXISTS idx_versions_deleted ON archive_versions(is_deleted, deleted_at DESC);";
+        await idxCmd.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<FileSnapshotRecord?> GetSnapshotAsync(string sourcePath, CancellationToken ct = default)
@@ -291,7 +341,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
-            WHERE source_path = $p COLLATE NOCASE
+            WHERE source_path = $p COLLATE NOCASE AND is_deleted = 0
             ORDER BY version_num DESC LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$p", sourcePath);
@@ -310,7 +360,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
-            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE
+            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE AND is_deleted = 0
             ORDER BY version_num DESC, created_at DESC LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$plat", platform);
@@ -331,6 +381,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             FROM archive_versions
             WHERE source_path = $p COLLATE NOCASE
               AND (problem_code IS NULL OR problem_code = '' OR platform = 'Offline' COLLATE NOCASE)
+              AND is_deleted = 0
             ORDER BY version_num DESC, created_at DESC LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$p", sourcePath);
@@ -349,7 +400,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
-            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE
+            WHERE platform = $plat COLLATE NOCASE AND problem_code = $code COLLATE NOCASE AND is_deleted = 0
             ORDER BY version_num DESC, created_at DESC;
             """;
         cmd.Parameters.AddWithValue("$plat", platform);
@@ -373,6 +424,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             FROM archive_versions
             WHERE source_path = $p COLLATE NOCASE
               AND (problem_code IS NULL OR problem_code = '' OR platform = 'Offline' COLLATE NOCASE)
+              AND is_deleted = 0
             ORDER BY version_num DESC, created_at DESC;
             """;
         cmd.Parameters.AddWithValue("$p", sourcePath);
@@ -534,6 +586,15 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 version.CreatedAtUnixMs,
                 Environment.MachineName), ct);
 
+            // A new edited save supersedes any prior deletion content-suppression for this source path
+            await using (var clrCmd = conn.CreateCommand())
+            {
+                clrCmd.Transaction = tx;
+                clrCmd.CommandText = "DELETE FROM archive_tombstones WHERE entity_type = 'ContentSuppression' AND source_path = $sp COLLATE NOCASE;";
+                clrCmd.Parameters.AddWithValue("$sp", version.SourcePath);
+                await clrCmd.ExecuteNonQueryAsync(ct);
+            }
+
             await tx.CommitAsync(ct);
         }
         finally
@@ -550,7 +611,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
-            WHERE source_path = $p COLLATE NOCASE
+            WHERE source_path = $p COLLATE NOCASE AND is_deleted = 0
             ORDER BY version_num DESC;
             """;
         cmd.Parameters.AddWithValue("$p", sourcePath);
@@ -561,15 +622,23 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         return list;
     }
 
-    public async Task<ArchiveVersionRecord?> GetVersionByIdAsync(string versionId, CancellationToken ct = default)
+    public async Task<ArchiveVersionRecord?> GetVersionByIdAsync(string versionId, CancellationToken ct = default) =>
+        await GetVersionByIdAsync(versionId, includeDeleted: false, ct);
+
+    public async Task<ArchiveVersionRecord?> GetVersionByIdAsync(string versionId, bool includeDeleted, CancellationToken ct = default)
     {
         await using var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
-            FROM archive_versions WHERE id = $id;
-            """;
+        cmd.CommandText = includeDeleted
+            ? """
+              SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+              FROM archive_versions WHERE id = $id;
+              """
+            : """
+              SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+              FROM archive_versions WHERE id = $id AND is_deleted = 0;
+              """;
         cmd.Parameters.AddWithValue("$id", versionId);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
@@ -582,7 +651,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
-            FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE LIMIT 1;
+            FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE AND is_deleted = 0 LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$ap", archivePath);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -723,7 +792,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
             FROM archive_versions
-            WHERE ($plat IS NULL OR $plat = '' OR $plat = 'All' OR platform = $plat)
+            WHERE is_deleted = 0
+              AND ($plat IS NULL OR $plat = '' OR $plat = 'All' OR platform = $plat)
               AND ($q IS NULL OR $q = '' OR file_name LIKE '%' || $q || '%' OR source_path LIKE '%' || $q || '%' OR IFNULL(problem_code,'') LIKE '%' || $q || '%' OR IFNULL(problem_title,'') LIKE '%' || $q || '%')
             ORDER BY created_at DESC, version_num DESC
             LIMIT $lim;
@@ -750,6 +820,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             JOIN archive_versions v ON v.id = q.version_id
             WHERE (q.status = 'Pending' OR (q.status = 'Failed' AND q.next_retry_at <= $now))
               AND v.is_local_available = 1
+              AND v.is_deleted = 0
             ORDER BY v.created_at ASC;
             """;
         cmd.Parameters.AddWithValue("$now", nowUnixMs);
@@ -766,6 +837,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                    v.id, v.version_num, v.source_path, v.archive_path, v.ready_path, v.file_name, v.sha256, v.norm_hash, v.size_bytes, v.problem_code, v.problem_title, v.platform, v.created_at, v.is_local_available, v.drive_file_id, v.is_conflict
             FROM upload_queue q
             JOIN archive_versions v ON v.id = q.version_id
+            WHERE v.is_deleted = 0
             ORDER BY q.updated_at DESC
             LIMIT $lim;
             """;
@@ -905,12 +977,13 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT
-                (SELECT COUNT(*) FROM archive_versions),
-                (SELECT COUNT(*) FROM upload_queue WHERE status = 'Pending' OR status = 'Uploading'),
-                (SELECT COUNT(*) FROM upload_queue WHERE status = 'Failed'),
-                (SELECT COUNT(*) FROM upload_queue WHERE status = 'Synced'),
-                (SELECT MAX(updated_at) FROM upload_queue WHERE status = 'Synced'),
-                (SELECT COUNT(*) FROM archive_versions WHERE is_local_available = 0);
+                (SELECT COUNT(*) FROM archive_versions WHERE is_deleted = 0),
+                (SELECT COUNT(*) FROM upload_queue q JOIN archive_versions v ON v.id = q.version_id WHERE v.is_deleted = 0 AND (q.status = 'Pending' OR q.status = 'Uploading')),
+                (SELECT COUNT(*) FROM upload_queue q JOIN archive_versions v ON v.id = q.version_id WHERE v.is_deleted = 0 AND q.status = 'Failed'),
+                (SELECT COUNT(*) FROM upload_queue q JOIN archive_versions v ON v.id = q.version_id WHERE v.is_deleted = 0 AND q.status = 'Synced'),
+                (SELECT MAX(q.updated_at) FROM upload_queue q JOIN archive_versions v ON v.id = q.version_id WHERE v.is_deleted = 0 AND q.status = 'Synced'),
+                (SELECT COUNT(*) FROM archive_versions WHERE is_deleted = 0 AND is_local_available = 0),
+                (SELECT COUNT(*) FROM archive_versions WHERE is_deleted = 1);
             """;
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         await reader.ReadAsync(ct);
@@ -920,7 +993,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             reader.GetInt32(2),
             reader.GetInt32(3),
             reader.IsDBNull(4) ? null : reader.GetInt64(4),
-            reader.GetInt32(5));
+            reader.GetInt32(5),
+            reader.GetInt32(6));
     }
 
     public async Task<LatestBackupSummary?> GetLatestBackupSummaryAsync(CancellationToken ct = default)
@@ -931,6 +1005,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         cmd.CommandText = """
             SELECT id, file_name, platform, problem_code, source_path, archive_path, is_local_available, drive_file_id, is_conflict, created_at
             FROM archive_versions
+            WHERE is_deleted = 0
             ORDER BY created_at DESC, version_num DESC
             LIMIT 1;
             """;
@@ -1012,7 +1087,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             await conn.OpenAsync(ct);
             await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
 
-            // 1. Exact ID or (source_path + sha256) match -> link DriveFileId without duplicating
+            // 1. Exact ID or (source_path + sha256) match -> link DriveFileId without duplicating or un-deleting
             string? existingId = null;
             await using (var findCmd = conn.CreateCommand())
             {
@@ -1037,6 +1112,14 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 upd.Parameters.AddWithValue("$did", (object?)remoteVer.DriveFileId ?? DBNull.Value);
                 upd.Parameters.AddWithValue("$id", existingId);
                 await upd.ExecuteNonQueryAsync(ct);
+                await tx.CommitAsync(ct);
+                return;
+            }
+
+            // 1b. Deletion tombstone check: never resurrect locally or remotely deleted versions
+            //     (only genuinely newer edits created after a problem-level tombstone on another device are imported)
+            if (await IsRemoteVersionBlockedByTombstoneInTxAsync(conn, tx, remoteVer, ct))
+            {
                 await tx.CommitAsync(ct);
                 return;
             }

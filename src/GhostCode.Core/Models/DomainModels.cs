@@ -154,6 +154,56 @@ public enum AccentColorPreset
     CustomAccent
 }
 
+public enum ArchiveDeletionScope
+{
+    LocalTrash,
+    LocalAndCloudRequested
+}
+
+public enum RemoteDeleteStatus
+{
+    LocalOnly,
+    PendingRemoteDelete,
+    RemoteDeleted,
+    RemoteDeleteFailed,
+    ConflictRestored
+}
+
+public sealed record ArchiveTombstoneRecord(
+    string Id,
+    string EntityType,
+    string? VersionId,
+    string? ProblemKey,
+    string? SourcePath,
+    string? Platform,
+    string? ProblemCode,
+    string? ContentSha256,
+    string? ContentNormHash,
+    string? DriveFileId,
+    bool DeleteRemote,
+    RemoteDeleteStatus RemoteDeleteState,
+    int AttemptCount,
+    string? LastError,
+    long DeletedAtUnixMs,
+    long UpdatedAtUnixMs,
+    string DeviceName,
+    long ExpiresAtUnixMs);
+
+public sealed record TrashedArchiveVersionRecord(
+    ArchiveVersionRecord Version,
+    long DeletedAtUnixMs,
+    string? TrashBatchId,
+    ArchiveDeletionScope DeleteScope,
+    string DeletedOriginDevice,
+    long ExpiresAtUnixMs,
+    RemoteDeleteStatus RemoteDeleteState);
+
+public sealed record MoveToTrashResult(
+    bool Success,
+    int MovedCount,
+    string? BatchId,
+    string? Message = null);
+
 public sealed record BrowserStatusInfo(
     BrowserKind Kind,
     string DisplayName,
@@ -360,7 +410,8 @@ public sealed record ArchiveStats(
     int FailedUploads,
     int SyncedUploads,
     long? LastSuccessfulSyncUnixMs,
-    int CloudOnlyVersions = 0);
+    int CloudOnlyVersions = 0,
+    int TrashedVersions = 0);
 
 public sealed class GhostCodeConfig
 {
@@ -429,6 +480,7 @@ public sealed class GhostCodeConfig
     public bool EstimateActiveCodingTime { get; set; } = false;
     public int AutoRecoveryCheckIntervalMinutes { get; set; } = 0;
     public int NotificationDurationSeconds { get; set; } = 15;
+    public int TrashRetentionDays { get; set; } = 30;
 
     // Browser Onboarding & Connection Preferences
     public List<string> DismissedBrowserPrompts { get; set; } = new();
@@ -446,6 +498,7 @@ public sealed class GhostCodeConfig
 
     public string GetInternalMetaDir() => Path.Combine(ArchiveDir, ".ghostcode");
     public string GetInternalHistoryRoot() => Path.Combine(ArchiveDir, ".ghostcode", "history");
+    public string GetInternalTrashRoot() => Path.Combine(ArchiveDir, ".ghostcode", "trash");
 
     public static GhostCodeConfig CreateDefault(string? userProfileOverride = null, string? localAppDataOverride = null)
     {
@@ -520,6 +573,8 @@ public sealed class GhostCodeConfig
         ReadyDir ??= string.Empty;
         if (NotificationDurationSeconds < 0)
             NotificationDurationSeconds = 15;
+        if (TrashRetentionDays <= 0)
+            TrashRetentionDays = 30;
         if (string.IsNullOrWhiteSpace(DatabasePath))
             DatabasePath = def.DatabasePath;
         if (HttpPort <= 0 || HttpPort > 65535)

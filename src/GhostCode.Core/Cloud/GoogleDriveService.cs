@@ -528,6 +528,34 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
 
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var items = await _store.GetPendingOrRetryableUploadsAsync(nowMs, ct);
+            var pendingRemoteDeletes = await _store.GetPendingRemoteDeletionsAsync(ct);
+
+            if (items.Count == 0 && pendingRemoteDeletes.Count == 0)
+            {
+                _lastServiceError = null;
+                _apiPausedUntilUtc = null;
+                return new DriveSyncReport(0, 0, 0, true, null);
+            }
+
+            if (pendingRemoteDeletes.Count > 0)
+            {
+                try
+                {
+                    await CloudTransferHelpers.ProcessPendingRemoteDeletionsAsync(
+                        _store,
+                        (rid, tokCt) => DeleteDriveFileLockedAsync(tokens.AccessToken, rid, tokCt),
+                        ct);
+                }
+                catch (Exception ex)
+                {
+                    var details = ClassifyDriveException(ex);
+                    _lastServiceError = details;
+                    if (details.Category == ErrorCategory.CloudApiDisabled)
+                        _apiPausedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+                    return new DriveSyncReport(0, items.Count, 0, details.Category != ErrorCategory.AuthenticationExpired, details.ShortMessage, details);
+                }
+            }
+
             if (items.Count == 0)
             {
                 _lastServiceError = null;
@@ -1257,6 +1285,34 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
             dict[k] = v;
         }
         return dict;
+    }
+
+    public async Task<bool> DeleteRemoteFileAsync(string remoteId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(remoteId))
+            return false;
+
+        var tokens = await EnsureValidTokenAsync(ct);
+        if (tokens is null)
+            return false;
+
+        return await DeleteDriveFileLockedAsync(tokens.AccessToken, remoteId, ct);
+    }
+
+    private async Task<bool> DeleteDriveFileLockedAsync(string accessToken, string remoteId, CancellationToken ct)
+    {
+        var url = $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(remoteId)}";
+        using var req = new HttpRequestMessage(HttpMethod.Delete, url);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var resp = await _http.SendAsync(req, ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound || resp.StatusCode == HttpStatusCode.Gone)
+            return true;
+        if (!resp.IsSuccessStatusCode)
+        {
+            var err = await resp.Content.ReadAsStringAsync(ct);
+            throw GoogleApiErrorParser.CreateException(resp.StatusCode, err, _config.OAuthClient?.ClientId);
+        }
+        return true;
     }
 
     public async Task StopAsync()
