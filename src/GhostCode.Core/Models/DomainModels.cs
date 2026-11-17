@@ -58,9 +58,13 @@ public enum BrowserConnectionState
     NotInstalled,
     Installed,
     Running,
+    GuidedInstalling,
+    PendingHandshake,
     ExtensionConnected,
     ExtensionDisconnected,
-    ExtensionError
+    ExtensionError,
+    RepairNeeded,
+    Unsupported
 }
 
 public enum VersionAvailability
@@ -388,7 +392,9 @@ public sealed class GhostCodeConfig
     public bool EstimateActiveCodingTime { get; set; } = false;
     public int AutoRecoveryCheckIntervalMinutes { get; set; } = 0;
 
-    // Expansion Pack: Customizable Mica & Opt-In AI Assistance
+    // Browser Onboarding & Connection Preferences
+    public List<string> DismissedBrowserPrompts { get; set; } = new();
+    public List<string> KnownConnectedBrowsers { get; set; } = new();
     public MicaAppearanceKind MicaKind { get; set; } = MicaAppearanceKind.Mica;
     public string MicaTintColorHex { get; set; } = "#181C32";
     public double MicaTintOpacity { get; set; } = 0.5;
@@ -494,6 +500,8 @@ public sealed class GhostCodeConfig
         DefaultIdeForCpp = string.IsNullOrWhiteSpace(DefaultIdeForCpp) ? "Auto" : DefaultIdeForCpp;
         DefaultIdeForPython = string.IsNullOrWhiteSpace(DefaultIdeForPython) ? "Auto" : DefaultIdeForPython;
         WebsiteStatementCaptureEnabled ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        DismissedBrowserPrompts ??= new List<string>();
+        KnownConnectedBrowsers ??= new List<string>();
         if (string.IsNullOrWhiteSpace(MicaTintColorHex)) MicaTintColorHex = "#181C32";
         MicaTintOpacity = Math.Clamp(MicaTintOpacity, 0.0, 1.0);
         MicaLuminosityOpacity = Math.Clamp(MicaLuminosityOpacity, 0.0, 1.0);
@@ -564,6 +572,8 @@ public sealed class GhostCodeConfig
             TrimTrailingWhitespaceOnCompare = TrimTrailingWhitespaceOnCompare,
             EstimateActiveCodingTime = EstimateActiveCodingTime,
             AutoRecoveryCheckIntervalMinutes = AutoRecoveryCheckIntervalMinutes,
+            DismissedBrowserPrompts = DismissedBrowserPrompts.ToList(),
+            KnownConnectedBrowsers = KnownConnectedBrowsers.ToList(),
             MicaKind = MicaKind,
             MicaTintColorHex = MicaTintColorHex,
             MicaTintOpacity = MicaTintOpacity,

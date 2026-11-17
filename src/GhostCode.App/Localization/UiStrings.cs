@@ -123,8 +123,8 @@ public static class UiStrings
         NavArchive: "Kho lưu trữ",
         NavCloud: "Google Drive",
         NavSettings: "Cài đặt",
-        ConnectedBrowsersTitle: "Trình duyệt đang kết nối",
-        NoConnectedBrowsers: "Chưa có trình duyệt nào kết nối với GhostCode.",
+        ConnectedBrowsersTitle: "Trình duyệt & Tiện ích",
+        NoConnectedBrowsers: "Chưa phát hiện trình duyệt nào được cài trên máy.",
         BrowserConnectedBadge: "Đã kết nối",
         ActiveContextTitle: "Bài tập đang phát hiện",
         NoActiveContext: "Chưa phát hiện bài tập nào trên trình duyệt",
@@ -233,8 +233,8 @@ public static class UiStrings
         NavArchive: "Code Archive",
         NavCloud: "Google Drive",
         NavSettings: "Settings",
-        ConnectedBrowsersTitle: "Connected Browsers",
-        NoConnectedBrowsers: "No browsers are currently connected to GhostCode.",
+        ConnectedBrowsersTitle: "Browsers & Extensions",
+        NoConnectedBrowsers: "No supported browsers were detected on this PC.",
         BrowserConnectedBadge: "Connected",
         ActiveContextTitle: "Detected Problem",
         NoActiveContext: "No active problem detected in browser",
@@ -407,6 +407,50 @@ public static class UiStrings
         OnboardingAutoDetectButton: "Auto-Detect Folders",
         OnboardingChooseFolderButton: "Choose Folder",
         OnboardingLaterButton: "Later");
+
+    public static string ForBrowserState(BrowserConnectionState state, UiLanguage language) =>
+        language == UiLanguage.Vi
+            ? state switch
+            {
+                BrowserConnectionState.ExtensionConnected => "Đã kết nối",
+                BrowserConnectionState.GuidedInstalling => "Đang hướng dẫn cài đặt",
+                BrowserConnectionState.PendingHandshake => "Đã cài, đang kết nối",
+                BrowserConnectionState.ExtensionDisconnected => "Mất kết nối",
+                BrowserConnectionState.RepairNeeded or BrowserConnectionState.ExtensionError => "Cần sửa kết nối",
+                BrowserConnectionState.Unsupported => "Trình duyệt không được hỗ trợ",
+                BrowserConnectionState.Running or BrowserConnectionState.Installed => "Chưa cài tiện ích",
+                _ => "Trình duyệt chưa cài"
+            }
+            : state switch
+            {
+                BrowserConnectionState.ExtensionConnected => "Connected",
+                BrowserConnectionState.GuidedInstalling => "Guided Setup Active",
+                BrowserConnectionState.PendingHandshake => "Installed, Connecting",
+                BrowserConnectionState.ExtensionDisconnected => "Disconnected",
+                BrowserConnectionState.RepairNeeded or BrowserConnectionState.ExtensionError => "Needs Repair",
+                BrowserConnectionState.Unsupported => "Unsupported Browser",
+                BrowserConnectionState.Running or BrowserConnectionState.Installed => "Extension Not Installed",
+                _ => "Not Installed"
+            };
+
+    public static string ForBrowserActionLabel(BrowserConnectionState state, UiLanguage language) =>
+        language == UiLanguage.Vi
+            ? state switch
+            {
+                BrowserConnectionState.ExtensionConnected => "Đã kết nối",
+                BrowserConnectionState.GuidedInstalling => "Hướng dẫn",
+                BrowserConnectionState.PendingHandshake or BrowserConnectionState.ExtensionDisconnected => "Thử lại",
+                BrowserConnectionState.RepairNeeded or BrowserConnectionState.ExtensionError => "Sửa kết nối",
+                _ => "Kết nối"
+            }
+            : state switch
+            {
+                BrowserConnectionState.ExtensionConnected => "Connected",
+                BrowserConnectionState.GuidedInstalling => "Guide",
+                BrowserConnectionState.PendingHandshake or BrowserConnectionState.ExtensionDisconnected => "Retry",
+                BrowserConnectionState.RepairNeeded or BrowserConnectionState.ExtensionError => "Repair",
+                _ => "Connect"
+            };
 
     public static string ForProtectionBadge(BackupProtectionState state, UiLanguage language) =>
         language == UiLanguage.Vi

@@ -103,20 +103,24 @@ public sealed record BrowserStatusRow(BrowserStatusInfo Info, UiLanguage Languag
     public string Name => Info.DisplayName;
     public bool IsConnected => Info.ConnectionState == BrowserConnectionState.ExtensionConnected;
     public bool IsInstalled => Info.IsInstalled;
-    public string StateBadge => Info.ConnectionState switch
-    {
-        BrowserConnectionState.ExtensionConnected => $"{Info.DisplayName} — {UiStrings.For(Language).BrowserConnectedBadge}",
-        BrowserConnectionState.ExtensionDisconnected => "Disconnected",
-        BrowserConnectionState.Running => "Running (No Extension)",
-        BrowserConnectionState.Installed => "Installed",
-        _ => "Not Installed"
-    };
+    public bool CanConfigureOrRepair => Info.IsInstalled;
+    public string StateBadge => Info.ConnectionState == BrowserConnectionState.ExtensionConnected
+        ? $"{Info.DisplayName} — {UiStrings.ForBrowserState(Info.ConnectionState, Language)}"
+        : UiStrings.ForBrowserState(Info.ConnectionState, Language);
+    public string ActionButtonLabel => UiStrings.ForBrowserActionLabel(Info.ConnectionState, Language);
     public string VersionText => string.IsNullOrWhiteSpace(Info.ExtensionVersion)
         ? (Info.Version ?? string.Empty)
         : $"Ext v{Info.ExtensionVersion}";
-    public string DetailText => string.IsNullOrWhiteSpace(Info.ExecutablePath)
-        ? Info.StatusDetail
-        : $"{Info.StatusDetail} • {Info.ExecutablePath}";
+    public string DetailText
+    {
+        get
+        {
+            var badge = UiStrings.ForBrowserState(Info.ConnectionState, Language);
+            return string.IsNullOrWhiteSpace(Info.ExecutablePath)
+                ? badge
+                : $"{badge} • {Info.ExecutablePath}";
+        }
+    }
 }
 
 public sealed record IdeStatusRow(IdeStatusInfo Info)
@@ -351,6 +355,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _suppressFolderSync;
     private bool _onboardingDismissedForSession;
 
+    private bool _isBrowserSetupOpen;
+    private string _browserSetupBrowserName = string.Empty;
+    private string _browserSetupBrowserKindKey = string.Empty;
+    private string _browserSetupExtensionPath = string.Empty;
+    private string _browserSetupPageUrl = string.Empty;
+    private string _browserSetupStatusText = string.Empty;
+
     public MainViewModel(
         GhostCodeConfig config,
         string configPath,
@@ -438,6 +449,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RunAllSamplesCommand = new AsyncRelayCommand(RunAllSamplesAsync);
         DeleteSelectedSampleCommand = new AsyncRelayCommand(DeleteSelectedSampleAsync);
         DismissOnboardingCommand = new RelayCommand(DismissOnboarding);
+        OpenBrowserSetupCommand = new AsyncRelayCommand<string?>(kind => OpenBrowserSetupAsync(kind));
+        CopyStagedExtensionPathCommand = new RelayCommand(CopyStagedExtensionPath);
+        OpenStagedExtensionFolderCommand = new RelayCommand(() => OpenFolder(BrowserSetupExtensionPath));
+        OpenBrowserExtensionsPageCommand = new RelayCommand(OpenTargetBrowserExtensionsPage);
+        CloseBrowserSetupCommand = new RelayCommand(() => IsBrowserSetupOpen = false);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -466,6 +482,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<UploadQueueRow> UploadQueue { get; } = new();
     public ObservableCollection<WatchedFolderItem> WatchedFolders { get; } = new();
     public ObservableCollection<BrowserStatusRow> BrowserStatuses { get; } = new();
+    public ObservableCollection<BrowserStatusRow> InstalledBrowserRows { get; } = new();
     public ObservableCollection<BrowserStatusRow> ConnectedBrowsers { get; } = new();
     public ObservableCollection<IdeStatusRow> IdeStatuses { get; } = new();
     public ObservableCollection<ToolchainRow> Toolchains { get; } = new();
@@ -548,6 +565,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand RunAllSamplesCommand { get; }
     public IAsyncRelayCommand DeleteSelectedSampleCommand { get; }
     public IRelayCommand DismissOnboardingCommand { get; }
+    public IAsyncRelayCommand<string?> OpenBrowserSetupCommand { get; }
+    public IRelayCommand CopyStagedExtensionPathCommand { get; }
+    public IRelayCommand OpenStagedExtensionFolderCommand { get; }
+    public IRelayCommand OpenBrowserExtensionsPageCommand { get; }
+    public IRelayCommand CloseBrowserSetupCommand { get; }
 
     public ExpansionTextBundle ExpStrings
     {
@@ -598,6 +620,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public bool HasConnectedBrowser => ConnectedBrowsers.Count > 0;
     public Visibility NoConnectedBrowsersVisibility => HasConnectedBrowser ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility NoInstalledBrowsersVisibility => InstalledBrowserRows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     public Visibility NoFoldersVisible => WatchedFolders.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     public Visibility OnboardingCardVisibility => (WatchedFolders.Count(w => w.IsEnabled) == 0 && ActiveWatches.Count(w => w.IsWatching) == 0 && !_onboardingDismissedForSession)
         ? Visibility.Visible
@@ -610,8 +633,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (HasConnectedBrowser && HasActiveContext)
                 return $"{ConnectedBrowsers[0].Name} • {ActiveCode}";
             if (HasConnectedBrowser)
-                return $"{ConnectedBrowsers.Count} {Strings.BrowserConnectedBadge}";
-            return HasActiveContext ? ActiveCode : "0 Browsers";
+                return $"{ConnectedBrowsers[0].Name}: {Strings.BrowserConnectedBadge}";
+            if (HasActiveContext)
+                return ActiveCode;
+            if (InstalledBrowserRows.Count > 0)
+            {
+                return _config.Language == UiLanguage.Vi
+                    ? $"{InstalledBrowserRows.Count} trình duyệt (chưa kết nối)"
+                    : $"{InstalledBrowserRows.Count} browser(s) (not connected)";
+            }
+            return _config.Language == UiLanguage.Vi ? "Chưa cài trình duyệt" : "No browsers detected";
         }
     }
 
@@ -1266,6 +1297,51 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public Visibility QuickActionsVisibility => IsQuickActionsOpen ? Visibility.Visible : Visibility.Collapsed;
 
+    public bool IsBrowserSetupOpen
+    {
+        get => _isBrowserSetupOpen;
+        set
+        {
+            if (SetProperty(ref _isBrowserSetupOpen, value))
+                OnPropertyChanged(nameof(BrowserSetupOverlayVisibility));
+        }
+    }
+
+    public Visibility BrowserSetupOverlayVisibility => IsBrowserSetupOpen ? Visibility.Visible : Visibility.Collapsed;
+    public string BrowserSetupBrowserName { get => _browserSetupBrowserName; private set { if (SetProperty(ref _browserSetupBrowserName, value)) OnPropertyChanged(nameof(BrowserSetupTitle)); } }
+    public string BrowserSetupBrowserKindKey { get => _browserSetupBrowserKindKey; private set => SetProperty(ref _browserSetupBrowserKindKey, value); }
+    public string BrowserSetupExtensionPath { get => _browserSetupExtensionPath; private set => SetProperty(ref _browserSetupExtensionPath, value); }
+    public string BrowserSetupPageUrl { get => _browserSetupPageUrl; private set => SetProperty(ref _browserSetupPageUrl, value); }
+    public string BrowserSetupStatusText { get => _browserSetupStatusText; private set => SetProperty(ref _browserSetupStatusText, value); }
+
+    public string BrowserSetupTitle => _config.Language == UiLanguage.Vi
+        ? $"Cài đặt & Kết nối tiện ích GhostCode cho {BrowserSetupBrowserName}"
+        : $"Install & Connect GhostCode Extension for {BrowserSetupBrowserName}";
+
+    public string BrowserSetupStep1 => _config.Language == UiLanguage.Vi
+        ? $"Bước 1: Mở trang quản lý tiện ích ({BrowserSetupPageUrl}) trên {BrowserSetupBrowserName}."
+        : $"Step 1: Open the extensions page ({BrowserSetupPageUrl}) in {BrowserSetupBrowserName}.";
+
+    public string BrowserSetupStep2 => _config.Language == UiLanguage.Vi
+        ? (BrowserSetupBrowserKindKey == "Firefox"
+            ? "Bước 2: Chọn 'This Firefox' -> 'Load Temporary Add-on...'."
+            : "Bước 2: Bật công tắc 'Chế độ nhà phát triển' (Developer mode) ở góc trên.")
+        : (BrowserSetupBrowserKindKey == "Firefox"
+            ? "Step 2: Click 'This Firefox' -> 'Load Temporary Add-on...'."
+            : "Step 2: Enable 'Developer mode' in the top corner.");
+
+    public string BrowserSetupStep3 => _config.Language == UiLanguage.Vi
+        ? (BrowserSetupBrowserKindKey == "Firefox"
+            ? "Bước 3: Chọn tệp manifest.json trong thư mục tiện ích bên dưới (đường dẫn đã tự sao chép)."
+            : "Bước 3: Nhấn 'Tải tiện ích đã giải nén' (Load unpacked) và chọn thư mục bên dưới (đường dẫn đã sao chép sẵn).")
+        : (BrowserSetupBrowserKindKey == "Firefox"
+            ? "Step 3: Select manifest.json inside the staged extension folder below (path already copied)."
+            : "Step 3: Click 'Load unpacked' and select the folder below (path already copied to clipboard).");
+
+    public string BrowserSetupStep4 => _config.Language == UiLanguage.Vi
+        ? "Bước 4: Quay lại GhostCode — cửa sổ này sẽ tự đóng khi tiện ích kết nối thành công."
+        : "Step 4: Return to GhostCode — this guide closes automatically once the extension connects.";
+
     public ArchiveFileGroupRow? SelectedQuickActionTarget
     {
         get => _selectedQuickActionTarget;
@@ -1396,25 +1472,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var browserStates = _bridge.GetBrowserConnectionStates();
         BrowserStatuses.Clear();
+        InstalledBrowserRows.Clear();
         ConnectedBrowsers.Clear();
         foreach (var b in browserStates)
         {
             var row = new BrowserStatusRow(b, _config.Language);
             BrowserStatuses.Add(row);
+            if (b.IsInstalled)
+                InstalledBrowserRows.Add(row);
             if (row.IsConnected)
                 ConnectedBrowsers.Add(row);
         }
 
         OnPropertyChanged(nameof(HasConnectedBrowser));
         OnPropertyChanged(nameof(NoConnectedBrowsersVisibility));
+        OnPropertyChanged(nameof(NoInstalledBrowsersVisibility));
         OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
 
         var connectedNames = ConnectedBrowsers.Select(x => x.Name).ToList();
         var runningNames = browserStates.Where(b => b.IsRunning).Select(b => b.DisplayName).ToList();
         BrowserStatusSummary = connectedNames.Count > 0
-            ? $"{string.Join(", ", connectedNames)} • Ext Connected"
+            ? $"{string.Join(", ", connectedNames)} • {Strings.BrowserConnectedBadge}"
             : runningNames.Count > 0
-                ? $"{string.Join(", ", runningNames)} Running (Ext Not Connected)"
+                ? (_config.Language == UiLanguage.Vi
+                    ? $"{string.Join(", ", runningNames)} (Chưa kết nối tiện ích)"
+                    : $"{string.Join(", ", runningNames)} (Extension Not Connected)")
                 : Strings.NoConnectedBrowsers;
 
         var (ides, toolchains) = _toolchains.DiscoverAll(_config);
@@ -1823,19 +1905,76 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task PrepareBrowserIntegrationAsync(string? kindArg)
     {
+        await OpenBrowserSetupAsync(kindArg);
+    }
+
+    public async Task OpenBrowserSetupAsync(string? kindArg, bool launchBrowserNow = true)
+    {
         var kind = Enum.TryParse<BrowserKind>(kindArg, ignoreCase: true, out var parsed)
             ? parsed
             : BrowserKind.Edge;
 
-        await Task.Run(() =>
+        BrowserIntegrationResult result = await Task.Run(() =>
+            _browserIntegration.LaunchAssistedInstall(kind, _config, _bridge.ListeningPort, launchExternalProcesses: launchBrowserNow));
+
+        var info = _bridge.GetBrowserConnectionStates().FirstOrDefault(b => b.Kind == kind);
+        BrowserSetupBrowserName = info?.DisplayName ?? kind.ToString();
+        BrowserSetupBrowserKindKey = kind.ToString();
+        BrowserSetupExtensionPath = result.ExtensionDirectory;
+        BrowserSetupPageUrl = result.ExtensionsPageUrl;
+        BrowserSetupStatusText = UiStrings.ForBrowserState(BrowserConnectionState.GuidedInstalling, _config.Language);
+        OnPropertyChanged(nameof(BrowserSetupStep1));
+        OnPropertyChanged(nameof(BrowserSetupStep2));
+        OnPropertyChanged(nameof(BrowserSetupStep3));
+        OnPropertyChanged(nameof(BrowserSetupStep4));
+        _clipboardCopyWithRetry?.Invoke(result.ExtensionDirectory);
+
+        RefreshBrowserAndIdeDiscovery();
+        IsBrowserSetupOpen = true;
+    }
+
+    private void CopyStagedExtensionPath()
+    {
+        if (!string.IsNullOrWhiteSpace(BrowserSetupExtensionPath))
         {
-            var result = _browserIntegration.PrepareIntegration(kind, _config, _bridge.ListeningPort);
-            _dispatch(() =>
+            TryCopyRawTextToClipboard(
+                BrowserSetupExtensionPath,
+                _config.Language == UiLanguage.Vi
+                    ? $"Đã sao chép đường dẫn thư mục tiện ích: {BrowserSetupExtensionPath}"
+                    : $"Copied extension directory: {BrowserSetupExtensionPath}");
+        }
+    }
+
+    private void OpenTargetBrowserExtensionsPage()
+    {
+        if (!Enum.TryParse<BrowserKind>(BrowserSetupBrowserKindKey, ignoreCase: true, out var kind))
+            return;
+        var result = _browserIntegration.LaunchAssistedInstall(kind, _config, _bridge.ListeningPort, launchExternalProcesses: true);
+        BrowserSetupExtensionPath = result.ExtensionDirectory;
+        BrowserSetupPageUrl = result.ExtensionsPageUrl;
+    }
+
+    public IReadOnlyList<BrowserStatusRow> GetUnconnectedUnpromptedBrowsers()
+    {
+        return InstalledBrowserRows
+            .Where(b => !b.IsConnected
+                && !_config.DismissedBrowserPrompts.Contains(b.KindKey, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    public void DismissBrowserPrompts(IEnumerable<string> kindKeys)
+    {
+        bool changed = false;
+        foreach (var k in kindKeys)
+        {
+            if (!_config.DismissedBrowserPrompts.Contains(k, StringComparer.OrdinalIgnoreCase))
             {
-                RefreshBrowserAndIdeDiscovery();
-                ShowInfoBar($"{kind} Extension Bridge Ready", result.Message, InfoBarSeverity.Success);
-            });
-        });
+                _config.DismissedBrowserPrompts.Add(k);
+                changed = true;
+            }
+        }
+        if (changed)
+            SaveConfigSafe();
     }
 
     public async Task SaveOAuthClientAsync(string clientId, string clientSecret)
@@ -2678,7 +2817,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _ = RefreshStatsAndEventsAsync();
         });
 
-    private void OnBrowserConnectionsChanged() => _dispatch(RefreshBrowserAndIdeDiscovery);
+    private void OnBrowserConnectionsChanged() => _dispatch(() =>
+    {
+        RefreshBrowserAndIdeDiscovery();
+        SaveConfigSafe();
+
+        if (IsBrowserSetupOpen && !string.IsNullOrWhiteSpace(BrowserSetupBrowserKindKey))
+        {
+            var connectedTarget = ConnectedBrowsers.FirstOrDefault(b =>
+                string.Equals(b.KindKey, BrowserSetupBrowserKindKey, StringComparison.OrdinalIgnoreCase));
+            if (connectedTarget is not null)
+            {
+                IsBrowserSetupOpen = false;
+                ShowInfoBar(
+                    _config.Language == UiLanguage.Vi ? "Đã kết nối trình duyệt" : "Browser Connected",
+                    _config.Language == UiLanguage.Vi
+                        ? $"{connectedTarget.Name} đã kết nối với GhostCode và sẵn sàng nhận diện bài tập."
+                        : $"{connectedTarget.Name} is now connected to GhostCode.",
+                    InfoBarSeverity.Success);
+            }
+        }
+    });
 
     private void OnVersionArchived(ArchiveVersionRecord version)
     {

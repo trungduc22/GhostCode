@@ -58,23 +58,68 @@ public sealed record BrowserIntegrationResult(
     bool Success,
     string ExtensionDirectory,
     string NativeManifestPath,
-    string Message);
+    string Message,
+    string ExtensionsPageUrl = "",
+    string? BrowserExecutablePath = null);
 
 /// <summary>
 /// Discovers Chrome, Microsoft Edge, Mozilla Firefox, and Thorium on Windows
 /// (per-user, system-wide, App Paths registry, custom portable paths) and stages
-/// Chromium/Firefox extension bundles + Native Messaging manifests cleanly.
+/// per-browser extension bundles + headless Native Messaging manifests cleanly.
 /// </summary>
 public sealed class BrowserIntegrationService
 {
+    public const string ChromiumDeterministicExtensionId = "bifmfiolmohcdfknnicfikhhpipkokbc";
     public const string ChromiumDeterministicExtensionOrigin = "chrome-extension://bifmfiolmohcdfknnicfikhhpipkokbc/";
     public const string FirefoxExtensionId = "ghostcode-bridge@trungduc22.github.io";
 
     private readonly IBrowserEnvironmentProbe _probe;
+    private readonly object _stateLock = new();
+    private readonly HashSet<BrowserKind> _guidedInstalling = new();
 
     public BrowserIntegrationService(IBrowserEnvironmentProbe? probe = null)
     {
         _probe = probe ?? new WindowsBrowserEnvironmentProbe();
+    }
+
+    public bool IsGuidedInstalling(BrowserKind kind)
+    {
+        lock (_stateLock)
+            return _guidedInstalling.Contains(kind);
+    }
+
+    public void MarkGuidedInstalling(BrowserKind kind)
+    {
+        lock (_stateLock)
+            _guidedInstalling.Add(kind);
+    }
+
+    public void ClearGuidedInstalling(BrowserKind kind)
+    {
+        lock (_stateLock)
+            _guidedInstalling.Remove(kind);
+    }
+
+    public static string GetExtensionsPageUrl(BrowserKind kind) => kind switch
+    {
+        BrowserKind.Edge => "edge://extensions",
+        BrowserKind.Firefox => "about:debugging#/runtime/this-firefox",
+        _ => "chrome://extensions"
+    };
+
+    public static string GetRegistrySubKey(BrowserKind kind) => kind switch
+    {
+        BrowserKind.Chrome => $@"Software\Google\Chrome\NativeMessagingHosts\{NativeMessagingHost.HostName}",
+        BrowserKind.Edge => $@"Software\Microsoft\Edge\NativeMessagingHosts\{NativeMessagingHost.HostName}",
+        BrowserKind.Thorium => $@"Software\Thorium\NativeMessagingHosts\{NativeMessagingHost.HostName}",
+        BrowserKind.Firefox => $@"Software\Mozilla\NativeMessagingHosts\{NativeMessagingHost.HostName}",
+        _ => $@"Software\Google\Chrome\NativeMessagingHosts\{NativeMessagingHost.HostName}"
+    };
+
+    public static string GetStagedDirectory(BrowserKind kind, string? appDataOverride = null)
+    {
+        var baseExtRoot = Path.Combine(KnownFoldersResolver.ResolveAppDataDir(appDataOverride), "Extensions");
+        return Path.Combine(baseExtRoot, kind.ToString().ToLowerInvariant());
     }
 
     public List<(BrowserKind Kind, string DisplayName, bool IsInstalled, bool IsRunning, string? ExePath, string? Version)> DiscoverInstalledBrowsers(GhostCodeConfig config)
@@ -177,10 +222,9 @@ public sealed class BrowserIntegrationService
         string? hostExecutablePath = null,
         string? appDataOverride = null)
     {
-        var baseExtRoot = Path.Combine(KnownFoldersResolver.ResolveAppDataDir(appDataOverride), "Extensions");
         var isFirefox = kind == BrowserKind.Firefox;
         var srcDir = LocateBundledExtensionFolder(isFirefox ? "browser-extension-firefox" : "browser-extension");
-        var destDir = Path.Combine(baseExtRoot, isFirefox ? "firefox" : "chromium");
+        var destDir = GetStagedDirectory(kind, appDataOverride);
         Directory.CreateDirectory(destDir);
 
         if (srcDir is not null)
@@ -198,14 +242,19 @@ public sealed class BrowserIntegrationService
         {
             pairing_id = AuthenticatedBrowserBridge.DefaultPairingId,
             pairing_secret = config.BridgeAuthToken,
-            port = listeningPort
+            port = listeningPort,
+            browser_name = kind.ToString()
         });
         File.WriteAllText(Path.Combine(destDir, "pairing.generated.json"), pairingJson, Encoding.UTF8);
 
         var nativeManifestDir = Path.Combine(KnownFoldersResolver.ResolveAppDataDir(appDataOverride), "NativeMessaging");
         Directory.CreateDirectory(nativeManifestDir);
         var hostExe = hostExecutablePath ?? Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "GhostCode.App.exe");
-        var nmPath = Path.Combine(nativeManifestDir, isFirefox ? "com.ghostcode.bridge.firefox.json" : "com.ghostcode.bridge.chromium.json");
+        var kindTag = kind.ToString().ToLowerInvariant();
+        var nmPath = Path.Combine(nativeManifestDir, $"com.ghostcode.bridge.{kindTag}.json");
+        var cmdWrapperPath = Path.Combine(nativeManifestDir, $"com.ghostcode.bridge.{kindTag}.cmd");
+        var cmdContent = $"@echo off\r\n\"{hostExe}\" --native-messaging-host --browser {kind} %*\r\n";
+        File.WriteAllText(cmdWrapperPath, cmdContent, Encoding.ASCII);
 
         if (isFirefox)
         {
@@ -213,7 +262,7 @@ public sealed class BrowserIntegrationService
             {
                 name = NativeMessagingHost.HostName,
                 description = "GhostCode Native Messaging Bridge (Firefox)",
-                path = hostExe,
+                path = cmdWrapperPath,
                 type = "stdio",
                 allowed_extensions = new[] { FirefoxExtensionId }
             }, new JsonSerializerOptions { WriteIndented = true });
@@ -221,34 +270,139 @@ public sealed class BrowserIntegrationService
         }
         else
         {
-            NativeMessagingHost.WriteNativeMessagingManifest(nmPath, hostExe, ChromiumDeterministicExtensionOrigin);
+            NativeMessagingHost.WriteNativeMessagingManifest(nmPath, cmdWrapperPath, ChromiumDeterministicExtensionOrigin);
         }
 
         if (OperatingSystem.IsWindows() && appDataOverride is null)
         {
             try
             {
-                var regSubKey = kind switch
+                using var key = Registry.CurrentUser.CreateSubKey(GetRegistrySubKey(kind));
+                key?.SetValue(null, nmPath);
+            }
+            catch { }
+        }
+
+        var pageUrl = GetExtensionsPageUrl(kind);
+        var discoveredExe = DiscoverInstalledBrowsers(config).FirstOrDefault(b => b.Kind == kind).ExePath;
+        var instructions = isFirefox
+            ? $"Staged Firefox WebExtension at '{destDir}' and registered Native Messaging host. Open {pageUrl} -> Load Temporary Add-on."
+            : $"Staged {kind} MV3 extension at '{destDir}' (port {listeningPort}) and registered Native Messaging host.";
+
+        return new BrowserIntegrationResult(true, destDir, nmPath, instructions, pageUrl, discoveredExe);
+    }
+
+    [SupportedOSPlatform("windows")]
+    public BrowserIntegrationResult LaunchAssistedInstall(
+        BrowserKind kind,
+        GhostCodeConfig config,
+        int listeningPort,
+        bool launchExternalProcesses = true,
+        string? hostExecutablePath = null,
+        string? appDataOverride = null)
+    {
+        var result = PrepareIntegration(kind, config, listeningPort, hostExecutablePath, appDataOverride);
+        MarkGuidedInstalling(kind);
+
+        if (launchExternalProcesses)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(result.BrowserExecutablePath) && File.Exists(result.BrowserExecutablePath))
                 {
-                    BrowserKind.Chrome => $@"Software\Google\Chrome\NativeMessagingHosts\{NativeMessagingHost.HostName}",
-                    BrowserKind.Edge => $@"Software\Microsoft\Edge\NativeMessagingHosts\{NativeMessagingHost.HostName}",
-                    BrowserKind.Thorium => $@"Software\Thorium\NativeMessagingHosts\{NativeMessagingHost.HostName}",
-                    BrowserKind.Firefox => $@"Software\Mozilla\NativeMessagingHosts\{NativeMessagingHost.HostName}",
-                    _ => null
-                };
-                if (regSubKey is not null)
+                    Process.Start(new ProcessStartInfo(result.BrowserExecutablePath, result.ExtensionsPageUrl)
+                    {
+                        UseShellExecute = true
+                    });
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (Directory.Exists(result.ExtensionDirectory))
                 {
-                    using var key = Registry.CurrentUser.CreateSubKey(regSubKey);
-                    key?.SetValue(null, nmPath);
+                    Process.Start(new ProcessStartInfo("explorer.exe", result.ExtensionDirectory)
+                    {
+                        UseShellExecute = true
+                    });
                 }
             }
             catch { }
         }
 
-        var instructions = isFirefox
-            ? $"Staged Firefox WebExtension at '{destDir}' and registered Native Messaging host. Open about:debugging -> Load Temporary Add-on (or install signed XPI)."
-            : $"Staged Chromium MV3 extension at '{destDir}' (pairing port {listeningPort}) and registered Native Messaging host.";
+        return result;
+    }
 
-        return new BrowserIntegrationResult(true, destDir, nmPath, instructions);
+    public bool IsNativeHostHealthy(BrowserKind kind, string? appDataOverride = null)
+    {
+        if (!OperatingSystem.IsWindows() || _probe is not WindowsBrowserEnvironmentProbe)
+            return false;
+
+        var regPath = appDataOverride is null
+            ? _probe.ReadRegistryString($@"HKEY_CURRENT_USER\{GetRegistrySubKey(kind)}", string.Empty)
+            : Path.Combine(KnownFoldersResolver.ResolveAppDataDir(appDataOverride), "NativeMessaging", $"com.ghostcode.bridge.{kind.ToString().ToLowerInvariant()}.json");
+
+        if (string.IsNullOrWhiteSpace(regPath) || !File.Exists(regPath))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(regPath));
+            if (!doc.RootElement.TryGetProperty("path", out var pathEl))
+                return false;
+            var target = pathEl.GetString();
+            return !string.IsNullOrWhiteSpace(target) && File.Exists(target);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public bool IsExtensionDetectedInBrowserProfile(BrowserKind kind)
+    {
+        if (!OperatingSystem.IsWindows() || _probe is not WindowsBrowserEnvironmentProbe)
+            return false;
+
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(local))
+            return false;
+
+        IEnumerable<string> prefCandidates = kind switch
+        {
+            BrowserKind.Edge => new[]
+            {
+                Path.Combine(local, "Microsoft", "Edge", "User Data", "Default", "Secure Preferences"),
+                Path.Combine(local, "Microsoft", "Edge", "User Data", "Default", "Preferences")
+            },
+            BrowserKind.Thorium => new[]
+            {
+                Path.Combine(local, "Thorium", "User Data", "Default", "Secure Preferences"),
+                Path.Combine(local, "Thorium", "User Data", "Default", "Preferences")
+            },
+            BrowserKind.Chrome => new[]
+            {
+                Path.Combine(local, "Google", "Chrome", "User Data", "Default", "Secure Preferences"),
+                Path.Combine(local, "Google", "Chrome", "User Data", "Default", "Preferences")
+            },
+            _ => Array.Empty<string>()
+        };
+
+        foreach (var prefPath in prefCandidates)
+        {
+            try
+            {
+                if (!File.Exists(prefPath))
+                    continue;
+                using var fs = new FileStream(prefPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var sr = new StreamReader(fs, Encoding.UTF8);
+                var text = sr.ReadToEnd();
+                if (text.Contains(ChromiumDeterministicExtensionId, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            catch { }
+        }
+        return false;
     }
 }

@@ -1,13 +1,16 @@
 const DEFAULT_PORT = 48123;
 const EXT_VERSION = "1.4.0";
+const KEEPALIVE_ALARM = "ghostcode-keepalive";
 const injectedByTab = new Map();
 let activePort = DEFAULT_PORT;
+let configuredBrowserName = "";
 let sessionToken = "";
 let sessionExpiresAt = 0;
 let lastSentKey = "";
 let lastSentAt = 0;
 
 function detectBrowserName() {
+  if (configuredBrowserName) return configuredBrowserName;
   try {
     const ua = (navigator.userAgent || "").toLowerCase();
     const brands = Array.isArray(navigator.userAgentData?.brands)
@@ -131,11 +134,16 @@ async function tryNativeHandshake() {
   return new Promise((resolve) => {
     try {
       chrome.runtime.sendNativeMessage("com.ghostcode.bridge", { type: "handshake" }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.session_token) {
+        if (chrome.runtime.lastError || !resp) {
           resolve("");
           return;
         }
         if (resp.port) activePort = resp.port;
+        if (resp.browser_name) configuredBrowserName = resp.browser_name;
+        if (!resp.session_token) {
+          resolve("");
+          return;
+        }
         sessionToken = resp.session_token;
         sessionExpiresAt = Date.now() + 240_000;
         resolve(sessionToken);
@@ -154,6 +162,7 @@ async function loadLocalPairing() {
     const data = await resp.json();
     if (!data || !data.pairing_secret || !data.pairing_id) return null;
     if (data.port) activePort = data.port;
+    if (data.browser_name) configuredBrowserName = data.browser_name;
     return data;
   } catch {
     return null;
@@ -165,10 +174,10 @@ async function ensureToken(forceRefresh = false) {
     return sessionToken;
   }
 
+  const pairing = await loadLocalPairing();
   const nativeTok = await tryNativeHandshake();
   if (nativeTok) return nativeTok;
 
-  const pairing = await loadLocalPairing();
   if (!pairing) return "";
 
   const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
@@ -294,8 +303,27 @@ async function scanFocusedActiveTab() {
   try {
     const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     for (const tab of active) {
+      if (extractFromTab(tab)) {
+        await processTab(tab);
+        return;
+      }
+      // If active tab is chrome://extensions or non-problem URL, check active problem tabs in other windows first
+      const allActive = await chrome.tabs.query({ active: true });
+      const problemTab = allActive.find((t) => extractFromTab(t) !== null);
+      if (problemTab) {
+        await processTab(problemTab);
+        return;
+      }
       await processTab(tab);
       return;
+    }
+  } catch {}
+}
+
+function ensureKeepaliveAlarm() {
+  try {
+    if (chrome.alarms && chrome.alarms.create) {
+      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.4 });
     }
   } catch {}
 }
@@ -328,6 +356,7 @@ chrome.runtime.onInstalled.addListener(() => {
   injectedByTab.clear();
   sessionToken = "";
   sessionExpiresAt = 0;
+  ensureKeepaliveAlarm();
   sendHeartbeat();
   scanFocusedActiveTab();
 });
@@ -336,9 +365,19 @@ chrome.runtime.onStartup.addListener(() => {
   injectedByTab.clear();
   sessionToken = "";
   sessionExpiresAt = 0;
+  ensureKeepaliveAlarm();
   sendHeartbeat();
   scanFocusedActiveTab();
 });
+
+if (chrome.alarms && chrome.alarms.onAlarm) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === KEEPALIVE_ALARM) {
+      sendHeartbeat();
+      scanFocusedActiveTab();
+    }
+  });
+}
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
@@ -365,6 +404,7 @@ if (chrome.windows && chrome.windows.onFocusChanged) {
   });
 }
 
+ensureKeepaliveAlarm();
 setInterval(sendHeartbeat, 4000);
 setInterval(scanFocusedActiveTab, 5000);
 sendHeartbeat();

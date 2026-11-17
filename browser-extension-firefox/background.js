@@ -266,6 +266,16 @@ async function scanFocusedActiveTab() {
   try {
     const active = await ext.tabs.query({ active: true, lastFocusedWindow: true });
     for (const tab of active) {
+      if (extractFromTab(tab)) {
+        await processTab(tab);
+        return;
+      }
+      const allActive = await ext.tabs.query({ active: true });
+      const problemTab = allActive.find((t) => extractFromTab(t) !== null);
+      if (problemTab) {
+        await processTab(problemTab);
+        return;
+      }
       await processTab(tab);
       return;
     }

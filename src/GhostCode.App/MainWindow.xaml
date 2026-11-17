@@ -243,5 +243,60 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!-- IDM-Like Assisted Browser Extension Setup Wizard Overlay -->
+        <Grid
+            x:Name="BrowserSetupOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="3"
+            Visibility="{x:Bind ViewModel.BrowserSetupOverlayVisibility, Mode=OneWay}"
+            Background="#88000000"
+            Padding="32">
+            <Border
+                MaxWidth="620"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Padding="22"
+                CornerRadius="12"
+                Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupTitle, Mode=OneWay}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupStatusText, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="{x:Bind ViewModel.ExpStrings.QuickActionsClose, Mode=OneWay}" Command="{x:Bind ViewModel.CloseBrowserSetupCommand}" />
+                    </Grid>
+
+                    <Border Padding="12" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupStep1, Mode=OneWay}" TextWrapping="Wrap" FontSize="13" />
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupStep2, Mode=OneWay}" TextWrapping="Wrap" FontSize="13" />
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupStep3, Mode=OneWay}" TextWrapping="Wrap" FontSize="13" />
+                            <TextBlock Text="{x:Bind ViewModel.BrowserSetupStep4, Mode=OneWay}" TextWrapping="Wrap" FontSize="13" FontWeight="SemiBold" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBox
+                        IsReadOnly="True"
+                        FontFamily="Consolas"
+                        FontSize="12"
+                        Text="{x:Bind ViewModel.BrowserSetupExtensionPath, Mode=OneWay}" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Mở trang tiện ích" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.OpenBrowserExtensionsPageCommand}" />
+                        <Button Content="Mở thư mục" Command="{x:Bind ViewModel.OpenStagedExtensionFolderCommand}" />
+                        <Button Content="Sao chép đường dẫn" Command="{x:Bind ViewModel.CopyStagedExtensionPathCommand}" />
+                        <Button Content="Kiểm tra kết nối" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

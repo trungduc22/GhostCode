@@ -1,7 +1,10 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
+using GhostCode.Core.Browser;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Storage;
@@ -152,5 +155,101 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
         Assert.Equal(BackupProtectionState.Protected, snap.ProtectionState);
         Assert.Equal(0, snap.ErroredWatchCount);
         Assert.Contains("Đang bảo vệ", snap.StatusSummary);
+    }
+
+    private sealed class FixedBrowserProbe : IBrowserEnvironmentProbe
+    {
+        public HashSet<string> ExistingPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> RunningProcesses { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public bool FileExists(string path) => ExistingPaths.Contains(path);
+        public IReadOnlyCollection<string> GetRunningProcessNames() => RunningProcesses;
+        public string? GetFileVersion(string path) => "130.0.0.0";
+        public string? ReadRegistryString(string fullKeyPath, string valueName) => null;
+    }
+
+    [Fact]
+    public async Task P1_ScenarioC_BrowserStagingAndNativeMessaging_IdentifiesThoriumAndEdgeAndTransitionsOnlyOnHandshake()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var probe = new FixedBrowserProbe();
+        probe.ExistingPaths.Add(@"C:\Mock\msedge.exe");
+        probe.ExistingPaths.Add(@"C:\Mock\thorium.exe");
+
+        var cfg = new GhostCodeConfig
+        {
+            HttpPort = 0,
+            BridgeAuthToken = "p1-bridge-secret",
+            CustomBrowserPaths =
+            {
+                ["Edge"] = @"C:\Mock\msedge.exe",
+                ["Thorium"] = @"C:\Mock\thorium.exe"
+            }
+        };
+
+        var integration = new BrowserIntegrationService(probe);
+        await using var bridge = new AuthenticatedBrowserBridge(cfg, integration);
+        bridge.Start();
+        cfg.HttpPort = bridge.ListeningPort;
+
+        var appDataRoot = Path.Combine(_root, "LocalAppData");
+        var thResult = integration.LaunchAssistedInstall(
+            BrowserKind.Thorium,
+            cfg,
+            bridge.ListeningPort,
+            launchExternalProcesses: false,
+            hostExecutablePath: @"C:\Mock\GhostCode.App.exe",
+            appDataOverride: appDataRoot);
+
+        Assert.True(thResult.Success);
+        Assert.Equal("chrome://extensions", thResult.ExtensionsPageUrl);
+        Assert.True(File.Exists(Path.Combine(thResult.ExtensionDirectory, "pairing.generated.json")));
+        Assert.True(File.Exists(Path.Combine(thResult.ExtensionDirectory, "manifest.json")));
+
+        var pairingText = await File.ReadAllTextAsync(Path.Combine(thResult.ExtensionDirectory, "pairing.generated.json"));
+        Assert.Contains("\"browser_name\":\"Thorium\"", pairingText);
+
+        var manifestText = await File.ReadAllTextAsync(Path.Combine(thResult.ExtensionDirectory, "manifest.json"));
+        Assert.Contains("\"alarms\"", manifestText);
+
+        var nmManifest = await File.ReadAllTextAsync(thResult.NativeManifestPath);
+        Assert.Contains("--native-messaging-host", File.ReadAllText(Path.Combine(Path.GetDirectoryName(thResult.NativeManifestPath)!, "com.ghostcode.bridge.thorium.cmd")));
+        Assert.Contains("com.ghostcode.bridge.thorium.cmd", nmManifest);
+
+        // Before handshake: Thorium is GuidedInstalling, Edge is Installed (neither Connected)
+        var initialStates = bridge.GetBrowserConnectionStates();
+        Assert.Equal(BrowserConnectionState.GuidedInstalling, initialStates.Single(b => b.Kind == BrowserKind.Thorium).ConnectionState);
+        Assert.Equal(BrowserConnectionState.Installed, initialStates.Single(b => b.Kind == BrowserKind.Edge).ConnectionState);
+
+        // Simulate Chrome/Thorium launching GhostCode.App.exe --native-messaging-host over stdio
+        Assert.True(NativeMessagingHost.IsNativeMessagingInvocation(new[] { "--native-messaging-host", "--browser", "Thorium" }));
+        Assert.True(NativeMessagingHost.IsNativeMessagingInvocation(new[] { BrowserIntegrationService.ChromiumDeterministicExtensionOrigin }));
+
+        using var inputStream = new MemoryStream();
+        using var outputStream = new MemoryStream();
+        await NativeMessagingHost.WriteMessageAsync(inputStream, """{"type":"handshake"}""");
+        inputStream.Position = 0;
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        int exitCode = await NativeMessagingHost.RunStdioBridgeStreamsAsync(inputStream, outputStream, cfg, "Thorium", http);
+        Assert.Equal(0, exitCode);
+
+        outputStream.Position = 0;
+        var lenBuf = new byte[4];
+        Assert.Equal(4, await outputStream.ReadAsync(lenBuf));
+        int respLen = BinaryPrimitives.ReadInt32LittleEndian(lenBuf);
+        var respBytes = new byte[respLen];
+        Assert.Equal(respLen, await outputStream.ReadAsync(respBytes));
+        using var respDoc = JsonDocument.Parse(respBytes);
+        Assert.True(respDoc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("Thorium", respDoc.RootElement.GetProperty("browser_name").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(respDoc.RootElement.GetProperty("session_token").GetString()));
+
+        // After real handshake: Thorium transitions to ExtensionConnected while Edge stays Installed
+        var afterStates = bridge.GetBrowserConnectionStates();
+        Assert.Equal(BrowserConnectionState.ExtensionConnected, afterStates.Single(b => b.Kind == BrowserKind.Thorium).ConnectionState);
+        Assert.Equal(BrowserConnectionState.Installed, afterStates.Single(b => b.Kind == BrowserKind.Edge).ConnectionState);
+        Assert.Contains("Thorium", cfg.KnownConnectedBrowsers);
     }
 }

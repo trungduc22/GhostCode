@@ -264,23 +264,55 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
 
     private void WritePairingFileIfConfigured()
     {
-        if (string.IsNullOrWhiteSpace(_config.PairingFilePath))
-            return;
+        if (!string.IsNullOrWhiteSpace(_config.PairingFilePath))
+        {
+            WriteAtomicPairingFile(_config.PairingFilePath, browserName: null);
+        }
+
+        // Keep any already-staged per-browser extension folders synced when running against real AppData
         try
         {
-            var dir = Path.GetDirectoryName(_config.PairingFilePath);
+            var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (!string.IsNullOrWhiteSpace(localApp) && !string.IsNullOrWhiteSpace(_config.DatabasePath)
+                && Path.GetFullPath(_config.DatabasePath).StartsWith(Path.GetFullPath(localApp), StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var kind in new[] { BrowserKind.Chrome, BrowserKind.Edge, BrowserKind.Firefox, BrowserKind.Thorium })
+                {
+                    var stagedDir = BrowserIntegrationService.GetStagedDirectory(kind);
+                    var stagedPairing = Path.Combine(stagedDir, "pairing.generated.json");
+                    if (Directory.Exists(stagedDir) && File.Exists(stagedPairing))
+                        WriteAtomicPairingFile(stagedPairing, kind.ToString());
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void WriteAtomicPairingFile(string path, string? browserName)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            var json = JsonSerializer.Serialize(new
-            {
-                pairing_id = DefaultPairingId,
-                pairing_secret = _config.BridgeAuthToken,
-                port = ListeningPort
-            });
-            var tmp = $"{_config.PairingFilePath}.tmp.{Guid.NewGuid():N}";
+            var json = browserName is null
+                ? JsonSerializer.Serialize(new
+                {
+                    pairing_id = DefaultPairingId,
+                    pairing_secret = _config.BridgeAuthToken,
+                    port = ListeningPort
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    pairing_id = DefaultPairingId,
+                    pairing_secret = _config.BridgeAuthToken,
+                    port = ListeningPort,
+                    browser_name = browserName
+                });
+            var tmp = $"{path}.tmp.{Guid.NewGuid():N}";
             File.WriteAllText(tmp, json, Encoding.UTF8);
-            File.Move(tmp, _config.PairingFilePath, overwrite: true);
+            File.Move(tmp, path, overwrite: true);
         }
         catch { }
     }
@@ -899,7 +931,10 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             changed = !_browserSessions.TryGetValue(kind, out var existing)
                 || nowMs - existing.LastHeartbeatUnixMs > HeartbeatTimeoutMs;
             _browserSessions[kind] = new ActiveBrowserSession(kind, extensionVersion ?? existing?.ExtensionVersion ?? "1.4.0", nowMs);
+            if (!_config.KnownConnectedBrowsers.Contains(kind.ToString(), StringComparer.OrdinalIgnoreCase))
+                _config.KnownConnectedBrowsers.Add(kind.ToString());
         }
+        _browserIntegration.ClearGuidedInstalling(kind);
         if (changed)
             BrowserConnectionsChanged?.Invoke();
     }
@@ -919,6 +954,10 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             }
 
             bool heartbeatFresh = sess is not null && nowMs - sess.LastHeartbeatUnixMs <= HeartbeatTimeoutMs;
+            bool isGuidedInstalling = _browserIntegration.IsGuidedInstalling(kind);
+            bool inProfile = installed && _browserIntegration.IsExtensionDetectedInBrowserProfile(kind);
+            bool knownConnected = _config.KnownConnectedBrowsers.Contains(kind.ToString(), StringComparer.OrdinalIgnoreCase);
+
             BrowserConnectionState state;
             string detail;
             if (heartbeatFresh)
@@ -926,10 +965,23 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                 state = BrowserConnectionState.ExtensionConnected;
                 detail = $"Authenticated extension active (v{sess!.ExtensionVersion})";
             }
+            else if (isGuidedInstalling)
+            {
+                state = BrowserConnectionState.GuidedInstalling;
+                detail = "Guided setup open — waiting for extension handshake";
+            }
             else if (sess is not null)
             {
                 state = BrowserConnectionState.ExtensionDisconnected;
                 detail = "Extension heartbeat expired / browser closed";
+            }
+            else if (installed && (inProfile || knownConnected))
+            {
+                bool hostHealthy = _browserIntegration.IsNativeHostHealthy(kind);
+                state = hostHealthy ? BrowserConnectionState.PendingHandshake : BrowserConnectionState.RepairNeeded;
+                detail = hostHealthy
+                    ? "Extension installed — waiting for browser tab wakeup"
+                    : "Native Messaging bridge needs repair";
             }
             else if (isRunning)
             {
@@ -939,7 +991,7 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             else if (installed)
             {
                 state = BrowserConnectionState.Installed;
-                detail = "Browser installed";
+                detail = "Extension not installed yet";
             }
             else
             {

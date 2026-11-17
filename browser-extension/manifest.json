@@ -8,7 +8,8 @@
     "tabs",
     "activeTab",
     "scripting",
-    "nativeMessaging"
+    "nativeMessaging",
+    "alarms"
   ],
   "host_permissions": [
     "*://code.ptit.edu.vn/*",
@@ -17,7 +18,7 @@
     "*://*.leetcode.com/*",
     "*://*.leetcode.cn/*",
     "*://*.hackerrank.com/*",
-    "http://127.0.0.1:48123/*"
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background.js"

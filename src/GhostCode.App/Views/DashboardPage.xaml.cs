@@ -75,4 +75,10 @@ public sealed partial class DashboardPage : Page
         if (!string.IsNullOrWhiteSpace(path))
             ViewModel.AddWatchedFolder(path);
     }
+
+    private async void ConfigureBrowserExtension_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string kindKey })
+            await ViewModel.OpenBrowserSetupCommand.ExecuteAsync(kindKey);
+    }
 }

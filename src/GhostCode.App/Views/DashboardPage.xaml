@@ -76,34 +76,54 @@
                             Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
                     </Grid>
 
-                    <!-- Clean Empty State when 0 browsers have live extension heartbeats -->
+                    <!-- Empty State only when 0 supported browsers are installed on this PC -->
                     <TextBlock
                         x:Name="NoConnectedBrowsersText"
-                        Visibility="{x:Bind ViewModel.NoConnectedBrowsersVisibility, Mode=OneWay}"
+                        Visibility="{x:Bind ViewModel.NoInstalledBrowsersVisibility, Mode=OneWay}"
                         Text="{x:Bind ViewModel.Strings.NoConnectedBrowsers, Mode=OneWay}"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                         FontStyle="Italic" />
 
-                    <!-- Live Connected Browser Badges ONLY -->
-                    <ItemsControl ItemsSource="{x:Bind ViewModel.ConnectedBrowsers}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <StackPanel Orientation="Horizontal" Spacing="8" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
+                    <!-- Installed Browsers & Real Extension Connection States -->
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.InstalledBrowserRows}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate x:DataType="vm:BrowserStatusRow">
                                 <Border
-                                    Padding="10,6"
+                                    Margin="0,0,0,6"
+                                    Padding="12,8"
                                     CornerRadius="6"
-                                    Background="{ThemeResource SystemFillColorSuccessBackgroundBrush}"
-                                    BorderBrush="{ThemeResource SystemFillColorSuccessBrush}"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                                     BorderThickness="1">
-                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="{ThemeResource SystemFillColorSuccessBrush}" VerticalAlignment="Center" />
-                                        <TextBlock Text="{x:Bind StateBadge}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
-                                        <TextBlock Text="{x:Bind VersionText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                    </StackPanel>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="15" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
+                                            <TextBlock Text="{x:Bind DetailText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <Border
+                                            Grid.Column="2"
+                                            Padding="8,3"
+                                            CornerRadius="6"
+                                            VerticalAlignment="Center"
+                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1">
+                                            <TextBlock Text="{x:Bind StateBadge}" FontWeight="SemiBold" FontSize="11" />
+                                        </Border>
+                                        <Button
+                                            Grid.Column="3"
+                                            Content="{x:Bind ActionButtonLabel}"
+                                            Tag="{x:Bind KindKey}"
+                                            Click="ConfigureBrowserExtension_Click"
+                                            VerticalAlignment="Center" />
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>

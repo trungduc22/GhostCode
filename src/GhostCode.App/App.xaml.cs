@@ -180,6 +180,10 @@ public partial class App : Application
                     Path.GetDirectoryName(configPath)!);
                 await ShutdownAndExitAsync();
             }
+            else
+            {
+                _ = _window.PromptBrowserOnboardingIfNeededAsync();
+            }
         }
         catch (Exception ex)
         {

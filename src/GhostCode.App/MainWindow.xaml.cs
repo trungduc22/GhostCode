@@ -356,10 +356,18 @@ public sealed partial class MainWindow : Window
 
     private void RootGrid_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key == VirtualKey.Escape && ViewModel.IsQuickActionsOpen)
+        if (e.Key == VirtualKey.Escape)
         {
-            ViewModel.IsQuickActionsOpen = false;
-            e.Handled = true;
+            if (ViewModel.IsQuickActionsOpen)
+            {
+                ViewModel.IsQuickActionsOpen = false;
+                e.Handled = true;
+            }
+            else if (ViewModel.IsBrowserSetupOpen)
+            {
+                ViewModel.IsBrowserSetupOpen = false;
+                e.Handled = true;
+            }
         }
     }
 
@@ -375,6 +383,61 @@ public sealed partial class MainWindow : Window
                 ViewModel.SelectedFileGroup = matching;
         }
         NavigateToTag("archive");
+    }
+
+    private bool _browserOnboardingChecked;
+
+    public async Task PromptBrowserOnboardingIfNeededAsync()
+    {
+        if (_browserOnboardingChecked || RootGrid.XamlRoot is null)
+            return;
+        _browserOnboardingChecked = true;
+
+        var pending = ViewModel.GetUnconnectedUnpromptedBrowsers();
+        if (pending.Count == 0)
+            return;
+
+        bool isVi = ViewModel.Config.Language == UiLanguage.Vi;
+        var names = string.Join(", ", pending.Select(p => p.Name));
+        var dontAskBox = new CheckBox
+        {
+            Content = isVi ? "Không hỏi lại với trình duyệt này" : "Don't ask again for these browsers",
+            IsChecked = false
+        };
+
+        var body = new StackPanel { Spacing = 10 };
+        body.Children.Add(new TextBlock
+        {
+            Text = isVi
+                ? $"GhostCode phát hiện trình duyệt trên máy: {names}.\nCài tiện ích mở rộng để tự động nhận diện bài tập CodePTIT, Codeforces, VNOJ, LeetCode và HackerRank."
+                : $"GhostCode detected installed browsers: {names}.\nInstall the extension to automatically detect problems on CodePTIT, Codeforces, VNOJ, LeetCode, and HackerRank.",
+            TextWrapping = TextWrapping.Wrap
+        });
+        body.Children.Add(dontAskBox);
+
+        var dialog = new ContentDialog
+        {
+            Title = isVi ? "Kết nối GhostCode với trình duyệt?" : "Connect GhostCode to your browser?",
+            Content = body,
+            PrimaryButtonText = isVi ? "Cài tiện ích" : "Install Extension",
+            CloseButtonText = isVi ? "Để sau" : "Later",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = RootGrid.XamlRoot
+        };
+
+        try
+        {
+            var res = await dialog.ShowAsync();
+            if (dontAskBox.IsChecked == true)
+                ViewModel.DismissBrowserPrompts(pending.Select(p => p.KindKey));
+
+            if (res == ContentDialogResult.Primary)
+                await ViewModel.OpenBrowserSetupAsync(pending[0].KindKey, launchBrowserNow: true);
+        }
+        catch
+        {
+            // Ignore dialog reentrancy errors during shutdown/navigation
+        }
     }
 
     private static bool TryCopyTextToClipboard(string text)
