@@ -82,6 +82,9 @@ public sealed partial class DashboardPage : Page
             await ViewModel.OpenBrowserSetupCommand.ExecuteAsync(kindKey);
     }
 
+    private void OpenDevToolsBrowsers_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.RequestNavigate("DevTools");
+
     private void NavigateArchive_Click(object sender, RoutedEventArgs e) =>
         ViewModel.RequestNavigate("Archive");
 

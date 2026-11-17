@@ -130,24 +130,35 @@ public static class UiSelfTestRunner
             while (Environment.TickCount64 < waitDeadline && (vm.ConnectedBrowsers.Count == 0 || vm.ActiveCode != "CPP0101"))
                 await Task.Delay(100);
 
-            bool cardOrderOk = false;
+            bool browserSummaryAboveProblemOk = false;
             if (window.CurrentPageContent is DashboardPage dashPage
-                && dashPage.FindName("ConnectedBrowsersCard") is FrameworkElement browsersCard
+                && dashPage.FindName("BrowserSummaryButton") is FrameworkElement browserSummaryBtn
                 && dashPage.FindName("DetectedProblemCard") is FrameworkElement problemCard)
             {
                 dashPage.UpdateLayout();
-                var bPt = browsersCard.TransformToVisual(dashPage).TransformPoint(new Windows.Foundation.Point(0, 0));
+                var bPt = browserSummaryBtn.TransformToVisual(dashPage).TransformPoint(new Windows.Foundation.Point(0, 0));
                 var pPt = problemCard.TransformToVisual(dashPage).TransformPoint(new Windows.Foundation.Point(0, 0));
-                cardOrderOk = bPt.Y < pPt.Y;
+                browserSummaryAboveProblemOk = bPt.Y < pPt.Y
+                    && vm.CompactBrowserSummaryText.Contains("Microsoft Edge", StringComparison.Ordinal);
             }
 
             bool dashOk = initialEmptyOk
                 && vm.ConnectedBrowsers.Count >= 1
                 && vm.ActiveCode == "CPP0101"
                 && vm.ActiveFilenamePreview == "CPP0101_Tinh_Tong_Hai_So.cpp"
-                && cardOrderOk;
+                && browserSummaryAboveProblemOk;
             Record("DashboardBrowsersAboveProblem", dashOk,
-                $"emptyInit={initialEmptyOk}, connected={vm.ConnectedBrowsers.Count}, preview={vm.ActiveFilenamePreview}, cardOrder={cardOrderOk}");
+                $"emptyInit={initialEmptyOk}, connected={vm.ConnectedBrowsers.Count}, summary='{vm.CompactBrowserSummaryText}', cardOrder={browserSummaryAboveProblemOk}");
+
+            window.NavigateToTag("DevTools");
+            await Task.Delay(150);
+            bool devToolsBrowserRelocatedOk = window.CurrentPageContent is DevelopmentToolsPage dtPage
+                && dtPage.FindName("DevToolsBrowsersSection") is FrameworkElement
+                && vm.InstalledBrowserRows.Count >= 1;
+            Record("BrowserManagementInDevTools", devToolsBrowserRelocatedOk);
+            await CaptureAsync("08_devtools.png");
+            window.NavigateToTag("Dashboard");
+            await Task.Delay(150);
 
             bool compactDevToolsOk = window.CurrentPageContent is DashboardPage dp2
                 && dp2.FindName("DevToolsSummaryCard") is FrameworkElement
@@ -176,24 +187,44 @@ public static class UiSelfTestRunner
             bool excludedGuardOk = vm.InfoBarSeverity == InfoBarSeverity.Error;
 
             bool settingsLayoutOk = false;
+            bool toggleStableOk = false;
             if (window.CurrentPageContent is SettingsPage sp
                 && sp.FindName("SettingsScrollViewer") is ScrollViewer sv
                 && sp.FindName("MonitoredFoldersItems") is ItemsControl ic)
             {
                 sp.UpdateLayout();
                 settingsLayoutOk = sv.ViewportWidth > 400 && ic.ActualWidth >= 200 && ic.ActualWidth <= sv.ViewportWidth + 2;
+                double hBefore = ic.ActualHeight;
+                vm.MinimizeToTrayOnClose = !vm.MinimizeToTrayOnClose;
+                vm.EstimateActiveCodingTime = !vm.EstimateActiveCodingTime;
+                sp.UpdateLayout();
+                double hAfter = ic.ActualHeight;
+                vm.EstimateActiveCodingTime = !vm.EstimateActiveCodingTime;
+                vm.MinimizeToTrayOnClose = !vm.MinimizeToTrayOnClose;
+                toggleStableOk = Math.Abs(hBefore - hAfter) < 1.0 && sv.ScrollableWidth <= 2.0;
             }
-            Record("RepairedSettingsLayout", settingsLayoutOk, $"settingsLayoutOk={settingsLayoutOk}");
+            Record("RepairedSettingsLayout", settingsLayoutOk && toggleStableOk, $"settingsLayoutOk={settingsLayoutOk}, toggleStableOk={toggleStableOk}");
             await CaptureAsync("03_settings.png");
 
-            // 5. Language & Theme switching
-            vm.SelectedThemeIndex = 1; // Dark
-            bool darkOk = window.CurrentRootTheme == ElementTheme.Dark;
-            vm.SelectedThemeIndex = 2; // Light
-            bool lightOk = window.CurrentRootTheme == ElementTheme.Light;
+            // 5. Language & Fixed Light/Dark/System Theme mapping
+            vm.SelectedThemeIndex = 1; // Light
+            bool lightOk = window.CurrentRootTheme == ElementTheme.Light && config.Theme == ThemePreference.Light;
+            vm.SelectedThemeIndex = 2; // Dark
+            bool darkOk = window.CurrentRootTheme == ElementTheme.Dark && config.Theme == ThemePreference.Dark;
             vm.SelectedThemeIndex = 0; // System
-            bool themeOk = darkOk && lightOk && window.CurrentRootTheme == ElementTheme.Default;
-            Record("LightDarkThemeSwitch", themeOk);
+            bool themeOk = darkOk && lightOk && window.CurrentRootTheme == ElementTheme.Default && config.Theme == ThemePreference.System;
+            Record("LightDarkThemeSwitch", themeOk, $"light={lightOk}, dark={darkOk}");
+
+            // Notification banner auto-dismiss test (default 15s saved, test 1s live timer cleanly)
+            int savedDur = config.NotificationDurationSeconds;
+            config.NotificationDurationSeconds = 1;
+            vm.ShowInfoBar("Thông báo thử", "Tự đóng sau 1 giây.", InfoBarSeverity.Informational);
+            await Task.Delay(120);
+            bool openedOk = vm.InfoBarOpen;
+            await Task.Delay(1350);
+            bool dismissedOk = !vm.InfoBarOpen;
+            config.NotificationDurationSeconds = savedDur;
+            Record("NotificationAutoDismiss", openedOk && dismissedOk, $"opened={openedOk}, dismissed={dismissedOk}");
 
             vm.SelectedLanguageIndex = 1; // English
             bool enOk = vm.Strings.NavDashboard == "Dashboard" && vm.Strings.NavCloud == "Drive" && vm.UxStrings.NavDevTools == "Development Tools";
@@ -273,9 +304,13 @@ public static class UiSelfTestRunner
                 await vm.RunOrStopCodeCommand.ExecuteAsync(null);
                 bool runnerOk = vm.StdoutText.Trim() == "579" && vm.IoOutputText.Trim() == "579";
                 bool cleanDiagOk = vm.StderrPanelVisibility == Visibility.Collapsed;
+                bool cleanStatusLineOk = string.IsNullOrEmpty(vm.RunnerMetricsText)
+                    && vm.RunnerStatusText.Contains("Exit 0", StringComparison.Ordinal)
+                    && !vm.ConsoleLogText.Contains("Compiling & running", StringComparison.Ordinal)
+                    && !vm.ConsoleLogText.Contains("---", StringComparison.Ordinal);
                 Record("LiveCodeRunnerSplitIo", runnerOk, $"stdout='{vm.StdoutText.Trim()}', status='{vm.RunnerStatusText}'");
-                Record("SingleRunButtonAndSeparatedDiagnostics", singleRunBtnOk && runnerOk && cleanDiagOk,
-                    $"singleBtn={singleRunBtnOk}, stdout='{vm.StdoutText.Trim()}', stderrCollapsed={cleanDiagOk}");
+                Record("SingleRunButtonAndSeparatedDiagnostics", singleRunBtnOk && runnerOk && cleanDiagOk && cleanStatusLineOk,
+                    $"singleBtn={singleRunBtnOk}, stdout='{vm.StdoutText.Trim()}', stderrCollapsed={cleanDiagOk}, cleanStatus={cleanStatusLineOk}");
                 await CaptureAsync("02_archive_runner.png");
 
                 // Version Diff & Samples / Timeline tab
@@ -365,7 +400,7 @@ public static class UiSelfTestRunner
 
             // 10. Dark Theme Dashboard + Live Mica Backdrop Switch
             window.NavigateToTag("Dashboard");
-            vm.SelectedThemeIndex = 1; // Dark
+            vm.SelectedThemeIndex = 2; // Dark
             await CaptureAsync("05_dark_dashboard.png");
             vm.SelectedThemeIndex = 0; // Restore System
 
@@ -377,18 +412,18 @@ public static class UiSelfTestRunner
             bool baseOk = window.SystemBackdrop is MicaBackdrop mbBase && mbBase.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base;
             Record("MicaAppearanceSwitch", altOk && solidOk && baseOk);
 
-            // 10b. Scenario H: Multi-resolution layout check across 1280x720, 1366x768, 1920x1080 in Light & Dark
+            // 10b. Responsive layout check across 1100x720, 1280x720, 1366x768, 1920x1080 in Light & Dark
             bool multiResOk = true;
             if (window.TrayManager is not null && window.Content is FrameworkElement rootEl)
             {
-                var sizes = new[] { (1280, 720), (1366, 768), (1920, 1080) };
+                var sizes = new[] { (1100, 720), (1280, 720), (1366, 768), (1920, 1080) };
                 foreach (var (w, h) in sizes)
                 {
                     window.TrayManager.AppWindow.Resize(new Windows.Graphics.SizeInt32(w, h));
                     foreach (var themeIdx in new[] { 1, 2 })
                     {
                         vm.SelectedThemeIndex = themeIdx;
-                        await Task.Delay(80);
+                        await Task.Delay(70);
                         rootEl.UpdateLayout();
                         if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16)
                             multiResOk = false;

@@ -48,88 +48,42 @@
                 </StackPanel>
             </Border>
 
-            <!-- 1. Connected Browsers (STRICTLY ABOVE Detected Problem) -->
-            <Border
-                x:Name="ConnectedBrowsersCard"
-                Padding="16"
+            <!-- 1. Compact Browser Connection Summary Bar (Clicking navigates to Development Tools) -->
+            <Button
+                x:Name="BrowserSummaryButton"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch"
+                Padding="14,10"
                 CornerRadius="8"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1">
-                <StackPanel Spacing="10">
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="18" VerticalAlignment="Center" />
-                        <TextBlock
-                            Grid.Column="1"
-                            Text="{x:Bind ViewModel.Strings.ConnectedBrowsersTitle, Mode=OneWay}"
-                            FontWeight="SemiBold"
-                            FontSize="15"
-                            VerticalAlignment="Center" />
-                        <Button
-                            Grid.Column="2"
-                            Content="{x:Bind ViewModel.Strings.RefreshDiscoveryButton, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
-                    </Grid>
-
-                    <!-- Empty State only when 0 supported browsers are installed on this PC -->
+                BorderThickness="1"
+                Click="OpenDevToolsBrowsers_Click">
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="16" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
                     <TextBlock
-                        x:Name="NoConnectedBrowsersText"
-                        Visibility="{x:Bind ViewModel.NoInstalledBrowsersVisibility, Mode=OneWay}"
-                        Text="{x:Bind ViewModel.Strings.NoConnectedBrowsers, Mode=OneWay}"
+                        Grid.Column="1"
+                        x:Name="CompactBrowserSummaryTextBlock"
+                        Text="{x:Bind ViewModel.CompactBrowserSummaryText, Mode=OneWay}"
+                        FontWeight="SemiBold"
+                        FontSize="13"
+                        VerticalAlignment="Center"
+                        TextTrimming="CharacterEllipsis" />
+                    <TextBlock
+                        Grid.Column="2"
+                        Text="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}"
+                        FontSize="12"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        FontStyle="Italic" />
-
-                    <!-- Installed Browsers & Real Extension Connection States -->
-                    <ItemsControl ItemsSource="{x:Bind ViewModel.InstalledBrowserRows}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:BrowserStatusRow">
-                                <Border
-                                    Margin="0,0,0,6"
-                                    Padding="12,8"
-                                    CornerRadius="6"
-                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1">
-                                    <Grid ColumnSpacing="10">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="15" VerticalAlignment="Center" />
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
-                                            <TextBlock Text="{x:Bind DetailText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-                                        <Border
-                                            Grid.Column="2"
-                                            Padding="8,3"
-                                            CornerRadius="6"
-                                            VerticalAlignment="Center"
-                                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                            BorderThickness="1">
-                                            <TextBlock Text="{x:Bind StateBadge}" FontWeight="SemiBold" FontSize="11" />
-                                        </Border>
-                                        <Button
-                                            Grid.Column="3"
-                                            Content="{x:Bind ActionButtonLabel}"
-                                            Tag="{x:Bind KindKey}"
-                                            Click="ConfigureBrowserExtension_Click"
-                                            VerticalAlignment="Center" />
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </StackPanel>
-            </Border>
+                        VerticalAlignment="Center" />
+                    <FontIcon Grid.Column="3" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                </Grid>
+            </Button>
 
             <!-- 2. Detected Problem Card (IMMEDIATELY UNDERNEATH Connected Browsers) -->
             <Border
@@ -314,13 +268,12 @@
                 </Grid>
             </Border>
 
-            <!-- 5. Quick Actions -->
-            <StackPanel Orientation="Horizontal" Spacing="10">
+            <!-- 5. Quick Actions (Compact 4-button row fitting 1100x720 without clipping) -->
+            <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}" Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
                 <Button Content="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
-                <Button Content="{x:Bind ViewModel.Strings.OpenReadyButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenReadyFolderCommand}" />
             </StackPanel>
 
             <!-- 5. Compact Development Tools Summary Bar (Navigates to Dedicated DevTools Page) -->

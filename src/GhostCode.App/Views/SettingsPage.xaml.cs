@@ -46,12 +46,6 @@ public sealed partial class SettingsPage : Page
             ViewModel.SetReadyDirectory(path);
     }
 
-    private async void PrepareBrowser_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: string kindKey })
-            await ViewModel.PrepareBrowserIntegrationAsync(kindKey);
-    }
-
     private async void ExportConfig_Click(object sender, RoutedEventArgs e)
     {
         var json = ViewModel.ExportConfigJson();

@@ -46,6 +46,7 @@ public sealed record ArchiveVersionRow(ArchiveVersionRecord Record, UiLanguage L
 public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int VersionCount, UiLanguage Language = UiLanguage.Vi)
 {
     public string Id => Latest.Id;
+    public string GroupKey => SourceAnalyzer.BuildLogicalGroupKey(Latest);
     public string FileName => Latest.FileName;
     public string SourcePath => Latest.SourcePath;
     public string LatestVersionBadge => $"v{Latest.VersionNum} ({VersionCount})";
@@ -308,6 +309,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private int _selectedAccentPresetIndex;
     private string _customAccentHex = "#2563EB";
     private int _selectedNotificationLevelIndex;
+    private int _selectedNotificationDurationIndex = 3;
+    private CancellationTokenSource? _infoBarDismissCts;
     private bool _globalHotkeyEnabled = true;
     private string _globalHotkeyGesture = "Ctrl+Shift+F9";
     private bool _captureProblemStatements = true;
@@ -355,6 +358,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _consoleLogText = string.Empty;
     private string _runnerStatusText = string.Empty;
     private string _runnerMetricsText = string.Empty;
+    private string _runnerDiagnosticLogText = string.Empty;
     private int _runnerTabIndex = 1; // Default to I/O split view or toggleable Console/I/O
     private bool _isExecuting;
 
@@ -639,6 +643,58 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string RecentArchivesCardTitle => _config.Language == UiLanguage.Vi ? "Mã nguồn lưu gần đây" : "Recent Archived Files";
     public Visibility HasRecentDashboardArchivesVisibility => RecentDashboardArchives.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+    private static readonly int[] NotificationDurationValuesSeconds = { 3, 5, 10, 15, 30, 0 };
+
+    public IReadOnlyList<string> NotificationDurationChoices => _config.Language == UiLanguage.Vi
+        ? new[]
+        {
+            "3 giây",
+            "5 giây",
+            "10 giây",
+            "15 giây (mặc định)",
+            "30 giây",
+            "Không tự đóng"
+        }
+        : new[]
+        {
+            "3 seconds",
+            "5 seconds",
+            "10 seconds",
+            "15 seconds (Default)",
+            "30 seconds",
+            "Do not auto-dismiss"
+        };
+
+    public string NotificationDurationHeaderText => _config.Language == UiLanguage.Vi
+        ? "Thời gian hiển thị thông báo"
+        : "Notification Display Duration";
+    public string NotificationDurationDescText => _config.Language == UiLanguage.Vi
+        ? "Tự động ẩn thông báo thường sau thời gian chọn; lỗi quan trọng vẫn giữ đến khi bạn đóng."
+        : "Auto-dismiss informational notices; critical errors remain visible until dismissed.";
+
+    public int SelectedNotificationDurationIndex
+    {
+        get => _selectedNotificationDurationIndex;
+        set
+        {
+            if (value < 0 || value >= NotificationDurationValuesSeconds.Length || !SetProperty(ref _selectedNotificationDurationIndex, value))
+                return;
+            _config.NotificationDurationSeconds = NotificationDurationValuesSeconds[value];
+            SaveConfigSafe();
+        }
+    }
+
+    public string CompactBrowserSummaryText
+    {
+        get
+        {
+            bool vi = _config.Language == UiLanguage.Vi;
+            if (ConnectedBrowsers.Count > 0)
+                return $"{string.Join(", ", ConnectedBrowsers.Select(b => b.Name))} · {(vi ? "Đã kết nối" : "Connected")}";
+            return vi ? "Chưa kết nối trình duyệt" : "No browser connected";
+        }
+    }
+
     public IReadOnlyList<string> NotificationLevelChoices => new[]
     {
         UxStrings.NotifAllLabel,
@@ -922,7 +978,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set
         {
             if (SetProperty(ref _selectedFileGroup, value) && value is not null)
-                _ = LoadVersionsForFileGroupAsync(value.SourcePath, preferredVersionId: null);
+                _ = LoadVersionsForFileGroupAsync(value.Latest, preferredVersionId: null);
         }
     }
 
@@ -1005,6 +1061,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string ConsoleLogText { get => _consoleLogText; private set => SetProperty(ref _consoleLogText, value); }
     public string RunnerStatusText { get => _runnerStatusText; private set => SetProperty(ref _runnerStatusText, value); }
     public string RunnerMetricsText { get => _runnerMetricsText; private set => SetProperty(ref _runnerMetricsText, value); }
+    public string RunnerDiagnosticLogText
+    {
+        get => _runnerDiagnosticLogText;
+        private set
+        {
+            if (SetProperty(ref _runnerDiagnosticLogText, value))
+                OnPropertyChanged(nameof(HasRunnerDiagnosticsVisibility));
+        }
+    }
+    public Visibility HasRunnerDiagnosticsVisibility =>
+        string.IsNullOrWhiteSpace(_runnerDiagnosticLogText) ? Visibility.Collapsed : Visibility.Visible;
 
     public int RunnerTabIndex
     {
@@ -1031,13 +1098,46 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (SetProperty(ref _selectedSampleTest, value))
             {
+                var prevSample = _activeSampleInputText;
                 _activeSampleInputText = value?.InputText ?? string.Empty;
                 _activeSampleOutputText = value?.ExpectedOutput ?? string.Empty;
+                // Automatically load sample input into STDIN if STDIN is currently empty or held the previous sample
+                if (value is not null && (string.IsNullOrEmpty(StdinText) || StdinText == prevSample))
+                    StdinText = value.InputText;
                 OnPropertyChanged(nameof(SelectedSampleInputPreview));
                 OnPropertyChanged(nameof(SelectedSampleExpectedPreview));
             }
         }
     }
+
+    public string SampleCountBadgeText
+    {
+        get
+        {
+            var capturedCount = SampleTests.Count(s => !s.IsCustom);
+            var customCount = SampleTests.Count - capturedCount;
+            var vi = _config.Language == UiLanguage.Vi;
+            if (capturedCount > 0 && customCount > 0)
+                return vi
+                    ? $"{capturedCount} test mẫu từ đề + {customCount} test tự thêm"
+                    : $"{capturedCount} captured + {customCount} custom test(s)";
+            if (capturedCount > 0)
+                return vi
+                    ? $"Tìm thấy {capturedCount} test mẫu từ đề bài"
+                    : $"{capturedCount} sample test(s) captured";
+            if (customCount > 0)
+                return vi
+                    ? $"Chưa có test mẫu từ đề ({customCount} test tự thêm)"
+                    : $"No page samples ({customCount} custom test(s))";
+            return vi
+                ? "Chưa tìm thấy test mẫu từ đề bài."
+                : "No sample tests detected from the problem page.";
+        }
+    }
+
+    public Visibility HasSamplesVisibility => SampleTests.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility NoSamplesVisibility => SampleTests.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public string RunnerDiagnosticsHeaderText => _config.Language == UiLanguage.Vi ? "Chi tiết biên dịch & chẩn đoán" : "Compiler & Diagnostics";
 
     public string SelectedSampleInputPreview => SelectedSampleTest?.InputText ?? string.Empty;
     public string SelectedSampleExpectedPreview => SelectedSampleTest?.ExpectedOutput ?? string.Empty;
@@ -1380,6 +1480,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(AccentColorHeaderText));
                 OnPropertyChanged(nameof(AccentColorDescText));
                 OnPropertyChanged(nameof(RecentArchivesCardTitle));
+                OnPropertyChanged(nameof(NotificationDurationChoices));
+                OnPropertyChanged(nameof(NotificationDurationHeaderText));
+                OnPropertyChanged(nameof(NotificationDurationDescText));
+                OnPropertyChanged(nameof(CompactBrowserSummaryText));
+                OnPropertyChanged(nameof(SampleCountBadgeText));
+                OnPropertyChanged(nameof(RunnerDiagnosticsHeaderText));
                 ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey(), lang);
                 _suppressFolderSync = true;
                 WatchedFolders.Clear();
@@ -1390,6 +1496,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public static ThemePreference ToThemePreference(int comboIndex) => comboIndex switch
+    {
+        1 => ThemePreference.Light,
+        2 => ThemePreference.Dark,
+        _ => ThemePreference.System
+    };
+
+    public static int ToThemeIndex(ThemePreference pref) => pref switch
+    {
+        ThemePreference.Light => 1,
+        ThemePreference.Dark => 2,
+        _ => 0
+    };
+
     public int SelectedThemeIndex
     {
         get => _selectedThemeIndex;
@@ -1397,13 +1517,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (value < 0 || !SetProperty(ref _selectedThemeIndex, value))
                 return;
-            var theme = (ThemePreference)value;
+            var theme = ToThemePreference(value);
             if (_config.Theme != theme)
             {
                 _config.Theme = theme;
                 SaveConfigSafe();
-                _applyThemeCallback?.Invoke(ToElementTheme(theme));
             }
+            _applyThemeCallback?.Invoke(ToElementTheme(theme));
         }
     }
 
@@ -1856,6 +1976,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(NoConnectedBrowsersVisibility));
             OnPropertyChanged(nameof(NoInstalledBrowsersVisibility));
             OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+            OnPropertyChanged(nameof(CompactBrowserSummaryText));
 
             var connectedNames = ConnectedBrowsers.Select(x => x.Name).ToList();
             var runningNames = browserStates.Where(b => b.IsRunning).Select(b => b.DisplayName).ToList();
@@ -2016,14 +2137,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             list = list.Where(v => v.Availability == f).ToList();
 
         var selectedId = SelectedVersion?.Id;
-        var selectedPath = SelectedFileGroup?.SourcePath;
+        var selectedGroupKey = SelectedFileGroup?.GroupKey;
 
         ArchiveVersions.Clear();
         foreach (var v in list)
             ArchiveVersions.Add(new ArchiveVersionRow(v, _config.Language));
 
         ArchiveFileGroups.Clear();
-        foreach (var grp in list.GroupBy(v => v.SourcePath, StringComparer.OrdinalIgnoreCase))
+        foreach (var grp in list.GroupBy(SourceAnalyzer.BuildLogicalGroupKey, StringComparer.OrdinalIgnoreCase))
         {
             var latest = grp.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First();
             ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language));
@@ -2045,14 +2166,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var foundVer = ArchiveVersions.FirstOrDefault(x => x.Id == selectedId);
             if (foundVer is not null)
             {
-                await LoadVersionsForFileGroupAsync(foundVer.SourcePath, foundVer.Id);
+                await LoadVersionsForFileGroupAsync(foundVer.Record, foundVer.Id);
                 return;
             }
         }
 
-        if (!string.IsNullOrEmpty(selectedPath))
+        if (!string.IsNullOrEmpty(selectedGroupKey))
         {
-            var matchGrp = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.SourcePath, selectedPath, StringComparison.OrdinalIgnoreCase));
+            var matchGrp = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.GroupKey, selectedGroupKey, StringComparison.OrdinalIgnoreCase));
             if (matchGrp is not null)
                 SelectedFileGroup = matchGrp;
         }
@@ -2078,19 +2199,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SelectedAvailabilityFilterIndex = 0;
         SearchQuery = string.Empty;
         await RefreshArchiveAsync();
-        await LoadVersionsForFileGroupAsync(target.SourcePath, target.Id);
+        await LoadVersionsForFileGroupAsync(target, target.Id);
     }
 
-    private async Task LoadVersionsForFileGroupAsync(string sourcePath, string? preferredVersionId)
+    private async Task LoadVersionsForFileGroupAsync(ArchiveVersionRecord anchor, string? preferredVersionId)
     {
-        var groupMatch = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase));
-        if (groupMatch is not null && _selectedFileGroup?.SourcePath != groupMatch.SourcePath)
+        var anchorKey = SourceAnalyzer.BuildLogicalGroupKey(anchor);
+        var groupMatch = ArchiveFileGroups.FirstOrDefault(g => string.Equals(g.GroupKey, anchorKey, StringComparison.OrdinalIgnoreCase));
+        if (groupMatch is not null && !string.Equals(_selectedFileGroup?.GroupKey, groupMatch.GroupKey, StringComparison.OrdinalIgnoreCase))
         {
             _selectedFileGroup = groupMatch;
             OnPropertyChanged(nameof(SelectedFileGroup));
         }
 
-        var versions = await _store.GetVersionsBySourceAsync(sourcePath);
+        var versions = !string.IsNullOrWhiteSpace(anchor.ProblemCode)
+            ? await _store.GetVersionsByProblemAsync(anchor.Platform, anchor.ProblemCode)
+            : await _store.GetOfflineVersionsBySourceAsync(anchor.SourcePath);
         SelectedFileVersions.Clear();
         foreach (var v in versions.OrderByDescending(x => x.VersionNum))
             SelectedFileVersions.Add(new ArchiveVersionRow(v, _config.Language));
@@ -2156,6 +2280,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (SelectedVersion is null || IsExecuting)
             return;
 
+        bool vi = _config.Language == UiLanguage.Vi;
         if (!SelectedVersion.IsLocalAvailable)
         {
             ShowInfoBar("Cloud-Only Version", Strings.CloudOnlyNotice, InfoBarSeverity.Warning);
@@ -2167,7 +2292,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IsExecuting = true;
         StdoutText = string.Empty;
         StderrText = string.Empty;
-        ConsoleLogText = $"[{DateTime.Now:HH:mm:ss}] Compiling & running {SelectedVersion.FileName} ({SelectedVersion.VersionBadge})...\n";
+        RunnerDiagnosticLogText = string.Empty;
+        ConsoleLogText = string.Empty;
         RunnerStatusText = Strings.StatusCompiling;
         RunnerMetricsText = string.Empty;
 
@@ -2184,14 +2310,39 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 : string.IsNullOrWhiteSpace(res.Stderr)
                     ? res.CompilerOutput
                     : $"{res.CompilerOutput}\n{res.Stderr}";
-            if (!string.IsNullOrWhiteSpace(res.CompilerOutput))
-                ConsoleLogText += $"\n[COMPILER]\n{res.CompilerOutput}\n";
-            if (!string.IsNullOrWhiteSpace(res.Stderr))
-                ConsoleLogText += $"\n[STDERR]\n{res.Stderr}";
-            ConsoleLogText += $"\n--- {res.StatusBadgeText} • Exit {res.ExitCode?.ToString() ?? "-"} • {res.ElapsedMs} ms • PeakMem: {(res.PeakMemoryMb ?? 0):F2} MB ---\n";
 
-            RunnerMetricsText = $"Exit {res.ExitCode?.ToString() ?? "-"} • {res.ElapsedMs} ms • {(res.PeakMemoryMb ?? 0):F2} MB";
-            RunnerStatusText = res.Status == ExecutionStatus.Finished && res.ExitCode == 0 ? Strings.StatusPassed : res.StatusBadgeText;
+            // Console focuses strictly on actual program output cleanly (never repeating status/metrics/hashes)
+            if (!string.IsNullOrWhiteSpace(res.Stdout))
+                ConsoleLogText = res.Stdout;
+            else if (!string.IsNullOrWhiteSpace(res.Stderr))
+                ConsoleLogText = res.Stderr;
+            else if (res.Status == ExecutionStatus.CompileError)
+                ConsoleLogText = res.CompilerOutput;
+            else if (string.IsNullOrWhiteSpace(ConsoleLogText))
+                ConsoleLogText = vi ? "(Không có kết quả xuất ra STDOUT)" : "(No STDOUT output)";
+
+            if (!string.IsNullOrWhiteSpace(res.CompilerOutput) || !string.IsNullOrWhiteSpace(res.CommandLineDisplay))
+            {
+                var diagParts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(res.CommandLineDisplay))
+                    diagParts.Add(res.CommandLineDisplay);
+                if (!string.IsNullOrWhiteSpace(res.CompilerOutput))
+                    diagParts.Add(res.CompilerOutput);
+                RunnerDiagnosticLogText = string.Join("\n\n", diagParts);
+            }
+
+            RunnerMetricsText = string.Empty;
+            var memStr = $"{(res.PeakMemoryMb ?? 0):F2} MB";
+            RunnerStatusText = res.Status switch
+            {
+                ExecutionStatus.CompileError => vi ? "Lỗi biên dịch" : "Compile Error",
+                ExecutionStatus.TimeLimitExceeded => vi ? "Quá thời gian chạy" : "Time Limit Exceeded",
+                ExecutionStatus.Cancelled => vi ? "Đã dừng" : "Stopped",
+                _ => res.ExitCode == 0
+                    ? (vi ? $"Hoàn thành · Exit 0 · {res.ElapsedMs} ms · {memStr}" : $"Finished · Exit 0 · {res.ElapsedMs} ms · {memStr}")
+                    : (vi ? $"Kết thúc · Exit {res.ExitCode?.ToString() ?? "-"} · {res.ElapsedMs} ms · {memStr}" : $"Exited · Exit {res.ExitCode?.ToString() ?? "-"} · {res.ElapsedMs} ms · {memStr}")
+            };
+
             if (res.Status == ExecutionStatus.TimeLimitExceeded)
                 ShowFriendlyError(ErrorCategory.ExecutionTimeout, $"{res.ElapsedMs} ms");
             else if (res.Status == ExecutionStatus.CompileError
@@ -2201,9 +2352,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            RunnerStatusText = Strings.StatusFailed;
-            RunnerMetricsText = _config.Language == UiLanguage.Vi ? "Người dùng đã dừng" : "Stopped by user";
-            ConsoleLogText += "\n[STOPPED BY USER]\n";
+            RunnerStatusText = vi ? "Đã dừng" : "Stopped";
+            RunnerMetricsText = string.Empty;
         }
         finally
         {
@@ -2220,6 +2370,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         StdoutText = string.Empty;
         StderrText = string.Empty;
+        RunnerDiagnosticLogText = string.Empty;
         ConsoleLogText = Strings.ConsoleOutputEmpty;
         RunnerMetricsText = string.Empty;
         RunnerStatusText = Strings.StatusReady;
@@ -2296,7 +2447,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await RefreshArchiveAsync();
             if (res.Success)
             {
-                await LoadVersionsForFileGroupAsync(SelectedVersion?.SourcePath ?? string.Empty, targetId);
+                await SelectArchiveVersionByIdAsync(targetId);
                 ShowInfoBar("Downloaded & Verified", $"Saved SHA-256 verified archive locally at {res.LocalArchivePath}", InfoBarSeverity.Success);
             }
             else
@@ -2855,6 +3006,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatch(() =>
         {
+            if (InfoBarOpen
+                && InfoBarSeverity == severity
+                && string.Equals(InfoBarTitle, title, StringComparison.Ordinal)
+                && string.Equals(InfoBarMessage, message, StringComparison.Ordinal))
+            {
+                RestartInfoBarAutoDismissTimerLocked(severity);
+                return;
+            }
+
             InfoBarTitle = title;
             InfoBarMessage = message;
             InfoBarSeverity = severity;
@@ -2862,6 +3022,38 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             InfoBarActionLabel = actionLabel;
             _infoBarActionKey = actionKey;
             InfoBarOpen = true;
+            RestartInfoBarAutoDismissTimerLocked(severity);
+        });
+    }
+
+    private void RestartInfoBarAutoDismissTimerLocked(InfoBarSeverity severity)
+    {
+        _infoBarDismissCts?.Cancel();
+        _infoBarDismissCts?.Dispose();
+        _infoBarDismissCts = null;
+
+        // Errors stay visible until user dismisses or acts; Warnings stay unless user selects a timed duration > 0 and it isn't persistent error
+        if (severity == InfoBarSeverity.Error)
+            return;
+
+        int seconds = _config.NotificationDurationSeconds;
+        if (seconds <= 0)
+            return;
+
+        if (severity == InfoBarSeverity.Warning)
+            seconds = Math.Max(seconds, 20);
+
+        var cts = new CancellationTokenSource();
+        _infoBarDismissCts = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(seconds), cts.Token);
+                if (!cts.Token.IsCancellationRequested)
+                    _dispatch(() => InfoBarOpen = false);
+            }
+            catch (OperationCanceledException) { }
         });
     }
 
@@ -2926,7 +3118,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _archiveDir = _config.ArchiveDir;
         _readyDir = _config.ReadyDir;
         _selectedLanguageIndex = _config.Language == UiLanguage.Vi ? 0 : 1;
-        _selectedThemeIndex = (int)_config.Theme;
+        _selectedThemeIndex = ToThemeIndex(_config.Theme);
+        _selectedNotificationDurationIndex = Array.IndexOf(NotificationDurationValuesSeconds, _config.NotificationDurationSeconds);
+        if (_selectedNotificationDurationIndex < 0)
+            _selectedNotificationDurationIndex = 3; // Default 15 seconds
         _minimizeToTrayOnClose = _config.MinimizeToTrayOnClose;
         _autoCopyReadyPath = _config.AutoCopyReadyPath;
         _driveEnabled = _config.DriveEnabled;
@@ -2988,10 +3183,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return false;
 
         bool ok = _clipboardCopyWithRetry(text);
+        var vi = _config.Language == UiLanguage.Vi;
         if (ok)
-            ShowInfoBar("Copied", successLabel, InfoBarSeverity.Success);
+            ShowInfoBar(vi ? "Đã sao chép" : "Copied", successLabel, InfoBarSeverity.Success);
         else
-            ShowInfoBar("Clipboard Busy", "Windows clipboard is temporarily locked by another application.", InfoBarSeverity.Warning);
+            ShowInfoBar(
+                vi ? "Bảng nhớ tạm đang bận" : "Clipboard Busy",
+                vi ? "Clipboard Windows đang bị ứng dụng khác khóa tạm thời." : "Windows clipboard is temporarily locked by another application.",
+                InfoBarSeverity.Warning);
         return ok;
     }
 
@@ -3194,7 +3393,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var list = await _store.QueryVersionsAsync(null, "All", 250);
         QuickActionsCandidates.Clear();
-        var grouped = list.GroupBy(v => v.SourcePath, StringComparer.OrdinalIgnoreCase)
+        var grouped = list.GroupBy(SourceAnalyzer.BuildLogicalGroupKey, StringComparer.OrdinalIgnoreCase)
             .Select(g => new ArchiveFileGroupRow(g.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First(), g.Count(), _config.Language))
             .ToList();
         foreach (var g in grouped)
@@ -3216,7 +3415,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         else if (SelectedFileGroup is not null)
         {
-            SelectedQuickActionTarget = grouped.FirstOrDefault(g => string.Equals(g.SourcePath, SelectedFileGroup.SourcePath, StringComparison.OrdinalIgnoreCase));
+            SelectedQuickActionTarget = grouped.FirstOrDefault(g => string.Equals(g.GroupKey, SelectedFileGroup.GroupKey, StringComparison.OrdinalIgnoreCase));
             QuickActionsAmbiguityNote = string.Empty;
         }
         else
@@ -3334,6 +3533,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SampleTests.Clear();
         foreach (var tc in samples)
             SampleTests.Add(tc);
+        OnPropertyChanged(nameof(SampleCountBadgeText));
+        OnPropertyChanged(nameof(HasSamplesVisibility));
+        OnPropertyChanged(nameof(NoSamplesVisibility));
         SelectedSampleTest = SampleTests.FirstOrDefault(s => s.Id == prevId) ?? SampleTests.FirstOrDefault();
 
         var subs = await _store.GetSubmissionsForProblemAsync(effCode, 10);
@@ -3341,13 +3543,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             var top = subs[0];
             var tag = top.IsVersionCertain
-                ? (vi ? "đã khớp phiên bản" : "verified version")
-                : (vi ? "chưa xác minh phiên bản" : "version link unverified");
-            LatestVerdictBadgeText = $"{top.Verdict} ({tag})";
+                ? (vi ? "đã khớp" : "verified")
+                : (vi ? "chưa khớp bản" : "unlinked");
+            LatestVerdictBadgeText = vi ? $"Chấm online: {top.Verdict} ({tag})" : $"Judge: {top.Verdict} ({tag})";
         }
         else
         {
-            LatestVerdictBadgeText = vi ? "Chưa có kết quả chấm" : "No Judge Verdict";
+            LatestVerdictBadgeText = vi ? "Chưa có kết quả chấm online" : "No Judge Verdict";
         }
 
         var timeline = await _store.GetTimelineForProblemAsync(effCode, 50);
@@ -3428,6 +3630,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         var added = await _sampleRunner.AddCustomSampleAsync(key, inputText, expectedOutput, ActiveUrl);
         SampleTests.Add(added);
+        OnPropertyChanged(nameof(SampleCountBadgeText));
+        OnPropertyChanged(nameof(HasSamplesVisibility));
+        OnPropertyChanged(nameof(NoSamplesVisibility));
         SelectedSampleTest = added;
         ShowInfoBar(
             vi ? "Đã thêm test riêng" : "Custom Test Added",
@@ -3442,6 +3647,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var toDelete = SelectedSampleTest;
         await _store.DeleteSampleTestAsync(toDelete.Id);
         SampleTests.Remove(toDelete);
+        OnPropertyChanged(nameof(SampleCountBadgeText));
+        OnPropertyChanged(nameof(HasSamplesVisibility));
+        OnPropertyChanged(nameof(NoSamplesVisibility));
         SelectedSampleTest = SampleTests.FirstOrDefault();
     }
 
@@ -3603,6 +3811,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _coalescedRefreshCts?.Cancel();
         _coalescedRefreshCts?.Dispose();
         _coalescedRefreshCts = null;
+        _infoBarDismissCts?.Cancel();
+        _infoBarDismissCts?.Dispose();
+        _infoBarDismissCts = null;
         _execCts?.Dispose();
         _oauthCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;

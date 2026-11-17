@@ -38,16 +38,20 @@
 
                 <controls:SettingsCard Header="{x:Bind ViewModel.Strings.MinimizeToTrayLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
                     <ToggleSwitch
+                        MinWidth="0"
+                        HorizontalAlignment="Right"
                         IsOn="{x:Bind ViewModel.MinimizeToTrayOnClose, Mode=TwoWay}"
-                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
-                        OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                        OnContent=""
+                        OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard Header="{x:Bind ViewModel.Strings.AutoCopyReadyLabel, Mode=OneWay}" HorizontalAlignment="Stretch">
                     <ToggleSwitch
+                        MinWidth="0"
+                        HorizontalAlignment="Right"
                         IsOn="{x:Bind ViewModel.AutoCopyReadyPath, Mode=TwoWay}"
-                        OnContent="{x:Bind ViewModel.Strings.EnabledToggle, Mode=OneWay}"
-                        OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                        OnContent=""
+                        OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard Header="{x:Bind ViewModel.Strings.ArchiveDirLabel, Mode=OneWay}" Description="{x:Bind ViewModel.ArchiveDir, Mode=OneWay}" HorizontalAlignment="Stretch">
@@ -94,9 +98,9 @@
                                 <Grid ColumnSpacing="12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="52" />
+                                        <ColumnDefinition Width="118" />
+                                        <ColumnDefinition Width="40" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                         <TextBlock Text="{x:Bind Label}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
@@ -105,6 +109,8 @@
                                     <ToggleSwitch
                                         Grid.Column="1"
                                         MinWidth="0"
+                                        Width="48"
+                                        HorizontalAlignment="Center"
                                         IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
                                         OnContent=""
                                         OffContent=""
@@ -129,54 +135,7 @@
                 </ItemsControl>
             </StackPanel>
 
-            <!-- 3. Browsers & Extensions -->
-            <StackPanel Spacing="8">
-                <Grid ColumnSpacing="8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="{x:Bind ViewModel.Strings.SettingsBrowsersTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" VerticalAlignment="Center" />
-                    <Button Grid.Column="1" Content="{x:Bind ViewModel.Strings.RefreshDiscoveryButton, Mode=OneWay}" Command="{x:Bind ViewModel.RefreshDiscoveryCommand}" />
-                </Grid>
-
-                <ItemsControl ItemsSource="{x:Bind ViewModel.BrowserStatuses}" HorizontalAlignment="Stretch">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:BrowserStatusRow">
-                            <Border
-                                Margin="0,0,0,6"
-                                Padding="12"
-                                CornerRadius="8"
-                                HorizontalAlignment="Stretch"
-                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0">
-                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" />
-                                        <TextBlock Text="{x:Bind DetailText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Padding="8,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
-                                        <TextBlock Text="{x:Bind StateBadge}" FontSize="12" FontWeight="SemiBold" />
-                                    </Border>
-                                    <Button
-                                        Grid.Column="2"
-                                        Content="{x:Bind ActionButtonLabel}"
-                                        Tag="{x:Bind KindKey}"
-                                        Click="PrepareBrowser_Click" />
-                                </Grid>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
-
-            <!-- 4. Diagnostics & Configuration Export (IDE/Compilers live in Development Tools; Cloud Sync lives in Drive) -->
+            <!-- 3. Diagnostics & Configuration Export (Browsers, IDEs & Compilers live in Development Tools; Cloud Sync lives in Drive) -->
             <StackPanel Spacing="6">
                 <TextBlock Text="{x:Bind ViewModel.Strings.SettingsAdvancedTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="16" />
 
@@ -194,8 +153,8 @@
                     Description="{x:Bind ViewModel.GlobalHotkeyStatusText, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBox Width="150" Text="{x:Bind ViewModel.GlobalHotkeyGesture, Mode=TwoWay}" PlaceholderText="Ctrl+Shift+F9" />
-                        <ToggleSwitch IsOn="{x:Bind ViewModel.GlobalHotkeyEnabled, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                        <TextBox Width="140" Text="{x:Bind ViewModel.GlobalHotkeyGesture, Mode=TwoWay}" PlaceholderText="Ctrl+Shift+F9" />
+                        <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.GlobalHotkeyEnabled, Mode=TwoWay}" OnContent="" OffContent="" />
                     </StackPanel>
                 </controls:SettingsCard>
 
@@ -245,38 +204,49 @@
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
+                    Header="{x:Bind ViewModel.NotificationDurationHeaderText, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.NotificationDurationDescText, Mode=OneWay}"
+                    HorizontalAlignment="Stretch">
+                    <ComboBox
+                        x:Name="NotificationDurationCombo"
+                        ItemsSource="{x:Bind ViewModel.NotificationDurationChoices, Mode=OneWay}"
+                        SelectedIndex="{x:Bind ViewModel.SelectedNotificationDurationIndex, Mode=TwoWay}"
+                        MinWidth="180" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard
                     Header="{x:Bind ViewModel.UxStrings.SettingsStmtCaptureHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.UxStrings.SettingsStmtCaptureDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.CaptureProblemStatements, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                    <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.CaptureProblemStatements, Mode=TwoWay}" OnContent="" OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
                     Header="{x:Bind ViewModel.UxStrings.SettingsVerdictHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.UxStrings.SettingsVerdictDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrackSubmissionVerdicts, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EnabledShortToggle, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                    <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.TrackSubmissionVerdicts, Mode=TwoWay}" OnContent="" OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
                     Header="{x:Bind ViewModel.UxStrings.SettingsTrimWsHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.UxStrings.SettingsTrimWsDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.TrimTrailingWhitespaceOnCompare, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.TrimLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.ExactLabel, Mode=OneWay}" />
+                    <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.TrimTrailingWhitespaceOnCompare, Mode=TwoWay}" OnContent="" OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
                     Header="{x:Bind ViewModel.UxStrings.SettingsCodingTimeHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.UxStrings.SettingsCodingTimeDesc, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.EstimateActiveCodingTime, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.EstimatedLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledToggle, Mode=OneWay}" />
+                    <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.EstimateActiveCodingTime, Mode=TwoWay}" OnContent="" OffContent="" />
                 </controls:SettingsCard>
 
                 <controls:SettingsCard
                     Header="{x:Bind ViewModel.UxStrings.SettingsAiHeader, Mode=OneWay}"
                     Description="{x:Bind ViewModel.CopilotStatusText, Mode=OneWay}"
                     HorizontalAlignment="Stretch">
-                    <ToggleSwitch IsOn="{x:Bind ViewModel.AiAssistanceOptIn, Mode=TwoWay}" OnContent="{x:Bind ViewModel.UxStrings.OptedInLabel, Mode=OneWay}" OffContent="{x:Bind ViewModel.UxStrings.DisabledLabel, Mode=OneWay}" />
+                    <ToggleSwitch MinWidth="0" HorizontalAlignment="Right" IsOn="{x:Bind ViewModel.AiAssistanceOptIn, Mode=TwoWay}" OnContent="" OffContent="" />
                 </controls:SettingsCard>
             </StackPanel>
 

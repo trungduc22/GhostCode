@@ -36,4 +36,10 @@ public sealed partial class DevelopmentToolsPage : Page
         if (!string.IsNullOrWhiteSpace(path))
             ViewModel.PythonInterpreterPath = path;
     }
+
+    private async void ConfigureBrowserExtension_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string kindKey })
+            await ViewModel.OpenBrowserSetupCommand.ExecuteAsync(kindKey);
+    }
 }
