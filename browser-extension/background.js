@@ -296,6 +296,12 @@ async function processTab(tab) {
         files: ["content.js"]
       });
     } catch {}
+  } else if (tab.id) {
+    try {
+      chrome.tabs.sendMessage(tab.id, { type: "GHOSTCODE_RESCAN_PROBLEM" }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {}
   }
 }
 

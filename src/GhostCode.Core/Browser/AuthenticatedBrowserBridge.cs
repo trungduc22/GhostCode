@@ -293,7 +293,23 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     var stagedDir = BrowserIntegrationService.GetStagedDirectory(kind);
                     var stagedPairing = Path.Combine(stagedDir, "pairing.generated.json");
                     if (Directory.Exists(stagedDir) && File.Exists(stagedPairing))
+                    {
+                        var srcDir = BrowserIntegrationService.LocateBundledExtensionFolder(
+                            kind == BrowserKind.Firefox ? "browser-extension-firefox" : "browser-extension");
+                        if (srcDir is not null)
+                        {
+                            foreach (var file in Directory.GetFiles(srcDir))
+                            {
+                                var name = Path.GetFileName(file);
+                                if (name.Equals("pairing.generated.json", StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                var destFile = Path.Combine(stagedDir, name);
+                                if (!File.Exists(destFile) || File.GetLastWriteTimeUtc(file) > File.GetLastWriteTimeUtc(destFile))
+                                    File.Copy(file, destFile, overwrite: true);
+                            }
+                        }
                         WriteAtomicPairingFile(stagedPairing, kind.ToString());
+                    }
                 }
             }
         }

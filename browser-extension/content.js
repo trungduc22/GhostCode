@@ -1,96 +1,255 @@
 (() => {
-  if (window.__autonameContentLoaded) {
-    if (typeof window.__autonameSyncNow === "function") {
-      window.__autonameSyncNow(true);
-    }
-    return;
-  }
-  window.__autonameContentLoaded = true;
-
-  let lastUrl = location.href;
-  let lastSentKey = "";
-  let lastSentProblemKey = "";
-  let lastSentVerdictKey = "";
+  const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
 
   function cleanText(raw) {
-    return (raw || "").replace(/\s+/g, " ").trim();
+    return (raw || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   }
 
-  function extractPreText(pre) {
-    if (!pre) return "";
-    const lines = pre.querySelectorAll(".test-example-line");
+  function extractFormattedText(el) {
+    if (!el) return "";
+    const lines = el.querySelectorAll ? el.querySelectorAll(".test-example-line") : [];
     if (lines && lines.length > 0) {
-      return Array.from(lines).map((el) => (el.textContent || "").replace(/\r?\n$/, "")).join("\n");
+      return Array.from(lines)
+        .map((line) => (line.textContent || "").replace(/\u00a0/g, " ").replace(/\r?\n$/, ""))
+        .join("\n")
+        .replace(/^\n+|\s+$/g, "");
     }
-    const clone = pre.cloneNode(true);
-    clone.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
-    return (clone.textContent || "").replace(/\r\n/g, "\n").replace(/^\n+|\s+$/g, "");
+
+    const clone = el.cloneNode(true);
+    if (clone.querySelectorAll) {
+      clone.querySelectorAll("br").forEach((br) => {
+        br.replaceWith(el.ownerDocument.createTextNode("\n"));
+      });
+      clone.querySelectorAll("p, div, li, tr, h1, h2, h3, h4, h5, h6").forEach((blk) => {
+        blk.appendChild(el.ownerDocument.createTextNode("\n"));
+      });
+    }
+
+    return (clone.textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^\n+|\s+$/g, "");
   }
 
-  function extractSamplePairs(platform) {
+  function isConstraintOrMetadataTable(tbl) {
+    const firstRow = tbl.querySelector("tr");
+    const firstRowText = firstRow ? cleanText(firstRow.textContent) : "";
+    if (/^(thời\s*gian|time\s*limit|bộ\s*nhớ|memory\s*limit|giới\s*hạn|subtask|điểm|score|ràng\s*buộc|quy\s*ước)/i.test(firstRowText)) {
+      return true;
+    }
+    const headerCells = firstRow ? Array.from(firstRow.querySelectorAll("th, td")).map((c) => cleanText(c.textContent)) : [];
+    if (headerCells.some((h) => /time\s*limit|memory\s*limit|thời\s*gian|bộ\s*nhớ|subtask|điểm/i.test(h))) {
+      return true;
+    }
+    return false;
+  }
+
+  function hasSampleTableHeader(tbl) {
+    const firstRow = tbl.querySelector("tr");
+    if (!firstRow) return { hasHeaderRow: false, isSampleTable: false };
+    const cells = Array.from(firstRow.querySelectorAll("th, td"));
+    if (cells.length < 2) return { hasHeaderRow: false, isSampleTable: false };
+
+    const c0 = cleanText(cells[0].textContent);
+    const c1 = cleanText(cells[1].textContent);
+    const isInpHeader = /\b(input|dữ\s*liệu\s*vào|đầu\s*vào|mẫu\s*vào)\b/i.test(c0);
+    const isOutHeader = /\b(output|kết\s*quả|dữ\s*liệu\s*ra|đầu\s*ra|mẫu\s*ra)\b/i.test(c1);
+    if (isInpHeader && isOutHeader && c0.length <= 40 && c1.length <= 40) {
+      return { hasHeaderRow: true, isSampleTable: true };
+    }
+    return { hasHeaderRow: false, isSampleTable: false };
+  }
+
+  function hasSampleHeadingBefore(el) {
+    let prev = el.previousElementSibling;
+    let steps = 0;
+    while (prev && steps < 3) {
+      const txt = cleanText(prev.textContent);
+      if (txt) {
+        if (/\b(ví\s*dụ|sample|example|test\s*mẫu)\b/i.test(txt) && txt.length <= 80) {
+          return true;
+        }
+        if (/\b(giới\s*hạn|constraint|ràng\s*buộc|mô\s*tả|đề\s*bài)\b/i.test(txt)) {
+          return false;
+        }
+      }
+      prev = prev.previousElementSibling;
+      steps++;
+    }
+    return false;
+  }
+
+  function looksLikeMetadataCell(txt) {
+    return /^(input|dữ\s*liệu\s*vào|output|kết\s*quả|thời\s*gian|bộ\s*nhớ|time|memory|subtask)\s*:?$/i.test(cleanText(txt));
+  }
+
+  function pickCellSampleElement(cell) {
+    if (!cell) return null;
+    const pre = cell.querySelector("pre");
+    if (pre) return pre;
+    return cell;
+  }
+
+  function extractPtitSamples(root) {
     const pairs = [];
+    if (!root) return pairs;
+
+    const tables = Array.from(root.querySelectorAll("table"));
+    for (const tbl of tables) {
+      if (isConstraintOrMetadataTable(tbl)) continue;
+
+      const { hasHeaderRow, isSampleTable } = hasSampleTableHeader(tbl);
+      const nearExampleHeading = hasSampleHeadingBefore(tbl);
+      if (!isSampleTable && !nearExampleHeading) continue;
+
+      const rows = Array.from(tbl.querySelectorAll("tr"));
+      const startIndex = hasHeaderRow ? 1 : 0;
+      for (let i = startIndex; i < rows.length; i++) {
+        const cells = Array.from(rows[i].querySelectorAll("td"));
+        if (cells.length !== 2) continue;
+
+        const inpTxt = extractFormattedText(pickCellSampleElement(cells[0]));
+        const outTxt = extractFormattedText(pickCellSampleElement(cells[1]));
+        if (!inpTxt && !outTxt) continue;
+        if (looksLikeMetadataCell(inpTxt) && looksLikeMetadataCell(outTxt)) continue;
+        if (looksLikeMetadataCell(inpTxt) && !outTxt) continue;
+
+        pairs.push({ input: inpTxt, output: outTxt });
+      }
+    }
+
+    if (pairs.length > 0) return pairs.slice(0, 10);
+
+    // Fallback for PTIT problems rendered with labeled Input / Output blocks rather than a table
+    const nodes = Array.from(root.querySelectorAll("p, h3, h4, strong, b, div, pre"));
+    let pendingInput = null;
+    let expecting = null;
+    for (const node of nodes) {
+      const tag = (node.tagName || "").toUpperCase();
+      if (tag === "PRE") {
+        const txt = extractFormattedText(node);
+        if (!txt) continue;
+        if (expecting === "input") {
+          pendingInput = txt;
+          expecting = null;
+        } else if (expecting === "output" && pendingInput !== null) {
+          pairs.push({ input: pendingInput, output: txt });
+          pendingInput = null;
+          expecting = null;
+        }
+        continue;
+      }
+
+      if (node.querySelector && node.querySelector("pre")) continue;
+      const label = cleanText(node.textContent);
+      if (label.length > 40) continue;
+      if (/^(ví\s*dụ\s*)?(input|dữ\s*liệu\s*vào)\s*:?$/i.test(label)) {
+        expecting = "input";
+      } else if (/^(ví\s*dụ\s*)?(output|kết\s*quả)\s*:?$/i.test(label)) {
+        expecting = "output";
+      }
+    }
+
+    return pairs.slice(0, 10);
+  }
+
+  function extractSamplePairs(platform, rootNode) {
+    const pairs = [];
+    const doc = rootNode && rootNode.ownerDocument ? rootNode.ownerDocument : (typeof document !== "undefined" ? document : null);
+    const scope = rootNode || doc;
+    if (!scope) return pairs;
+
     if (platform === "Codeforces") {
-      document.querySelectorAll(".problem-statement .sample-test").forEach((box) => {
+      (doc || scope).querySelectorAll(".problem-statement .sample-test").forEach((box) => {
         const inputs = box.querySelectorAll(".input pre");
         const outputs = box.querySelectorAll(".output pre");
         const count = Math.min(inputs.length, outputs.length);
         for (let i = 0; i < count; i++) {
-          pairs.push({ input: extractPreText(inputs[i]), output: extractPreText(outputs[i]) });
+          pairs.push({ input: extractFormattedText(inputs[i]), output: extractFormattedText(outputs[i]) });
         }
       });
-      return pairs;
+      return pairs.slice(0, 10);
     }
 
     if (platform === "HackerRank") {
-      const ins = document.querySelectorAll(".challenge_sample_input pre, pre.sample-input");
-      const outs = document.querySelectorAll(".challenge_sample_output pre, pre.sample-output");
+      const ins = (doc || scope).querySelectorAll(".challenge_sample_input pre, pre.sample-input");
+      const outs = (doc || scope).querySelectorAll(".challenge_sample_output pre, pre.sample-output");
       const count = Math.min(ins.length, outs.length);
       for (let i = 0; i < count; i++) {
-        pairs.push({ input: extractPreText(ins[i]), output: extractPreText(outs[i]) });
+        pairs.push({ input: extractFormattedText(ins[i]), output: extractFormattedText(outs[i]) });
       }
-      if (pairs.length > 0) return pairs;
+      return pairs.slice(0, 10);
     }
 
-    // PTIT / VNOJ / general fallback: inspect tables with 2 columns containing <pre> or cells, or adjacent <pre> pairs
-    const tables = document.querySelectorAll(".submit__des table, .problem-statement table, .content-description table");
-    tables.forEach((tbl) => {
-      const rows = Array.from(tbl.querySelectorAll("tr"));
-      for (const row of rows) {
-        const cells = Array.from(row.querySelectorAll("td"));
-        if (cells.length === 2) {
-          const inpEl = cells[0].querySelector("pre") || cells[0];
-          const outEl = cells[1].querySelector("pre") || cells[1];
-          const inpTxt = extractPreText(inpEl);
-          const outTxt = extractPreText(outEl);
-          if (inpTxt || outTxt) {
-            if (/^(input|dữ\s*liệu\s*vào)$/i.test(cleanText(inpTxt))) continue;
-            pairs.push({ input: inpTxt, output: outTxt });
+    if (platform === "LeetCode") {
+      // LeetCode uses function signatures rather than standalone STDIN/STDOUT test harnesses
+      return [];
+    }
+
+    if (platform === "PTIT" || platform === "VNOJ") {
+      const cfStyle = scope.querySelectorAll ? scope.querySelectorAll(".sample-test") : [];
+      if (cfStyle.length > 0) {
+        cfStyle.forEach((box) => {
+          const inputs = box.querySelectorAll(".input pre");
+          const outputs = box.querySelectorAll(".output pre");
+          const count = Math.min(inputs.length, outputs.length);
+          for (let i = 0; i < count; i++) {
+            pairs.push({ input: extractFormattedText(inputs[i]), output: extractFormattedText(outputs[i]) });
           }
-        }
+        });
+        if (pairs.length > 0) return pairs.slice(0, 10);
       }
-    });
-    if (pairs.length > 0) return pairs;
 
-    const pres = Array.from(document.querySelectorAll(".submit__des pre, .content-description pre, .challenge-body-html pre"));
-    for (let i = 0; i + 1 < pres.length; i += 2) {
-      pairs.push({ input: extractPreText(pres[i]), output: extractPreText(pres[i + 1]) });
+      return extractPtitSamples(scope);
     }
-    return pairs.slice(0, 10);
+
+    return [];
   }
 
-  function extractProblemDetails(ctx) {
+  function findProblemContainer(platform, docObj) {
+    const d = docObj || document;
+    const selectors = platform === "PTIT"
+      ? [".submit__des", ".problem__content", ".question-content", ".submit__main .card-body", "main .card-body", "#problem-content", ".problem-statement"]
+      : [".problem-statement", ".submit__des", ".content-description", "[data-track-load='description_content']", ".challenge-body-html"];
+
+    for (const sel of selectors) {
+      const el = d.querySelector(sel);
+      if (el && cleanText(el.textContent).length > 0) return el;
+    }
+    return null;
+  }
+
+  function extractProblemDetailsFromDocument(ctx, docObj) {
     if (!ctx) return null;
-    const container = document.querySelector(".problem-statement, .submit__des, .content-description, [data-track-load='description_content'], .challenge-body-html");
+    const d = docObj || document;
+    const container = findProblemContainer(ctx.platform, d);
     if (!container) return null;
 
     const fullText = cleanText(container.textContent);
     const description = fullText.slice(0, 3500);
-    const inputSpec = firstText([".input-specification", ".input-spec", "[data-section='input']"]);
-    const outputSpec = firstText([".output-specification", ".output-spec", "[data-section='output']"]);
-    const timeLimit = firstText([".time-limit", ".problem-info .time-limit"]);
-    const memoryLimit = firstText([".memory-limit", ".problem-info .memory-limit"]);
-    const interactive = /\b(interactive|custom checker|special judge)\b/i.test(fullText);
-    const samples = extractSamplePairs(ctx.platform);
+    const firstFrom = (sels) => {
+      for (const s of sels) {
+        const el = d.querySelector(s);
+        if (el) {
+          const txt = cleanText(el.textContent);
+          if (txt) return txt;
+        }
+      }
+      return "";
+    };
+
+    const inputSpec = firstFrom([".input-specification", ".input-spec", "[data-section='input']"]);
+    const outputSpec = firstFrom([".output-specification", ".output-spec", "[data-section='output']"]);
+    const timeLimit = firstFrom([".time-limit", ".problem-info .time-limit"]);
+    const memoryLimit = firstFrom([".memory-limit", ".problem-info .memory-limit"]);
+    const interactive = ctx.platform === "LeetCode"
+      || /\b(interactive|custom checker|special judge)\b/i.test(fullText);
+    const samples = interactive && ctx.platform === "LeetCode"
+      ? []
+      : extractSamplePairs(ctx.platform, container);
 
     return {
       problem_code: ctx.problem_code,
@@ -110,11 +269,41 @@
     };
   }
 
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      cleanText,
+      extractFormattedText,
+      extractPtitSamples,
+      extractSamplePairs,
+      extractProblemDetailsFromDocument
+    };
+  }
+
+  if (!isBrowser) return;
+
+  if (window.__autonameContentLoaded) {
+    if (typeof window.__autonameSyncNow === "function") {
+      window.__autonameSyncNow(true);
+    }
+    return;
+  }
+  window.__autonameContentLoaded = true;
+
+  let lastUrl = location.href;
+  let lastSentKey = "";
+  let lastSentProblemKey = "";
+  let lastSentVerdictKey = "";
+  let mutationTimer = null;
+
+  function extractProblemDetails(ctx) {
+    return extractProblemDetailsFromDocument(ctx, document);
+  }
+
   function extractSubmissionVerdict(ctx) {
     if (!ctx) return null;
     let verdictText = "";
     let submissionId = "";
-    let language = "";
+    const language = "";
 
     if (ctx.platform === "Codeforces") {
       const cell = document.querySelector(".status-verdict-cell[submissionid], td.status-verdict-cell");
@@ -272,7 +461,8 @@
   function syncProblemAndVerdicts(ctx, force) {
     const details = extractProblemDetails(ctx);
     if (details) {
-      const pKey = `${details.platform}|${details.problem_code}|${details.samples.length}|${details.description.length}`;
+      const sampleSig = details.samples.map((s) => `${s.input.length}:${s.output.length}`).join(",");
+      const pKey = `${details.platform}|${details.problem_code}|${details.url}|${details.samples.length}|${sampleSig}|${details.description.length}`;
       if (force || pKey !== lastSentProblemKey) {
         lastSentProblemKey = pKey;
         sendMessageSafe("GHOSTCODE_PROBLEM", details);
@@ -290,8 +480,6 @@
   }
 
   function syncContext(force) {
-    // Context-only: never transmit when this tab is hidden/backgrounded
-    if (document.visibilityState === "hidden") return;
     const ctx = extractContext();
     if (!ctx) return;
 
@@ -314,21 +502,27 @@
   window.__autonameSyncNow = syncContext;
   syncContext(true);
 
+  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === "GHOSTCODE_RESCAN_PROBLEM") {
+        syncContext(true);
+      }
+    });
+  }
+
   setInterval(() => {
-    if (document.visibilityState !== "visible") return;
     const changed = location.href !== lastUrl;
     if (changed) lastUrl = location.href;
     syncContext(changed);
   }, 5000);
 
   const obs = new MutationObserver(() => {
-    if (document.visibilityState !== "visible") return;
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      syncContext(true);
-    } else {
-      syncContext(false);
-    }
+    if (mutationTimer) clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(() => {
+      const changed = location.href !== lastUrl;
+      if (changed) lastUrl = location.href;
+      syncContext(changed);
+    }, 300);
   });
   if (document.body) {
     obs.observe(document.body, { childList: true, subtree: true });
