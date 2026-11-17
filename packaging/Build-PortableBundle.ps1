@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $releaseRoot = Join-Path $repoRoot "artifacts\Release"
+$stageRoot = Join-Path $releaseRoot "_stage"
+$stageDir = Join-Path $stageRoot "GhostCode-win-x64"
 $outDir = Join-Path $releaseRoot "GhostCode-win-x64"
 $portableZip = Join-Path $releaseRoot "GhostCode-Portable-win-x64.zip"
 $installerExe = Join-Path $releaseRoot "GhostCode-Setup-x64.exe"
@@ -15,10 +17,10 @@ $checksumsPath = Join-Path $releaseRoot "SHA256SUMS.txt"
 $dotnet = Join-Path $env:USERPROFILE ".dotnet\dotnet.exe"
 if (-not (Test-Path $dotnet)) { $dotnet = "dotnet" }
 
-if (Test-Path $outDir) { Remove-Item -Path $outDir -Recurse -Force }
+if (Test-Path $stageRoot) { Remove-Item -Path $stageRoot -Recurse -Force }
 if (Test-Path $portableZip) { Remove-Item -Path $portableZip -Force }
 if ((-not $SkipInstaller) -and (Test-Path $installerExe)) { Remove-Item -Path $installerExe -Force }
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
 Write-Host "[1/5] Publishing self-contained win-x64 GhostCode ($Version)..."
 & $dotnet publish (Join-Path $repoRoot "src\GhostCode.App\GhostCode.App.csproj") `
@@ -28,7 +30,7 @@ Write-Host "[1/5] Publishing self-contained win-x64 GhostCode ($Version)..."
     -p:Version=$Version `
     -p:InformationalVersion=$Version `
     --self-contained true `
-    -p:PublishDir="$outDir\"
+    -p:PublishDir="$stageDir\"
 
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
@@ -37,7 +39,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[2/5] Staging clean browser extensions (zero user secrets)..."
 foreach ($extDir in @("browser-extension", "browser-extension-firefox")) {
     $src = Join-Path $repoRoot $extDir
-    $dst = Join-Path $outDir $extDir
+    $dst = Join-Path $stageDir $extDir
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Get-ChildItem -Path $src -File | Where-Object {
         $_.Name -ine "pairing.generated.json"
@@ -57,18 +59,18 @@ $requiredPaths = @(
     "browser-extension-firefox\manifest.json"
 )
 foreach ($rel in $requiredPaths) {
-    $full = Join-Path $outDir $rel
+    $full = Join-Path $stageDir $rel
     if (-not (Test-Path $full)) {
         throw "Required release payload file missing: $full"
     }
 }
 
-$xbfFiles = Get-ChildItem -Path $outDir -Recurse -Filter "*.xbf"
+$xbfFiles = Get-ChildItem -Path $stageDir -Recurse -Filter "*.xbf"
 if ($xbfFiles.Count -lt 6) {
     throw "Compiled XAML .xbf validation failed (expected >= 6, found $($xbfFiles.Count))."
 }
 
-$leakedSecrets = Get-ChildItem -Path $outDir -Recurse -File | Where-Object {
+$leakedSecrets = Get-ChildItem -Path $stageDir -Recurse -File | Where-Object {
     $_.Name -ieq "pairing.generated.json" -or $_.Extension -iin @(".dpapi", ".db")
 }
 if ($leakedSecrets.Count -gt 0) {
@@ -77,7 +79,7 @@ if ($leakedSecrets.Count -gt 0) {
 }
 
 Write-Host "[4/5] Creating Portable ZIP ($portableZip)..."
-Compress-Archive -Path (Join-Path $outDir "*") -DestinationPath $portableZip -CompressionLevel Optimal -Force
+Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $portableZip -CompressionLevel Optimal -Force
 
 $generatedAssets = New-Object System.Collections.Generic.List[string]
 $generatedAssets.Add($portableZip)
@@ -96,7 +98,7 @@ if (-not $SkipInstaller) {
         throw "Inno Setup 6 (ISCC.exe) not found. Install JRSoftware.InnoSetup or pass -SkipInstaller."
     }
 
-    & $iscc "/DAppVersion=$Version" "/DPayloadDir=$outDir" "/DOutputDir=$releaseRoot" (Join-Path $repoRoot "packaging\GhostCode.iss")
+    & $iscc "/DAppVersion=$Version" "/DPayloadDir=$stageDir" "/DOutputDir=$releaseRoot" (Join-Path $repoRoot "packaging\GhostCode.iss")
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $installerExe)) {
         throw "ISCC compilation failed with exit code $LASTEXITCODE"
     }
@@ -105,6 +107,15 @@ if (-not $SkipInstaller) {
 else {
     Write-Host "[5/5] Skipping installer build (-SkipInstaller)."
 }
+
+# Sync staged payload into artifacts\Release\GhostCode-win-x64 cleanly after ZIP + EXE are already finalized
+Get-Process -Name "GhostCode.App" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+if (Test-Path $outDir) { Remove-Item -Path $outDir -Recurse -Force -ErrorAction SilentlyContinue }
+if (-not (Test-Path $outDir)) {
+    Move-Item -Path $stageDir -Destination $outDir -Force
+}
+if (Test-Path $stageRoot) { Remove-Item -Path $stageRoot -Recurse -Force -ErrorAction SilentlyContinue }
 
 $lines = foreach ($asset in $generatedAssets) {
     $hash = (Get-FileHash -Path $asset -Algorithm SHA256).Hash.ToLowerInvariant()
