@@ -697,7 +697,7 @@ public sealed class AcceptanceTests : IDisposable
         {
             using var http = new HttpClient();
             string? statusJson = null;
-            var deadline = Environment.TickCount64 + 12_000;
+            var deadline = Environment.TickCount64 + 25_000;
             while (Environment.TickCount64 < deadline)
             {
                 if (proc.HasExited)

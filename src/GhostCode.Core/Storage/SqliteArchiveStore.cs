@@ -1432,6 +1432,7 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
         return entries
             .OrderByDescending(e => e.OccurredAtUnixMs)
             .Take(limit)
+            .OrderBy(e => e.OccurredAtUnixMs)
             .ToList();
     }
 

@@ -111,22 +111,18 @@
                     </Grid.RowDefinitions>
 
                     <!-- Version Selector & Action Toolbar -->
-                    <Grid Grid.Row="0" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
+                    <StackPanel Grid.Row="0" Spacing="6">
                         <ComboBox
-                            Grid.Column="0"
                             HorizontalAlignment="Stretch"
                             Header="{x:Bind ViewModel.Strings.VersionSelectorLabel, Mode=OneWay}"
                             ItemsSource="{x:Bind ViewModel.SelectedFileVersions}"
                             SelectedItem="{x:Bind ViewModel.SelectedVersion, Mode=TwoWay}"
                             DisplayMemberPath="SelectorLabel" />
 
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Bottom">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
                             <SplitButton
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.CopyCodeButton, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.CopySelectedCodeCommand}">
                                 <SplitButton.Flyout>
@@ -140,6 +136,8 @@
                                 </SplitButton.Flyout>
                             </SplitButton>
                             <SplitButton
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.ExpStrings.OpenInIde, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.OpenInIdeCommand}">
                                 <SplitButton.Flyout>
@@ -150,22 +148,30 @@
                                 </SplitButton.Flyout>
                             </SplitButton>
                             <Button
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.ExpStrings.CompareDiffButton, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.ToggleDiffModeCommand}" />
                             <Button
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.RestoreVersionButton, Mode=OneWay}"
                                 Click="RestoreVersion_Click" />
                             <Button
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.DownloadVersionButton, Mode=OneWay}"
                                 Visibility="{x:Bind ViewModel.SelectedVersionIsCloudOnly, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.DownloadSelectedVersionCommand}" />
                             <Button
                                 x:Name="RunSourceButton"
+                                Padding="8,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 Command="{x:Bind ViewModel.RunCodeCommand}" />
                         </StackPanel>
-                    </Grid>
+                    </StackPanel>
 
                     <!-- Version Integrity Header -->
                     <StackPanel Grid.Row="1" Spacing="2">
@@ -299,40 +305,45 @@
                     </Grid.RowDefinitions>
 
                     <!-- Tab & Execution Action Bar -->
-                    <Grid Grid.Row="0" ColumnSpacing="6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
-                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                    <StackPanel Grid.Row="0" Spacing="6">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
                             <Button
                                 x:Name="ConsoleTabBtn"
+                                Padding="10,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.RunnerTabConsole, Mode=OneWay}"
                                 Click="ConsoleTab_Click" />
                             <Button
                                 x:Name="IoTabBtn"
+                                Padding="10,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.RunnerTabIo, Mode=OneWay}"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 Click="IoTab_Click" />
                             <Button
                                 x:Name="SamplesTabBtn"
+                                Padding="10,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.ExpStrings.SamplesTabLabel, Mode=OneWay}"
                                 Click="SamplesTab_Click" />
                         </StackPanel>
 
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
                             <Button
                                 x:Name="PanelRunButton"
+                                Padding="10,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.RunCodeButton, Mode=OneWay}"
                                 Style="{ThemeResource AccentButtonStyle}"
                                 Command="{x:Bind ViewModel.RunCodeCommand}" />
                             <Button
                                 x:Name="PanelStopButton"
+                                Padding="10,4"
+                                FontSize="12"
                                 Content="{x:Bind ViewModel.Strings.StopRunButton, Mode=OneWay}"
                                 Command="{x:Bind ViewModel.StopExecutionCommand}" />
                         </StackPanel>
-                    </Grid>
+                    </StackPanel>
 
                     <!-- Status & Metrics Strip -->
                     <Grid Grid.Row="1" ColumnSpacing="8">
@@ -474,6 +485,8 @@
                                     </Border>
                                 </Grid>
                                 <TextBlock Text="{x:Bind ViewModel.CurrentProblemStatementSummary, Mode=OneWay}" FontSize="11" TextWrapping="Wrap" MaxLines="5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{x:Bind ViewModel.TimelineSummaryText, Mode=OneWay}" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{x:Bind ViewModel.ActiveCodingTimeText, Mode=OneWay}" FontSize="10" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                             </StackPanel>
                         </Border>
 
@@ -485,11 +498,11 @@
                                 ItemsSource="{x:Bind ViewModel.SampleTests}"
                                 SelectedItem="{x:Bind ViewModel.SelectedSampleTest, Mode=TwoWay}"
                                 DisplayMemberPath="DisplayLabel" />
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <Button Content="{x:Bind ViewModel.ExpStrings.RunSampleButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.RunSelectedSampleCommand}" />
-                                <Button Content="{x:Bind ViewModel.ExpStrings.RunAllSamplesButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunAllSamplesCommand}" />
-                                <Button Content="{x:Bind ViewModel.ExpStrings.AddCustomTestButton, Mode=OneWay}" Click="AddCustomSample_Click" />
-                                <Button Content="Delete" Command="{x:Bind ViewModel.DeleteSelectedSampleCommand}" />
+                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.RunSampleButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.RunSelectedSampleCommand}" />
+                                <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.RunAllSamplesButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunAllSamplesCommand}" />
+                                <Button Padding="8,4" FontSize="11" Content="{x:Bind ViewModel.ExpStrings.AddCustomTestButton, Mode=OneWay}" Click="AddCustomSample_Click" />
+                                <Button Padding="8,4" FontSize="11" Content="Del" Command="{x:Bind ViewModel.DeleteSelectedSampleCommand}" />
                             </StackPanel>
                         </StackPanel>
 

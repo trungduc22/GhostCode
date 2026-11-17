@@ -3,6 +3,7 @@ using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using GhostCode.App.Localization;
+using GhostCode.Core.Ai;
 using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
@@ -224,10 +225,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly OneDriveService? _oneDrive;
     private readonly CloudMigrationService? _migrationService;
     private readonly SampleTestRunnerService _sampleRunner;
+    private readonly CodingTimeTracker _codingTime;
+    private readonly CopilotAssistanceService _copilot;
 
     private Func<Action, bool> _dispatch = action => { action(); return true; };
     private Action<ElementTheme>? _applyThemeCallback;
     private Func<string, bool>? _clipboardCopyWithRetry;
+    private Action<MicaAppearanceKind>? _applyMicaCallback;
+    private Func<bool, string, (bool Success, string Detail)>? _configureHotkeyCallback;
     private CancellationTokenSource? _execCts;
     private Timer? _discoveryRefreshTimer;
 
@@ -250,6 +255,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _latestVerdictBadgeText = "No Judge Verdict";
     private string _sampleRunSummaryText = "Not run yet";
     private string _sampleComparisonDiffText = string.Empty;
+    private string _timelineSummaryText = "Timeline: no recorded events for this problem yet.";
+    private string _activeCodingTimeText = "Coding time estimation disabled (Opt-in in Settings)";
+    private int _selectedMicaKindIndex;
+    private int _selectedNotificationLevelIndex;
+    private bool _globalHotkeyEnabled = true;
+    private string _globalHotkeyGesture = "Ctrl+Shift+F9";
+    private bool _captureProblemStatements = true;
+    private bool _trackSubmissionVerdicts = true;
+    private bool _trimTrailingWhitespaceOnCompare = true;
+    private bool _estimateActiveCodingTime;
+    private bool _aiAssistanceOptIn;
 
     private string _backupHealthSummary = "Checking...";
     private string _backupProtectionBadge = "Checking";
@@ -348,7 +364,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         NotificationCoordinator? notifications = null,
         OneDriveService? oneDrive = null,
         CloudMigrationService? migrationService = null,
-        SampleTestRunnerService? sampleRunner = null)
+        SampleTestRunnerService? sampleRunner = null,
+        CodingTimeTracker? codingTime = null,
+        CopilotAssistanceService? copilot = null)
     {
         _config = config;
         _configPath = configPath;
@@ -367,6 +385,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _oneDrive = oneDrive;
         _migrationService = migrationService;
         _sampleRunner = sampleRunner ?? new SampleTestRunnerService(_config, _store, _runner);
+        _codingTime = codingTime ?? new CodingTimeTracker(_config);
+        _copilot = copilot ?? new CopilotAssistanceService(_config);
         _strings = UiStrings.For(config.Language);
         _expStrings = UiStrings.ExpansionFor(config.Language);
         _runnerStatusText = _strings.StatusReady;
@@ -447,6 +467,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<DiffLineRow> DiffSideBySideLines { get; } = new();
     public ObservableCollection<ArchiveFileGroupRow> QuickActionsCandidates { get; } = new();
     public ObservableCollection<SampleTestCaseRecord> SampleTests { get; } = new();
+    public ObservableCollection<ProblemTimelineEntry> TimelineEntries { get; } = new();
+    public ObservableCollection<NotificationRecord> NotificationHistory { get; } = new();
 
     public IReadOnlyList<string> PlatformFilters { get; } =
         new[] { "All", "Ptit", "Codeforces", "Vnoj", "LeetCode", "HackerRank", "Offline", "Other" };
@@ -750,6 +772,138 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string LatestVerdictBadgeText { get => _latestVerdictBadgeText; private set => SetProperty(ref _latestVerdictBadgeText, value); }
     public string SampleRunSummaryText { get => _sampleRunSummaryText; private set => SetProperty(ref _sampleRunSummaryText, value); }
     public string SampleComparisonDiffText { get => _sampleComparisonDiffText; private set => SetProperty(ref _sampleComparisonDiffText, value); }
+    public string TimelineSummaryText { get => _timelineSummaryText; private set => SetProperty(ref _timelineSummaryText, value); }
+    public string ActiveCodingTimeText { get => _activeCodingTimeText; private set => SetProperty(ref _activeCodingTimeText, value); }
+
+    public int SelectedMicaKindIndex
+    {
+        get => _selectedMicaKindIndex;
+        set
+        {
+            if (value < 0 || value > 2 || !SetProperty(ref _selectedMicaKindIndex, value))
+                return;
+            _config.MicaKind = (MicaAppearanceKind)value;
+            SaveConfigSafe();
+            _applyMicaCallback?.Invoke(_config.MicaKind);
+        }
+    }
+
+    public int SelectedNotificationLevelIndex
+    {
+        get => _selectedNotificationLevelIndex;
+        set
+        {
+            if (value < 0 || value > 2 || !SetProperty(ref _selectedNotificationLevelIndex, value))
+                return;
+            _config.NotificationLevel = (NotificationLevel)value;
+            SaveConfigSafe();
+        }
+    }
+
+    public bool GlobalHotkeyEnabled
+    {
+        get => _globalHotkeyEnabled;
+        set
+        {
+            if (SetProperty(ref _globalHotkeyEnabled, value) && _config.GlobalHotkeyEnabled != value)
+            {
+                _config.GlobalHotkeyEnabled = value;
+                SaveConfigSafe();
+                if (_configureHotkeyCallback is not null)
+                {
+                    var res = _configureHotkeyCallback(_config.GlobalHotkeyEnabled, _config.GlobalHotkeyGesture);
+                    GlobalHotkeyStatusText = res.Detail;
+                }
+            }
+        }
+    }
+
+    public string GlobalHotkeyGesture
+    {
+        get => _globalHotkeyGesture;
+        set
+        {
+            if (SetProperty(ref _globalHotkeyGesture, value ?? string.Empty))
+            {
+                _config.GlobalHotkeyGesture = _globalHotkeyGesture.Trim();
+                SaveConfigSafe();
+                if (_configureHotkeyCallback is not null)
+                {
+                    var res = _configureHotkeyCallback(_config.GlobalHotkeyEnabled, _config.GlobalHotkeyGesture);
+                    GlobalHotkeyStatusText = res.Detail;
+                }
+            }
+        }
+    }
+
+    public bool CaptureProblemStatements
+    {
+        get => _captureProblemStatements;
+        set
+        {
+            if (SetProperty(ref _captureProblemStatements, value) && _config.CaptureProblemStatements != value)
+            {
+                _config.CaptureProblemStatements = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public bool TrackSubmissionVerdicts
+    {
+        get => _trackSubmissionVerdicts;
+        set
+        {
+            if (SetProperty(ref _trackSubmissionVerdicts, value) && _config.TrackSubmissionVerdicts != value)
+            {
+                _config.TrackSubmissionVerdicts = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public bool TrimTrailingWhitespaceOnCompare
+    {
+        get => _trimTrailingWhitespaceOnCompare;
+        set
+        {
+            if (SetProperty(ref _trimTrailingWhitespaceOnCompare, value) && _config.TrimTrailingWhitespaceOnCompare != value)
+            {
+                _config.TrimTrailingWhitespaceOnCompare = value;
+                SaveConfigSafe();
+            }
+        }
+    }
+
+    public bool EstimateActiveCodingTime
+    {
+        get => _estimateActiveCodingTime;
+        set
+        {
+            if (SetProperty(ref _estimateActiveCodingTime, value) && _config.EstimateActiveCodingTime != value)
+            {
+                _config.EstimateActiveCodingTime = value;
+                SaveConfigSafe();
+                ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey());
+            }
+        }
+    }
+
+    public bool AiAssistanceOptIn
+    {
+        get => _aiAssistanceOptIn;
+        set
+        {
+            if (SetProperty(ref _aiAssistanceOptIn, value) && _config.AiAssistanceOptIn != value)
+            {
+                _config.AiAssistanceOptIn = value;
+                SaveConfigSafe();
+                OnPropertyChanged(nameof(CopilotStatusText));
+            }
+        }
+    }
+
+    public string CopilotStatusText => _copilot.GetAvailabilityStatus();
 
     public bool IsExecuting
     {
@@ -1160,6 +1314,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _applyThemeCallback(ToElementTheme(_config.Theme));
     }
 
+    public void AttachExpansionHooks(
+        Action<MicaAppearanceKind> applyMica,
+        Func<bool, string, (bool Success, string Detail)> configureHotkey)
+    {
+        _applyMicaCallback = applyMica;
+        _configureHotkeyCallback = configureHotkey;
+    }
+
     public static ElementTheme ToElementTheme(ThemePreference pref) => pref switch
     {
         ThemePreference.Dark => ElementTheme.Dark,
@@ -1295,6 +1457,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         HistoryEvents.Clear();
         foreach (var h in history)
             HistoryEvents.Add(new ArchiveHistoryEventRow(h));
+
+        var notifs = await _store.GetRecentNotificationsAsync(30);
+        NotificationHistory.Clear();
+        foreach (var nr in notifs)
+            NotificationHistory.Add(nr);
     }
 
     public async Task RefreshArchiveAsync()
@@ -1952,6 +2119,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _executionMemoryLimitMb = _config.ExecutionMemoryLimitMb;
         _selectedConflictPolicyIndex = (int)_config.ConflictPolicy;
         _syncPausedManually = _config.SyncPausedManually;
+        _selectedMicaKindIndex = (int)_config.MicaKind;
+        _selectedNotificationLevelIndex = (int)_config.NotificationLevel;
+        _globalHotkeyEnabled = _config.GlobalHotkeyEnabled;
+        _globalHotkeyGesture = _config.GlobalHotkeyGesture;
+        _captureProblemStatements = _config.CaptureProblemStatements;
+        _trackSubmissionVerdicts = _config.TrackSubmissionVerdicts;
+        _trimTrailingWhitespaceOnCompare = _config.TrimTrailingWhitespaceOnCompare;
+        _estimateActiveCodingTime = _config.EstimateActiveCodingTime;
+        _aiAssistanceOptIn = _config.AiAssistanceOptIn;
+        _activeCodingTimeText = _codingTime.FormatEstimatedDuration(string.Empty);
 
         _suppressFolderSync = true;
         WatchedFolders.Clear();
@@ -2306,6 +2483,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             LatestVerdictBadgeText = "No Judge Verdict";
         }
+
+        var timeline = await _store.GetTimelineForProblemAsync(effCode, 50);
+        TimelineEntries.Clear();
+        foreach (var te in timeline)
+            TimelineEntries.Add(te);
+        TimelineSummaryText = timeline.Count == 0
+            ? $"Timeline ({effCode}): No events recorded yet."
+            : "Timeline (UTC): " + string.Join(" | ", timeline.Take(4).Select(t =>
+                $"[{DateTimeOffset.FromUnixTimeMilliseconds(t.OccurredAtUnixMs).UtcDateTime:HH:mm:ss}] {t.EventType}"));
+
+        ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(effCode);
     }
 
     public async Task RunSelectedSampleAsync()
@@ -2428,6 +2616,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnVersionArchived(ArchiveVersionRecord version)
     {
+        _codingTime.RecordActivity(string.IsNullOrWhiteSpace(version.ProblemCode) ? version.SourcePath : version.ProblemCode, version.CreatedAtUnixMs);
         _dispatch(() =>
         {
             if (_config.AutoCopyReadyPath && !string.IsNullOrWhiteSpace(version.ReadyPath))

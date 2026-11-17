@@ -1,12 +1,15 @@
 using GhostCode.App.Interop;
 using GhostCode.App.ViewModels;
 using GhostCode.App.Views;
+using GhostCode.Core.Models;
 using Microsoft.UI;
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
@@ -84,6 +87,12 @@ public sealed partial class MainWindow : Window
                 ApplyTitleBarThemeColors();
             },
             TryCopyTextToClipboard);
+        ViewModel.AttachExpansionHooks(
+            ApplyMicaBackdrop,
+            (enabled, gesture) => _tray is not null
+                ? _tray.ConfigureGlobalHotkey(enabled, gesture)
+                : (false, "Tray inactive"));
+        ApplyMicaBackdrop(ViewModel.Config.MicaKind);
         ViewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(MainViewModel.Strings))
@@ -288,10 +297,34 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    public void ApplyMicaBackdrop(MicaAppearanceKind kind)
+    {
+        try
+        {
+            if (kind == MicaAppearanceKind.SolidFallback)
+            {
+                SystemBackdrop = null;
+                return;
+            }
+
+            SystemBackdrop = new MicaBackdrop
+            {
+                Kind = kind == MicaAppearanceKind.MicaAlt ? MicaKind.BaseAlt : MicaKind.Base
+            };
+        }
+        catch
+        {
+            SystemBackdrop = null;
+        }
+    }
+
     public void AttachTray(Action onExitRequested)
     {
         _tray?.Dispose();
         _tray = new TrayIconManager(this, ViewModel, onExitRequested, () => ViewModel.OpenQuickActionsPanel());
+        ViewModel.AttachExpansionHooks(
+            ApplyMicaBackdrop,
+            (enabled, gesture) => _tray.ConfigureGlobalHotkey(enabled, gesture));
         ViewModel.GlobalHotkeyStatusText = _tray.GlobalHotkeyStatusText;
         _tray.AppWindow.Resize(new SizeInt32(1280, 820));
         UpdateTitleBarRegions();

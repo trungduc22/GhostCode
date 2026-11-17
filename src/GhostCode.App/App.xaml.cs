@@ -1,6 +1,7 @@
 using GhostCode.App.Diagnostics;
 using GhostCode.App.Interop;
 using GhostCode.App.ViewModels;
+using GhostCode.Core.Ai;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
@@ -97,6 +98,8 @@ public partial class App : Application
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
             sp.GetRequiredService<CodeExecutionService>()));
+        services.AddSingleton(_ => new CodingTimeTracker(config));
+        services.AddSingleton(sp => new CopilotAssistanceService(config, sp.GetRequiredService<HttpClient>()));
         services.AddSingleton(sp => new MultiDirectoryMonitor(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
@@ -124,7 +127,9 @@ public partial class App : Application
             sp.GetRequiredService<NotificationCoordinator>(),
             sp.GetRequiredService<OneDriveService>(),
             sp.GetRequiredService<CloudMigrationService>(),
-            sp.GetRequiredService<SampleTestRunnerService>()));
+            sp.GetRequiredService<SampleTestRunnerService>(),
+            sp.GetRequiredService<CodingTimeTracker>(),
+            sp.GetRequiredService<CopilotAssistanceService>()));
         services.AddSingleton<MainWindow>();
 
         _serviceProvider = services.BuildServiceProvider();

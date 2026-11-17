@@ -223,8 +223,16 @@ public static class UiSelfTestRunner
                 bool previewOk = vm.SelectedVersionSource.Contains("std::cin >> a >> b", StringComparison.Ordinal);
                 Record("SourcePreviewAndDiagnostics", previewOk && vm.LastDetectedFileText.Contains("selftest_sum.cpp", StringComparison.Ordinal), vm.LastDetectedFileText);
 
-                vm.CopySelectedCodeCommand.Execute(null);
+                await vm.CopySelectedCodeCommand.ExecuteAsync(null);
                 Record("CopyCodeCommand", vm.InfoBarSeverity == InfoBarSeverity.Success);
+
+                // Quick Actions overlay check & screenshot
+                vm.OpenQuickActionsPanel();
+                await Task.Delay(250);
+                bool qaOk = vm.IsQuickActionsOpen && vm.QuickActionsVisibility == Visibility.Visible;
+                await CaptureAsync("06_quick_actions.png");
+                vm.IsQuickActionsOpen = false;
+                Record("QuickActionsOverlay", qaOk);
 
                 // Live execution in split I/O panel
                 vm.RunnerTabIndex = 1;
@@ -233,6 +241,19 @@ public static class UiSelfTestRunner
                 bool runnerOk = vm.StdoutText.Trim() == "579" && vm.IoOutputText.Trim() == "579";
                 Record("LiveCodeRunnerSplitIo", runnerOk, $"stdout='{vm.StdoutText.Trim()}', status='{vm.RunnerStatusText}'");
                 await CaptureAsync("02_archive_runner.png");
+
+                // Version Diff & Samples / Timeline tab
+                vm.ToggleDiffModeCommand.Execute(null);
+                bool diffOk = vm.IsDiffModeActive && vm.DiffModeVisibility == Visibility.Visible;
+                vm.ToggleDiffModeCommand.Execute(null);
+
+                await vm.AddCustomSampleAsync("123 456\n", "579\n");
+                vm.RunnerTabIndex = 2;
+                await vm.RunSelectedSampleCommand.ExecuteAsync(null);
+                bool sampleOk = vm.SampleRunSummaryText.Contains("Sample Passed", StringComparison.Ordinal);
+                await CaptureAsync("07_samples_timeline.png");
+                vm.RunnerTabIndex = 1;
+                Record("VersionDiffAndSamples", diffOk && sampleOk, $"diff={diffOk}, sample='{vm.SampleRunSummaryText}'");
 
                 var restoredPath = Path.Combine(testWorkspaceRoot, "restored_selftest.cpp");
                 bool restoreOk = await vm.RestoreSelectedVersionAsync(restoredPath)
@@ -283,11 +304,19 @@ public static class UiSelfTestRunner
             Record("CloudControlsAndDpapi", connectGuardOk && dpapiSecretOk && !vm.IsDriveConnected);
             await CaptureAsync("04_cloud.png");
 
-            // 10. Dark Theme Dashboard screenshot
+            // 10. Dark Theme Dashboard + Live Mica Backdrop Switch
             window.NavigateToTag("Dashboard");
             vm.SelectedThemeIndex = 1; // Dark
             await CaptureAsync("05_dark_dashboard.png");
             vm.SelectedThemeIndex = 0; // Restore System
+
+            vm.SelectedMicaKindIndex = 1; // MicaAlt
+            bool altOk = window.SystemBackdrop is MicaBackdrop mbAlt && mbAlt.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt;
+            vm.SelectedMicaKindIndex = 2; // SolidFallback
+            bool solidOk = window.SystemBackdrop is null;
+            vm.SelectedMicaKindIndex = 0; // Restore Mica Base
+            bool baseOk = window.SystemBackdrop is MicaBackdrop mbBase && mbBase.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base;
+            Record("MicaAppearanceSwitch", altOk && solidOk && baseOk);
 
             // 11. System Tray hide / restore
             bool taskbarPresent = GhostCode.App.Interop.TrayIconManager.IsTaskbarPresent;

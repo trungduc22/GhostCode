@@ -78,7 +78,7 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
         psi.Environment["GHOSTCODE_SCREENSHOT_DIR"] = screenshotDir;
 
         using var proc = Process.Start(psi)!;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         try
         {
             await proc.WaitForExitAsync(cts.Token);
@@ -115,6 +115,9 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
             "RestoreAndIntegrityCheck",
             "RemoveWatchedFolder",
             "CloudControlsAndDpapi",
+            "QuickActionsOverlay",
+            "VersionDiffAndSamples",
+            "MicaAppearanceSwitch",
             "SystemTrayAndHideRestore"
         };
         foreach (var key in expectedChecks)
@@ -129,7 +132,9 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
             "02_archive_runner.png",
             "03_settings.png",
             "04_cloud.png",
-            "05_dark_dashboard.png"
+            "05_dark_dashboard.png",
+            "06_quick_actions.png",
+            "07_samples_timeline.png"
         };
         foreach (var file in expectedScreenshots)
         {
