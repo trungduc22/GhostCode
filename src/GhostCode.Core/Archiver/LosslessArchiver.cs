@@ -249,10 +249,10 @@ public sealed class LosslessArchiver
     /// </summary>
     public async Task<int> ReconcileAfterCrashAsync(CancellationToken ct = default)
     {
+        int recovered = await _store.RecoverInterruptedTrashOperationsAsync(ct);
         SweepTempFiles(_config.ArchiveDir);
         SweepTempFiles(_config.ReadyDir);
 
-        int recovered = 0;
         var roots = new[] { _config.GetInternalHistoryRoot(), Path.Combine(_config.ArchiveDir, "History") }
             .Where(Directory.Exists)
             .Distinct(StringComparer.OrdinalIgnoreCase);
@@ -269,7 +269,7 @@ public sealed class LosslessArchiver
                     continue;
 
                 var fullArchive = Path.GetFullPath(file);
-                if (await _store.GetVersionByArchivePathAsync(fullArchive, ct) is not null)
+                if (await _store.GetVersionByArchivePathAsync(fullArchive, includeDeleted: true, ct) is not null)
                     continue;
 
                 byte[] bytes;

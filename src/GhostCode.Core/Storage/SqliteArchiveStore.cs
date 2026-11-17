@@ -304,7 +304,21 @@ public sealed partial class SqliteArchiveStore : IAsyncDisposable
         }
 
         await using var idxCmd = conn.CreateCommand();
-        idxCmd.CommandText = "CREATE INDEX IF NOT EXISTS idx_versions_deleted ON archive_versions(is_deleted, deleted_at DESC);";
+        idxCmd.CommandText = """
+            CREATE INDEX IF NOT EXISTS idx_versions_deleted ON archive_versions(is_deleted, deleted_at DESC);
+            CREATE TABLE IF NOT EXISTS trash_op_journal (
+                op_id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                op_type TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                origin_path TEXT NOT NULL,
+                dest_path TEXT NOT NULL,
+                expected_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_trash_journal_batch ON trash_op_journal(batch_id, created_at DESC);
+            """;
         await idxCmd.ExecuteNonQueryAsync(ct);
     }
 

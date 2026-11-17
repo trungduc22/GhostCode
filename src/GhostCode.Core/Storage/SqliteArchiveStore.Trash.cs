@@ -133,31 +133,27 @@ public sealed partial class SqliteArchiveStore
         await _writeLock.WaitAsync(ct);
         try
         {
-            await using var conn = new SqliteConnection(_connectionString);
-            await conn.OpenAsync(ct);
-            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
-
             var targets = new List<ArchiveVersionRecord>();
-            foreach (var id in ids)
+            await using (var readConn = new SqliteConnection(_connectionString))
             {
-                await using var sel = conn.CreateCommand();
-                sel.Transaction = tx;
-                sel.CommandText = """
-                    SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
-                    FROM archive_versions
-                    WHERE id = $id AND is_deleted = 0;
-                    """;
-                sel.Parameters.AddWithValue("$id", id);
-                await using var r = await sel.ExecuteReaderAsync(ct);
-                if (await r.ReadAsync(ct))
-                    targets.Add(ReadVersion(r));
+                await readConn.OpenAsync(ct);
+                foreach (var id in ids)
+                {
+                    await using var sel = readConn.CreateCommand();
+                    sel.CommandText = """
+                        SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+                        FROM archive_versions
+                        WHERE id = $id AND is_deleted = 0;
+                        """;
+                    sel.Parameters.AddWithValue("$id", id);
+                    await using var r = await sel.ExecuteReaderAsync(ct);
+                    if (await r.ReadAsync(ct))
+                        targets.Add(ReadVersion(r));
+                }
             }
 
             if (targets.Count == 0)
-            {
-                await tx.RollbackAsync(ct);
                 return (false, 0, null, null);
-            }
 
             if (string.IsNullOrWhiteSpace(problemKey) && targets.Count > 0)
             {
@@ -166,158 +162,176 @@ public sealed partial class SqliteArchiveStore
                     problemKey = ProblemStatementRecord.BuildKey(first.Platform, first.ProblemCode);
             }
 
-            foreach (var v in targets)
+            var movePlan = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var plannedJournal = new List<(string OpId, string VersionId, string Origin, string Dest, string Sha256)>();
+            if (!string.IsNullOrWhiteSpace(trashRootDir))
             {
-                string? trashPath = null;
-                if (!string.IsNullOrWhiteSpace(trashRootDir) && v.IsLocalAvailable && File.Exists(v.ArchivePath))
+                var batchDir = Path.Combine(trashRootDir, batchId);
+                foreach (var v in targets)
                 {
-                    var batchDir = Path.Combine(trashRootDir, batchId);
-                    Directory.CreateDirectory(batchDir);
-                    trashPath = Path.Combine(batchDir, $"{v.Id}_{Path.GetFileName(v.FileName)}");
-                    File.Move(v.ArchivePath, trashPath, overwrite: true);
-                    movedPhysicalFiles.Add((v.ArchivePath, trashPath));
-                }
-
-                await using (var upd = conn.CreateCommand())
-                {
-                    upd.Transaction = tx;
-                    upd.CommandText = """
-                        UPDATE archive_versions
-                        SET is_deleted = 1,
-                            deleted_at = $delAt,
-                            trash_batch_id = $batch,
-                            delete_scope = $scope,
-                            deleted_origin_device = $dev,
-                            trash_archive_path = COALESCE($tp, trash_archive_path)
-                        WHERE id = $id;
-                        """;
-                    upd.Parameters.AddWithValue("$delAt", now);
-                    upd.Parameters.AddWithValue("$batch", batchId);
-                    upd.Parameters.AddWithValue("$scope", scope.ToString());
-                    upd.Parameters.AddWithValue("$dev", Environment.MachineName);
-                    upd.Parameters.AddWithValue("$tp", (object?)trashPath ?? DBNull.Value);
-                    upd.Parameters.AddWithValue("$id", v.Id);
-                    await upd.ExecuteNonQueryAsync(ct);
-                }
-
-                // Prevent upload queue from resurrecting deleted version while preserving Synced ledger markers
-                await using (var qCmd = conn.CreateCommand())
-                {
-                    qCmd.Transaction = tx;
-                    qCmd.CommandText = """
-                        UPDATE upload_queue
-                        SET status = 'Cancelled', updated_at = $now
-                        WHERE version_id = $id AND status IN ('Pending', 'Uploading', 'Failed');
-                        """;
-                    qCmd.Parameters.AddWithValue("$now", now);
-                    qCmd.Parameters.AddWithValue("$id", v.Id);
-                    await qCmd.ExecuteNonQueryAsync(ct);
-                }
-
-                bool hasRemote = !string.IsNullOrWhiteSpace(v.DriveFileId);
-                var remoteState = (deleteRemote && hasRemote) ? RemoteDeleteStatus.PendingRemoteDelete : RemoteDeleteStatus.LocalOnly;
-                await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
-                    $"ver:{v.Id}",
-                    "Version",
-                    v.Id,
-                    problemKey,
-                    v.SourcePath,
-                    v.Platform,
-                    v.ProblemCode,
-                    v.Sha256,
-                    v.NormHash,
-                    v.DriveFileId,
-                    deleteRemote,
-                    remoteState,
-                    0,
-                    null,
-                    now,
-                    now,
-                    Environment.MachineName,
-                    expiresAt), ct);
-
-                // Watcher content suppression until a genuinely new edit changes the content hash
-                await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
-                    $"sup:{v.SourcePath.ToLowerInvariant()}|{v.Sha256}",
-                    "ContentSuppression",
-                    v.Id,
-                    problemKey,
-                    v.SourcePath,
-                    v.Platform,
-                    v.ProblemCode,
-                    v.Sha256,
-                    v.NormHash,
-                    v.DriveFileId,
-                    false,
-                    RemoteDeleteStatus.LocalOnly,
-                    0,
-                    null,
-                    now,
-                    now,
-                    Environment.MachineName,
-                    expiresAt), ct);
-            }
-
-            if (string.Equals(entityType, "Problem", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(problemKey))
-            {
-                var sample = targets[0];
-                await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
-                    $"prob:{problemKey.ToUpperInvariant()}",
-                    "Problem",
-                    null,
-                    problemKey,
-                    sample.SourcePath,
-                    sample.Platform,
-                    sample.ProblemCode,
-                    null,
-                    null,
-                    null,
-                    deleteRemote,
-                    deleteRemote ? RemoteDeleteStatus.PendingRemoteDelete : RemoteDeleteStatus.LocalOnly,
-                    0,
-                    null,
-                    now,
-                    now,
-                    Environment.MachineName,
-                    expiresAt), ct);
-            }
-
-            // Reconcile GhostCode organized ready_path inside ArchiveDir without ever touching original working source_path
-            foreach (var readyGroup in targets.Where(t => !string.IsNullOrWhiteSpace(t.ReadyPath)).GroupBy(t => t.ReadyPath!, StringComparer.OrdinalIgnoreCase))
-            {
-                await ReconcileReadyCopyAfterDeleteInTxAsync(conn, tx, readyGroup.Key, archiveRootDir, ct);
-            }
-
-            await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
-                Guid.NewGuid().ToString("N"),
-                entityType == "Problem" ? "ProblemMovedToTrash" : "VersionMovedToTrash",
-                targets[0].SourcePath,
-                targets[0].Id,
-                entityType == "Problem"
-                    ? $"Moved {targets.Count} version(s) of {targets[0].ProblemCode ?? targets[0].FileName} to Trash"
-                    : $"Moved v{targets[0].VersionNum} ({targets[0].FileName}) to Trash",
-                now,
-                Environment.MachineName), ct);
-
-            await tx.CommitAsync(ct);
-            return (true, targets.Count, batchId, targets[0]);
-        }
-        catch
-        {
-            foreach (var (origin, dest) in movedPhysicalFiles)
-            {
-                try
-                {
-                    if (File.Exists(dest) && !File.Exists(origin))
+                    if (v.IsLocalAvailable && File.Exists(v.ArchivePath))
                     {
-                        var dir = Path.GetDirectoryName(origin);
-                        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                        File.Move(dest, origin, overwrite: true);
+                        var candidateTrashPath = Path.Combine(batchDir, $"{v.Id}_{Path.GetFileName(v.FileName)}");
+                        var finalTrashPath = AllocateNonCollidingPath(candidateTrashPath, v.Id);
+                        movePlan[v.Id] = finalTrashPath;
+                        plannedJournal.Add((Guid.NewGuid().ToString("N"), v.Id, v.ArchivePath, finalTrashPath, v.Sha256));
                     }
                 }
-                catch { }
             }
-            throw;
+
+            if (plannedJournal.Count > 0)
+                await WritePlannedTrashJournalAsync(batchId, "MoveToTrash", plannedJournal, now, ct);
+
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+            try
+            {
+                foreach (var v in targets)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    string? trashPath = null;
+                    if (movePlan.TryGetValue(v.Id, out var destTrashPath) && File.Exists(v.ArchivePath))
+                    {
+                        var batchDir = Path.GetDirectoryName(destTrashPath)!;
+                        Directory.CreateDirectory(batchDir);
+                        File.Move(v.ArchivePath, destTrashPath, overwrite: false);
+                        movedPhysicalFiles.Add((v.ArchivePath, destTrashPath));
+                        trashPath = destTrashPath;
+                    }
+
+                    await using (var upd = conn.CreateCommand())
+                    {
+                        upd.Transaction = tx;
+                        upd.CommandText = """
+                            UPDATE archive_versions
+                            SET is_deleted = 1,
+                                deleted_at = $delAt,
+                                trash_batch_id = $batch,
+                                delete_scope = $scope,
+                                deleted_origin_device = $dev,
+                                trash_archive_path = COALESCE($tp, trash_archive_path)
+                            WHERE id = $id;
+                            """;
+                        upd.Parameters.AddWithValue("$delAt", now);
+                        upd.Parameters.AddWithValue("$batch", batchId);
+                        upd.Parameters.AddWithValue("$scope", scope.ToString());
+                        upd.Parameters.AddWithValue("$dev", Environment.MachineName);
+                        upd.Parameters.AddWithValue("$tp", (object?)trashPath ?? DBNull.Value);
+                        upd.Parameters.AddWithValue("$id", v.Id);
+                        await upd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    // Prevent upload queue from resurrecting deleted version while preserving Synced ledger markers
+                    await using (var qCmd = conn.CreateCommand())
+                    {
+                        qCmd.Transaction = tx;
+                        qCmd.CommandText = """
+                            UPDATE upload_queue
+                            SET status = 'Cancelled', updated_at = $now
+                            WHERE version_id = $id AND status IN ('Pending', 'Uploading', 'Failed');
+                            """;
+                        qCmd.Parameters.AddWithValue("$now", now);
+                        qCmd.Parameters.AddWithValue("$id", v.Id);
+                        await qCmd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    bool hasRemote = !string.IsNullOrWhiteSpace(v.DriveFileId);
+                    var remoteState = (deleteRemote && hasRemote) ? RemoteDeleteStatus.PendingRemoteDelete : RemoteDeleteStatus.LocalOnly;
+                    await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
+                        $"ver:{v.Id}",
+                        "Version",
+                        v.Id,
+                        problemKey,
+                        v.SourcePath,
+                        v.Platform,
+                        v.ProblemCode,
+                        v.Sha256,
+                        v.NormHash,
+                        v.DriveFileId,
+                        deleteRemote,
+                        remoteState,
+                        0,
+                        null,
+                        now,
+                        now,
+                        Environment.MachineName,
+                        expiresAt), ct);
+
+                    // Watcher content suppression until a genuinely new edit changes the content hash
+                    await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
+                        $"sup:{v.SourcePath.ToLowerInvariant()}|{v.Sha256}",
+                        "ContentSuppression",
+                        v.Id,
+                        problemKey,
+                        v.SourcePath,
+                        v.Platform,
+                        v.ProblemCode,
+                        v.Sha256,
+                        v.NormHash,
+                        v.DriveFileId,
+                        false,
+                        RemoteDeleteStatus.LocalOnly,
+                        0,
+                        null,
+                        now,
+                        now,
+                        Environment.MachineName,
+                        expiresAt), ct);
+                }
+
+                if (string.Equals(entityType, "Problem", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(problemKey))
+                {
+                    var sample = targets[0];
+                    await UpsertTombstoneInTxAsync(conn, tx, new ArchiveTombstoneRecord(
+                        $"prob:{problemKey.ToUpperInvariant()}",
+                        "Problem",
+                        null,
+                        problemKey,
+                        sample.SourcePath,
+                        sample.Platform,
+                        sample.ProblemCode,
+                        null,
+                        null,
+                        null,
+                        deleteRemote,
+                        deleteRemote ? RemoteDeleteStatus.PendingRemoteDelete : RemoteDeleteStatus.LocalOnly,
+                        0,
+                        null,
+                        now,
+                        now,
+                        Environment.MachineName,
+                        expiresAt), ct);
+                }
+
+                // Reconcile GhostCode organized ready_path inside ArchiveDir without ever touching original working source_path
+                foreach (var readyGroup in targets.Where(t => !string.IsNullOrWhiteSpace(t.ReadyPath)).GroupBy(t => t.ReadyPath!, StringComparer.OrdinalIgnoreCase))
+                {
+                    await ReconcileReadyCopyAfterDeleteInTxAsync(conn, tx, readyGroup.Key, archiveRootDir, ct);
+                }
+
+                await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                    Guid.NewGuid().ToString("N"),
+                    entityType == "Problem" ? "ProblemMovedToTrash" : "VersionMovedToTrash",
+                    targets[0].SourcePath,
+                    targets[0].Id,
+                    entityType == "Problem"
+                        ? $"Moved {targets.Count} version(s) of {targets[0].ProblemCode ?? targets[0].FileName} to Trash"
+                        : $"Moved v{targets[0].VersionNum} ({targets[0].FileName}) to Trash",
+                    now,
+                    Environment.MachineName), ct);
+
+                await DeleteTrashJournalBatchInTxAsync(conn, tx, batchId, ct);
+                await tx.CommitAsync(ct);
+                return (true, targets.Count, batchId, targets[0]);
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(CancellationToken.None); } catch { }
+                RollbackPhysicalFileMoves(movedPhysicalFiles);
+                await TryDeleteTrashJournalBatchAsync(batchId);
+                throw;
+            }
         }
         finally
         {
@@ -354,22 +368,21 @@ public sealed partial class SqliteArchiveStore
             return 0;
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var batchId = Guid.NewGuid().ToString("N");
+        var movedPhysicalFiles = new List<(string Origin, string Dest)>();
+        var redundantTrashToDeleteAfterCommit = new List<string>();
         int restored = 0;
 
         await _writeLock.WaitAsync(ct);
         try
         {
-            await using var conn = new SqliteConnection(_connectionString);
-            await conn.OpenAsync(ct);
-            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
-
-            foreach (var id in ids)
+            var targets = new List<(ArchiveVersionRecord Version, string? TrashPath)>();
+            await using (var readConn = new SqliteConnection(_connectionString))
             {
-                ArchiveVersionRecord? v = null;
-                string? trashPath = null;
-                await using (var sel = conn.CreateCommand())
+                await readConn.OpenAsync(ct);
+                foreach (var id in ids)
                 {
-                    sel.Transaction = tx;
+                    await using var sel = readConn.CreateCommand();
                     sel.CommandText = """
                         SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict, trash_archive_path
                         FROM archive_versions
@@ -379,104 +392,445 @@ public sealed partial class SqliteArchiveStore
                     await using var r = await sel.ExecuteReaderAsync(ct);
                     if (await r.ReadAsync(ct))
                     {
-                        v = ReadVersion(r);
-                        trashPath = r.IsDBNull(16) ? null : r.GetString(16);
+                        targets.Add((ReadVersion(r), r.IsDBNull(16) ? null : r.GetString(16)));
                     }
                 }
-                if (v is null)
-                    continue;
-
-                if (!string.IsNullOrWhiteSpace(trashPath) && File.Exists(trashPath))
-                {
-                    var bytes = await File.ReadAllBytesAsync(trashPath, ct);
-                    var actualSha = SourceAnalyzer.ComputeSha256Hex(bytes);
-                    if (!string.Equals(actualSha, v.Sha256, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidDataException($"Trash payload SHA-256 verification failed for {v.FileName}.");
-
-                    var originDir = Path.GetDirectoryName(v.ArchivePath);
-                    if (!string.IsNullOrEmpty(originDir))
-                        Directory.CreateDirectory(originDir);
-                    File.Move(trashPath, v.ArchivePath, overwrite: true);
-                }
-
-                await using (var upd = conn.CreateCommand())
-                {
-                    upd.Transaction = tx;
-                    upd.CommandText = """
-                        UPDATE archive_versions
-                        SET is_deleted = 0,
-                            deleted_at = 0,
-                            trash_batch_id = NULL,
-                            delete_scope = NULL,
-                            deleted_origin_device = NULL,
-                            trash_archive_path = NULL
-                        WHERE id = $id;
-                        """;
-                    upd.Parameters.AddWithValue("$id", v.Id);
-                    await upd.ExecuteNonQueryAsync(ct);
-                }
-
-                // Clear local deletion tombstones & watcher suppression for this restored version
-                await using (var delT = conn.CreateCommand())
-                {
-                    delT.Transaction = tx;
-                    delT.CommandText = """
-                        DELETE FROM archive_tombstones
-                        WHERE version_id = $id
-                           OR (entity_type = 'ContentSuppression' AND source_path = $sp COLLATE NOCASE AND content_sha256 = $sha);
-                        """;
-                    delT.Parameters.AddWithValue("$id", v.Id);
-                    delT.Parameters.AddWithValue("$sp", v.SourcePath);
-                    delT.Parameters.AddWithValue("$sha", v.Sha256);
-                    await delT.ExecuteNonQueryAsync(ct);
-                }
-
-                if (!string.IsNullOrWhiteSpace(v.ProblemCode))
-                {
-                    var pKey = ProblemStatementRecord.BuildKey(v.Platform, v.ProblemCode).ToUpperInvariant();
-                    await using var delProbT = conn.CreateCommand();
-                    delProbT.Transaction = tx;
-                    delProbT.CommandText = "DELETE FROM archive_tombstones WHERE entity_type = 'Problem' AND UPPER(problem_key) = $pk;";
-                    delProbT.Parameters.AddWithValue("$pk", pKey);
-                    await delProbT.ExecuteNonQueryAsync(ct);
-                }
-
-                // Re-enable Pending upload only if previously cancelled before syncing remotely
-                await using (var rq = conn.CreateCommand())
-                {
-                    rq.Transaction = tx;
-                    rq.CommandText = """
-                        UPDATE upload_queue
-                        SET status = 'Pending', updated_at = $now
-                        WHERE version_id = $id AND status = 'Cancelled' AND (drive_file_id IS NULL OR drive_file_id = '');
-                        """;
-                    rq.Parameters.AddWithValue("$now", now);
-                    rq.Parameters.AddWithValue("$id", v.Id);
-                    await rq.ExecuteNonQueryAsync(ct);
-                }
-
-                if (!string.IsNullOrWhiteSpace(v.ReadyPath) && File.Exists(v.ArchivePath))
-                    await ReconcileReadyCopyAfterDeleteInTxAsync(conn, tx, v.ReadyPath, null, ct);
-
-                await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
-                    Guid.NewGuid().ToString("N"),
-                    "RestoredFromTrash",
-                    v.SourcePath,
-                    v.Id,
-                    $"Restored v{v.VersionNum} ({v.FileName}) from Trash",
-                    now,
-                    Environment.MachineName), ct);
-
-                restored++;
             }
 
-            await tx.CommitAsync(ct);
-            return restored;
+            if (targets.Count == 0)
+                return 0;
+
+            var plannedDestinations = new Dictionary<string, (string FinalPath, bool NeedsMove, string? RedundantTrashPath)>(StringComparer.OrdinalIgnoreCase);
+            var plannedJournal = new List<(string OpId, string VersionId, string Origin, string Dest, string Sha256)>();
+
+            foreach (var (v, trashPath) in targets)
+            {
+                if (string.IsNullOrWhiteSpace(trashPath) || !File.Exists(trashPath))
+                {
+                    plannedDestinations[v.Id] = (v.ArchivePath, false, null);
+                    continue;
+                }
+
+                var bytes = await File.ReadAllBytesAsync(trashPath, ct);
+                var actualSha = SourceAnalyzer.ComputeSha256Hex(bytes);
+                if (!string.Equals(actualSha, v.Sha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"Trash payload SHA-256 verification failed for {v.FileName}.");
+
+                if (!File.Exists(v.ArchivePath))
+                {
+                    plannedDestinations[v.Id] = (v.ArchivePath, true, null);
+                    plannedJournal.Add((Guid.NewGuid().ToString("N"), v.Id, trashPath, v.ArchivePath, v.Sha256));
+                }
+                else
+                {
+                    var destBytes = await File.ReadAllBytesAsync(v.ArchivePath, ct);
+                    var destSha = SourceAnalyzer.ComputeSha256Hex(destBytes);
+                    if (string.Equals(destSha, v.Sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Destination already holds exact content bytes; never overwrite, prune duplicate after commit
+                        plannedDestinations[v.Id] = (v.ArchivePath, false, trashPath);
+                    }
+                    else
+                    {
+                        // Destination holds distinct content; allocate non-colliding historical slot to prevent data loss
+                        var allocated = AllocateNonCollidingPath(v.ArchivePath, v.Id);
+                        plannedDestinations[v.Id] = (allocated, true, null);
+                        plannedJournal.Add((Guid.NewGuid().ToString("N"), v.Id, trashPath, allocated, v.Sha256));
+                    }
+                }
+            }
+
+            if (plannedJournal.Count > 0)
+                await WritePlannedTrashJournalAsync(batchId, "RestoreFromTrash", plannedJournal, now, ct);
+
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+            try
+            {
+                foreach (var (v, trashPath) in targets)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var plan = plannedDestinations[v.Id];
+                    if (plan.NeedsMove && !string.IsNullOrWhiteSpace(trashPath) && File.Exists(trashPath))
+                    {
+                        var originDir = Path.GetDirectoryName(plan.FinalPath);
+                        if (!string.IsNullOrEmpty(originDir))
+                            Directory.CreateDirectory(originDir);
+                        File.Move(trashPath, plan.FinalPath, overwrite: false);
+                        movedPhysicalFiles.Add((trashPath, plan.FinalPath));
+                    }
+                    if (!string.IsNullOrWhiteSpace(plan.RedundantTrashPath))
+                        redundantTrashToDeleteAfterCommit.Add(plan.RedundantTrashPath);
+
+                    // Check P2 remote deletion state before deleting tombstones
+                    bool wasRemoteDeleteRequestedOrDone = false;
+                    await using (var tombCheck = conn.CreateCommand())
+                    {
+                        tombCheck.Transaction = tx;
+                        tombCheck.CommandText = """
+                            SELECT delete_remote, remote_delete_state
+                            FROM archive_tombstones
+                            WHERE id = $tid;
+                            """;
+                        tombCheck.Parameters.AddWithValue("$tid", $"ver:{v.Id}");
+                        await using var tr = await tombCheck.ExecuteReaderAsync(ct);
+                        if (await tr.ReadAsync(ct))
+                        {
+                            bool delRemote = tr.GetInt32(0) == 1;
+                            var state = tr.IsDBNull(1) ? string.Empty : tr.GetString(1);
+                            wasRemoteDeleteRequestedOrDone = delRemote
+                                || string.Equals(state, nameof(RemoteDeleteStatus.RemoteDeleted), StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(state, nameof(RemoteDeleteStatus.PendingRemoteDelete), StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(state, nameof(RemoteDeleteStatus.RemoteDeleteFailed), StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+
+                    await using (var upd = conn.CreateCommand())
+                    {
+                        upd.Transaction = tx;
+                        upd.CommandText = wasRemoteDeleteRequestedOrDone
+                            ? """
+                              UPDATE archive_versions
+                              SET is_deleted = 0,
+                                  deleted_at = 0,
+                                  trash_batch_id = NULL,
+                                  delete_scope = NULL,
+                                  deleted_origin_device = NULL,
+                                  trash_archive_path = NULL,
+                                  archive_path = $ap,
+                                  drive_file_id = NULL
+                              WHERE id = $id;
+                              """
+                            : """
+                              UPDATE archive_versions
+                              SET is_deleted = 0,
+                                  deleted_at = 0,
+                                  trash_batch_id = NULL,
+                                  delete_scope = NULL,
+                                  deleted_origin_device = NULL,
+                                  trash_archive_path = NULL,
+                                  archive_path = $ap
+                              WHERE id = $id;
+                              """;
+                        upd.Parameters.AddWithValue("$ap", plan.FinalPath);
+                        upd.Parameters.AddWithValue("$id", v.Id);
+                        await upd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    // Clear local deletion tombstones & watcher suppression for this restored version
+                    await using (var delT = conn.CreateCommand())
+                    {
+                        delT.Transaction = tx;
+                        delT.CommandText = """
+                            DELETE FROM archive_tombstones
+                            WHERE version_id = $id
+                               OR (entity_type = 'ContentSuppression' AND source_path = $sp COLLATE NOCASE AND content_sha256 = $sha);
+                            """;
+                        delT.Parameters.AddWithValue("$id", v.Id);
+                        delT.Parameters.AddWithValue("$sp", v.SourcePath);
+                        delT.Parameters.AddWithValue("$sha", v.Sha256);
+                        await delT.ExecuteNonQueryAsync(ct);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(v.ProblemCode))
+                    {
+                        var pKey = ProblemStatementRecord.BuildKey(v.Platform, v.ProblemCode).ToUpperInvariant();
+                        await using var delProbT = conn.CreateCommand();
+                        delProbT.Transaction = tx;
+                        delProbT.CommandText = "DELETE FROM archive_tombstones WHERE entity_type = 'Problem' AND UPPER(problem_key) = $pk;";
+                        delProbT.Parameters.AddWithValue("$pk", pKey);
+                        await delProbT.ExecuteNonQueryAsync(ct);
+                    }
+
+                    if (wasRemoteDeleteRequestedOrDone)
+                    {
+                        // Cloud copy was deleted (or scheduled for deletion); clear stale remote ID and re-queue fresh upload
+                        await using var rq = conn.CreateCommand();
+                        rq.Transaction = tx;
+                        rq.CommandText = """
+                            INSERT INTO upload_queue (version_id, status, attempt_count, next_retry_at, drive_file_id, last_error, updated_at)
+                            VALUES ($id, 'Pending', 0, 0, NULL, NULL, $now)
+                            ON CONFLICT(version_id) DO UPDATE SET
+                                status = 'Pending',
+                                attempt_count = 0,
+                                next_retry_at = 0,
+                                drive_file_id = NULL,
+                                last_error = NULL,
+                                updated_at = excluded.updated_at;
+                            """;
+                        rq.Parameters.AddWithValue("$id", v.Id);
+                        rq.Parameters.AddWithValue("$now", now);
+                        await rq.ExecuteNonQueryAsync(ct);
+                    }
+                    else
+                    {
+                        // LocalOnly delete preserves synced drive_file_id; only re-enable Pending if previously un-synced & Cancelled
+                        await using var rq = conn.CreateCommand();
+                        rq.Transaction = tx;
+                        rq.CommandText = """
+                            UPDATE upload_queue
+                            SET status = 'Pending', updated_at = $now
+                            WHERE version_id = $id AND status = 'Cancelled' AND (drive_file_id IS NULL OR drive_file_id = '');
+                            """;
+                        rq.Parameters.AddWithValue("$now", now);
+                        rq.Parameters.AddWithValue("$id", v.Id);
+                        await rq.ExecuteNonQueryAsync(ct);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(v.ReadyPath) && File.Exists(plan.FinalPath))
+                        await ReconcileReadyCopyAfterDeleteInTxAsync(conn, tx, v.ReadyPath, null, ct);
+
+                    await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                        Guid.NewGuid().ToString("N"),
+                        "RestoredFromTrash",
+                        v.SourcePath,
+                        v.Id,
+                        $"Restored v{v.VersionNum} ({v.FileName}) from Trash",
+                        now,
+                        Environment.MachineName), ct);
+
+                    restored++;
+                }
+
+                await DeleteTrashJournalBatchInTxAsync(conn, tx, batchId, ct);
+                await tx.CommitAsync(ct);
+
+                foreach (var dupTrashPath in redundantTrashToDeleteAfterCommit)
+                {
+                    try
+                    {
+                        if (File.Exists(dupTrashPath))
+                            File.Delete(dupTrashPath);
+                    }
+                    catch { }
+                }
+
+                return restored;
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(CancellationToken.None); } catch { }
+                RollbackPhysicalFileMoves(movedPhysicalFiles);
+                await TryDeleteTrashJournalBatchAsync(batchId);
+                throw;
+            }
         }
         finally
         {
             _writeLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Reconciles any incomplete Trash move or restore journal entries left behind by an
+    /// unexpected process crash between physical file movement and SQLite WAL commit.
+    /// Because journal rows are deleted inside the atomic SQLite commit transaction, any
+    /// remaining entry represents an uncommitted operation and is safely rolled back.
+    /// </summary>
+    public async Task<int> RecoverInterruptedTrashOperationsAsync(CancellationToken ct = default)
+    {
+        int recovered = 0;
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            var entries = new List<(string OpId, string BatchId, string OpType, string VersionId, string OriginPath, string DestPath, string ExpectedSha)>();
+            await using (var readConn = new SqliteConnection(_connectionString))
+            {
+                await readConn.OpenAsync(ct);
+                await using var checkTable = readConn.CreateCommand();
+                checkTable.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trash_op_journal';";
+                if (await checkTable.ExecuteScalarAsync(ct) is null)
+                    return 0;
+
+                await using var cmd = readConn.CreateCommand();
+                cmd.CommandText = """
+                    SELECT op_id, batch_id, op_type, version_id, origin_path, dest_path, expected_sha256
+                    FROM trash_op_journal
+                    ORDER BY created_at DESC;
+                    """;
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                {
+                    entries.Add((
+                        r.GetString(0),
+                        r.GetString(1),
+                        r.GetString(2),
+                        r.GetString(3),
+                        r.GetString(4),
+                        r.GetString(5),
+                        r.GetString(6)));
+                }
+            }
+
+            if (entries.Count == 0)
+                return 0;
+
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(ct);
+            await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            foreach (var entry in entries)
+            {
+                ct.ThrowIfCancellationRequested();
+                bool movedBack = false;
+
+                if (!File.Exists(entry.OriginPath) && File.Exists(entry.DestPath))
+                {
+                    bool shaOk = string.IsNullOrWhiteSpace(entry.ExpectedSha);
+                    if (!shaOk)
+                    {
+                        var bytes = await File.ReadAllBytesAsync(entry.DestPath, ct);
+                        shaOk = string.Equals(SourceAnalyzer.ComputeSha256Hex(bytes), entry.ExpectedSha, StringComparison.OrdinalIgnoreCase);
+                    }
+                    if (shaOk)
+                    {
+                        var originDir = Path.GetDirectoryName(entry.OriginPath);
+                        if (!string.IsNullOrEmpty(originDir))
+                            Directory.CreateDirectory(originDir);
+                        File.Move(entry.DestPath, entry.OriginPath, overwrite: false);
+                        movedBack = true;
+                    }
+                }
+                else if (File.Exists(entry.OriginPath) && File.Exists(entry.DestPath) && !string.IsNullOrWhiteSpace(entry.ExpectedSha))
+                {
+                    // Prune duplicate only if both paths hold exact identical expected bytes
+                    var originSha = SourceAnalyzer.ComputeSha256Hex(await File.ReadAllBytesAsync(entry.OriginPath, ct));
+                    var destSha = SourceAnalyzer.ComputeSha256Hex(await File.ReadAllBytesAsync(entry.DestPath, ct));
+                    if (string.Equals(originSha, entry.ExpectedSha, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(destSha, entry.ExpectedSha, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Delete(entry.DestPath);
+                    }
+                }
+
+                await using (var delCmd = conn.CreateCommand())
+                {
+                    delCmd.Transaction = tx;
+                    delCmd.CommandText = "DELETE FROM trash_op_journal WHERE op_id = $op;";
+                    delCmd.Parameters.AddWithValue("$op", entry.OpId);
+                    await delCmd.ExecuteNonQueryAsync(ct);
+                }
+
+                await InsertHistoryEventInTxAsync(conn, tx, new ArchiveHistoryEvent(
+                    Guid.NewGuid().ToString("N"),
+                    "TrashJournalRecovered",
+                    entry.OriginPath,
+                    entry.VersionId,
+                    $"Reconciled interrupted {entry.OpType} journal entry ({(movedBack ? "reverted file move" : "verified path")})",
+                    now,
+                    Environment.MachineName), ct);
+
+                recovered++;
+            }
+
+            await tx.CommitAsync(ct);
+            return recovered;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private async Task WritePlannedTrashJournalAsync(
+        string batchId,
+        string opType,
+        IReadOnlyList<(string OpId, string VersionId, string Origin, string Dest, string Sha256)> items,
+        long now,
+        CancellationToken ct)
+    {
+        await using var jConn = new SqliteConnection(_connectionString);
+        await jConn.OpenAsync(ct);
+        await using var jTx = (SqliteTransaction)await jConn.BeginTransactionAsync(ct);
+        foreach (var item in items)
+        {
+            await using var cmd = jConn.CreateCommand();
+            cmd.Transaction = jTx;
+            cmd.CommandText = """
+                INSERT INTO trash_op_journal (op_id, batch_id, op_type, version_id, origin_path, dest_path, expected_sha256, status, created_at)
+                VALUES ($op, $batch, $type, $vid, $orig, $dest, $sha, 'Planned', $ts);
+                """;
+            cmd.Parameters.AddWithValue("$op", item.OpId);
+            cmd.Parameters.AddWithValue("$batch", batchId);
+            cmd.Parameters.AddWithValue("$type", opType);
+            cmd.Parameters.AddWithValue("$vid", item.VersionId);
+            cmd.Parameters.AddWithValue("$orig", item.Origin);
+            cmd.Parameters.AddWithValue("$dest", item.Dest);
+            cmd.Parameters.AddWithValue("$sha", item.Sha256);
+            cmd.Parameters.AddWithValue("$ts", now);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await jTx.CommitAsync(ct);
+    }
+
+    private static async Task DeleteTrashJournalBatchInTxAsync(SqliteConnection conn, SqliteTransaction tx, string batchId, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM trash_op_journal WHERE batch_id = $b;";
+        cmd.Parameters.AddWithValue("$b", batchId);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private async Task TryDeleteTrashJournalBatchAsync(string batchId)
+    {
+        try
+        {
+            await using var conn = new SqliteConnection(_connectionString);
+            await conn.OpenAsync(CancellationToken.None);
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM trash_op_journal WHERE batch_id = $b;";
+            cmd.Parameters.AddWithValue("$b", batchId);
+            await cmd.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Retained in trash_op_journal for startup reconciliation if cleanup failed
+        }
+    }
+
+    private static void RollbackPhysicalFileMoves(List<(string Origin, string Dest)> movedPhysicalFiles)
+    {
+        for (int i = movedPhysicalFiles.Count - 1; i >= 0; i--)
+        {
+            var (origin, dest) = movedPhysicalFiles[i];
+            try
+            {
+                if (File.Exists(dest) && !File.Exists(origin))
+                {
+                    var dir = Path.GetDirectoryName(origin);
+                    if (!string.IsNullOrEmpty(dir))
+                        Directory.CreateDirectory(dir);
+                    File.Move(dest, origin, overwrite: false);
+                }
+            }
+            catch
+            {
+                // Best effort; journal still guards startup recovery if any file couldn't move back
+            }
+        }
+    }
+
+    private static string AllocateNonCollidingPath(string targetPath, string versionId)
+    {
+        if (!File.Exists(targetPath))
+            return targetPath;
+
+        var dir = Path.GetDirectoryName(targetPath) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(targetPath);
+        var ext = Path.GetExtension(targetPath);
+        var shortId = versionId.Length >= 6 ? versionId[..6] : versionId;
+
+        for (int i = 0; i < 10_000; i++)
+        {
+            var suffix = i == 0 ? $"_restored_{shortId}" : $"_restored_{shortId}_{i}";
+            var candidate = Path.Combine(dir, $"{stem}{suffix}{ext}");
+            if (!File.Exists(candidate))
+                return candidate;
+        }
+        return Path.Combine(dir, $"{stem}_{Guid.NewGuid():N}{ext}");
     }
 
     public async Task<List<TrashedArchiveVersionRecord>> GetTrashItemsAsync(CancellationToken ct = default)

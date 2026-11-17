@@ -399,6 +399,172 @@ public sealed class ArchiveDeletionAndTrashTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task RestoreTrashItem_WhenDestinationOccupiedWithDifferentContent_NeverOverwritesAndAllocatesNewSlot()
+    {
+        var (cfg, store, archiver) = CreateEnv();
+        var srcDir = Path.Combine(_root, "Work");
+        Directory.CreateDirectory(srcDir);
+        var srcPath = Path.Combine(srcDir, "main.cpp");
+        var ctx = new ProblemContext(OjPlatform.Ptit, "C03001", "ConflictSafe", "", "test", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        byte[] originalBytes = Encoding.UTF8.GetBytes("#include <iostream>\nint main(){ std::cout << \"original\" << '\\n'; return 0; }\n");
+        File.WriteAllBytes(srcPath, originalBytes);
+        var r1 = await archiver.ProcessFileSaveAsync(srcPath, originalBytes, ctx);
+        Assert.NotNull(r1.Version);
+        string originalArchivePath = r1.Version.ArchivePath;
+
+        var moved = await store.MoveVersionToTrashAsync(r1.Version.Id, cfg.GetInternalTrashRoot(), cfg.ArchiveDir, deleteRemote: false);
+        Assert.True(moved.Success);
+        Assert.False(File.Exists(originalArchivePath));
+
+        byte[] occupierBytes = Encoding.UTF8.GetBytes("// Newer file occupying same historical slot\nint other(){ return 99; }\n");
+        Directory.CreateDirectory(Path.GetDirectoryName(originalArchivePath)!);
+        await File.WriteAllBytesAsync(originalArchivePath, occupierBytes);
+
+        bool restored = await store.RestoreTrashItemAsync(r1.Version.Id);
+        Assert.True(restored);
+
+        // Pre-existing file at originalArchivePath MUST remain 100% intact
+        Assert.Equal(occupierBytes, await File.ReadAllBytesAsync(originalArchivePath));
+
+        var restoredVer = Assert.Single(await store.QueryVersionsAsync(), v => v.Id == r1.Version.Id);
+        Assert.NotEqual(originalArchivePath, restoredVer.ArchivePath, StringComparer.OrdinalIgnoreCase);
+        Assert.True(File.Exists(restoredVer.ArchivePath));
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(restoredVer.ArchivePath));
+    }
+
+    [Fact]
+    public async Task RestoreTrashItem_WhenDestinationHasIdenticalBytes_PreservesFileAndCleansTrashCopy()
+    {
+        var (cfg, store, archiver) = CreateEnv();
+        var srcDir = Path.Combine(_root, "Work");
+        Directory.CreateDirectory(srcDir);
+        var srcPath = Path.Combine(srcDir, "same.cpp");
+        byte[] bytes = Encoding.UTF8.GetBytes("#include <iostream>\nint main(){ std::cout << 77 << '\\n'; return 0; }\n");
+        File.WriteAllBytes(srcPath, bytes);
+        var r1 = await archiver.ProcessFileSaveAsync(srcPath, bytes, null);
+        Assert.NotNull(r1.Version);
+
+        await store.MoveVersionToTrashAsync(r1.Version.Id, cfg.GetInternalTrashRoot(), cfg.ArchiveDir, deleteRemote: false);
+        Directory.CreateDirectory(Path.GetDirectoryName(r1.Version.ArchivePath)!);
+        await File.WriteAllBytesAsync(r1.Version.ArchivePath, bytes);
+
+        Assert.True(await store.RestoreTrashItemAsync(r1.Version.Id));
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(r1.Version.ArchivePath));
+        Assert.Empty(await store.GetTrashItemsAsync());
+    }
+
+    [Fact]
+    public async Task ReconcileAfterCrash_RevertsInterruptedTrashMoveFromJournal_WithoutDuplicatingVersions()
+    {
+        var (cfg, store, archiver) = CreateEnv();
+        var srcDir = Path.Combine(_root, "Work");
+        Directory.CreateDirectory(srcDir);
+        var srcPath = Path.Combine(srcDir, "crash.cpp");
+        byte[] bytes = Encoding.UTF8.GetBytes("#include <iostream>\nint main(){ std::cout << 123 << '\\n'; return 0; }\n");
+        File.WriteAllBytes(srcPath, bytes);
+        var r1 = await archiver.ProcessFileSaveAsync(srcPath, bytes, null);
+        var v = r1.Version!;
+
+        // Simulate power loss after moving archive file into Trash but before SQLite commit
+        var crashBatchDir = Path.Combine(cfg.GetInternalTrashRoot(), "crashbatch");
+        Directory.CreateDirectory(crashBatchDir);
+        var crashedTrashPath = Path.Combine(crashBatchDir, $"{v.Id}_{v.FileName}");
+        File.Move(v.ArchivePath, crashedTrashPath);
+
+        await using (var conn = new SqliteConnection($"Data Source={cfg.DatabasePath}"))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO trash_op_journal (op_id, batch_id, op_type, version_id, origin_path, dest_path, expected_sha256, status, created_at)
+                VALUES ('op1', 'crashbatch', 'MoveToTrash', $vid, $orig, $dest, $sha, 'Planned', $ts);
+                """;
+            cmd.Parameters.AddWithValue("$vid", v.Id);
+            cmd.Parameters.AddWithValue("$orig", v.ArchivePath);
+            cmd.Parameters.AddWithValue("$dest", crashedTrashPath);
+            cmd.Parameters.AddWithValue("$sha", v.Sha256);
+            cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        int recovered = await archiver.ReconcileAfterCrashAsync();
+        Assert.True(recovered >= 1);
+        Assert.True(File.Exists(v.ArchivePath));
+        Assert.False(File.Exists(crashedTrashPath));
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(v.ArchivePath));
+
+        var allVersions = await store.QueryVersionsAsync();
+        Assert.Single(allVersions);
+        Assert.Equal(v.Id, allVersions[0].Id);
+    }
+
+    [Fact]
+    public async Task RestoreAfterRemoteDeletion_ClearsStaleDriveIdAndRequeuesUpload_WhileLocalDeletePreservesSyncedLink()
+    {
+        var (cfg, store, archiver) = CreateEnv();
+        cfg.DriveEnabled = true;
+        cfg.DriveRootFolderId = "root-folder-1";
+        cfg.OAuthClient = new GoogleOAuthClientConfig { ClientId = "999000111222-test.apps.googleusercontent.com" };
+
+        var credStore = new DpapiCredentialStore(_root, "gdrive_oauth_tokens.dpapi");
+        await credStore.SaveAsync(new GoogleAuthTokens(
+            "ya29.valid",
+            "1//ref",
+            DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds(),
+            "test@example.com",
+            "Test User"));
+
+        var srcDir = Path.Combine(_root, "Work");
+        Directory.CreateDirectory(srcDir);
+        var p1 = Path.Combine(srcDir, "local_del.cpp");
+        var p2 = Path.Combine(srcDir, "remote_del.cpp");
+        byte[] b1 = Encoding.UTF8.GetBytes("#include <iostream>\nint main(){ std::cout << 10 << '\\n'; return 0; }\n");
+        byte[] b2 = Encoding.UTF8.GetBytes("#include <iostream>\nint main(){ std::cout << 20 << '\\n'; return 0; }\n");
+        File.WriteAllBytes(p1, b1);
+        File.WriteAllBytes(p2, b2);
+
+        var r1 = await archiver.ProcessFileSaveAsync(p1, b1, null);
+        var r2 = await archiver.ProcessFileSaveAsync(p2, b2, null);
+        var vLocal = r1.Version!;
+        var vRemote = r2.Version!;
+
+        await store.SetVersionRemoteFileIdAsync(vLocal.Id, "drive_local_1");
+        await store.MarkUploadAttemptAsync(vLocal.Id, UploadStatus.Synced, "drive_local_1", null, 0);
+        await store.SetVersionRemoteFileIdAsync(vRemote.Id, "drive_remote_2");
+        await store.MarkUploadAttemptAsync(vRemote.Id, UploadStatus.Synced, "drive_remote_2", null, 0);
+
+        // 1. Local-only delete preserves remote link on restore
+        await store.MoveVersionToTrashAsync(vLocal.Id, cfg.GetInternalTrashRoot(), cfg.ArchiveDir, deleteRemote: false);
+        Assert.True(await store.RestoreTrashItemAsync(vLocal.Id));
+        var restoredLocal = Assert.Single(await store.QueryVersionsAsync(), v => v.Id == vLocal.Id);
+        Assert.Equal("drive_local_1", restoredLocal.DriveFileId);
+
+        // 2. Explicit remote delete + Drive sync completes RemoteDeleted -> restore clears stale DriveFileId and re-queues Pending
+        await store.MoveVersionToTrashAsync(vRemote.Id, cfg.GetInternalTrashRoot(), cfg.ArchiveDir, deleteRemote: true);
+        using var http = new HttpClient(new StubHandler(req =>
+        {
+            if (req.Method == HttpMethod.Delete && req.RequestUri!.AbsolutePath.Contains("drive_remote_2", StringComparison.Ordinal))
+                return new HttpResponseMessage(HttpStatusCode.NoContent);
+            if (req.Method == HttpMethod.Get && req.RequestUri!.AbsoluteUri.Contains("files?", StringComparison.Ordinal))
+                return JsonResponse(new { files = Array.Empty<object>() });
+            if (req.Method == HttpMethod.Post && req.RequestUri!.AbsoluteUri.Contains("upload/drive/v3/files", StringComparison.Ordinal))
+                return JsonResponse(new { id = "manifest_id_2" });
+            return JsonResponse(new { ok = true });
+        }));
+        var drive = new GoogleDriveService(cfg, store, credStore, http);
+        await drive.SyncPendingAsync();
+
+        Assert.True(await store.RestoreTrashItemAsync(vRemote.Id));
+        var restoredRemote = Assert.Single(await store.QueryVersionsAsync(), v => v.Id == vRemote.Id);
+        Assert.Null(restoredRemote.DriveFileId);
+        var pendingQueue = await store.GetPendingOrRetryableUploadsAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Assert.Contains(pendingQueue, q => q.Version.Id == vRemote.Id);
+        var allQueue = await store.GetAllUploadQueueAsync(limit: 50);
+        Assert.Contains(allQueue, q => q.Version.Id == vLocal.Id && q.Queue.Status == UploadStatus.Synced);
+    }
+
     private static HttpResponseMessage JsonResponse(object payload) =>
         new(HttpStatusCode.OK)
         {

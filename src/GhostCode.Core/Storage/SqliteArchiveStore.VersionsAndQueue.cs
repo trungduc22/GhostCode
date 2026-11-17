@@ -341,15 +341,23 @@ public sealed partial class SqliteArchiveStore
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
     }
 
-    public async Task<ArchiveVersionRecord?> GetVersionByArchivePathAsync(string archivePath, CancellationToken ct = default)
+    public Task<ArchiveVersionRecord?> GetVersionByArchivePathAsync(string archivePath, CancellationToken ct = default) =>
+        GetVersionByArchivePathAsync(archivePath, includeDeleted: false, ct);
+
+    public async Task<ArchiveVersionRecord?> GetVersionByArchivePathAsync(string archivePath, bool includeDeleted, CancellationToken ct = default)
     {
         await using var conn = new SqliteConnection(_connectionString);
         await conn.OpenAsync(ct);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
-            FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE AND is_deleted = 0 LIMIT 1;
-            """;
+        cmd.CommandText = includeDeleted
+            ? """
+              SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+              FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE LIMIT 1;
+              """
+            : """
+              SELECT id, version_num, source_path, archive_path, ready_path, file_name, sha256, norm_hash, size_bytes, problem_code, problem_title, platform, created_at, is_local_available, drive_file_id, is_conflict
+              FROM archive_versions WHERE archive_path = $ap COLLATE NOCASE AND is_deleted = 0 LIMIT 1;
+              """;
         cmd.Parameters.AddWithValue("$ap", archivePath);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
