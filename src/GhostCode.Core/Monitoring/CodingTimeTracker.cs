@@ -63,17 +63,20 @@ public sealed class CodingTimeTracker
             return state.AccumulatedMs;
     }
 
-    public string FormatEstimatedDuration(string problemOrFileKey)
+    public string FormatEstimatedDuration(string problemOrFileKey, UiLanguage language = UiLanguage.En)
     {
         if (!_config.EstimateActiveCodingTime)
-            return "Coding time estimation disabled (Opt-in in Settings)";
+            return language == UiLanguage.Vi
+                ? "Ước lượng thời gian code đang tắt (Bật trong Cài đặt)"
+                : "Coding time estimation disabled (Opt-in in Settings)";
 
+        var prefix = language == UiLanguage.Vi ? "Ước lượng: " : "Estimated: ";
         var ms = GetEstimatedDurationMs(problemOrFileKey);
         var ts = TimeSpan.FromMilliseconds(ms);
         if (ts.TotalHours >= 1)
-            return $"Estimated: {(int)ts.TotalHours}h {ts.Minutes}m";
+            return $"{prefix}{(int)ts.TotalHours}h {ts.Minutes}m";
         if (ts.TotalMinutes >= 1)
-            return $"Estimated: {ts.Minutes}m {ts.Seconds}s";
-        return $"Estimated: {ts.Seconds}s";
+            return $"{prefix}{ts.Minutes}m {ts.Seconds}s";
+        return $"{prefix}{ts.Seconds}s";
     }
 }

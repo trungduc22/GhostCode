@@ -8,6 +8,19 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+            <!-- Centralized GhostCode Signature Blue & Semantic Palette (dynamically themed at runtime) -->
+            <SolidColorBrush x:Key="GhostAccentBrush" Color="#2563EB" />
+            <SolidColorBrush x:Key="GhostAccentSoftBrush" Color="#1F2563EB" />
+            <SolidColorBrush x:Key="GhostSuccessBgBrush" Color="#24059669" />
+            <SolidColorBrush x:Key="GhostSuccessFgBrush" Color="#10B981" />
+            <SolidColorBrush x:Key="GhostActiveBgBrush" Color="#242563EB" />
+            <SolidColorBrush x:Key="GhostActiveFgBrush" Color="#3B82F6" />
+            <SolidColorBrush x:Key="GhostWarningBgBrush" Color="#24D97706" />
+            <SolidColorBrush x:Key="GhostWarningFgBrush" Color="#F59E0B" />
+            <SolidColorBrush x:Key="GhostErrorBgBrush" Color="#24DC2626" />
+            <SolidColorBrush x:Key="GhostErrorFgBrush" Color="#EF4444" />
+            <SolidColorBrush x:Key="GhostNeutralBgBrush" Color="#2064748B" />
+            <SolidColorBrush x:Key="GhostNeutralFgBrush" Color="#94A3B8" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

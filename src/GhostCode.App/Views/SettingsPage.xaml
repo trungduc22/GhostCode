@@ -106,14 +106,14 @@
                                         Grid.Column="1"
                                         MinWidth="0"
                                         IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
-                                        OnContent="{x:Bind Label}"
-                                        OffContent="{x:Bind Label}"
+                                        OnContent=""
+                                        OffContent=""
                                         VerticalAlignment="Center" />
                                     <CheckBox
                                         Grid.Column="2"
                                         MinWidth="0"
                                         IsChecked="{x:Bind IsRecursive, Mode=TwoWay}"
-                                        Content="{x:Bind Label}"
+                                        Content="{x:Bind RecursiveLabel, Mode=OneWay}"
                                         VerticalAlignment="Center" />
                                     <Button
                                         Grid.Column="3"
@@ -208,6 +208,30 @@
                         ItemsSource="{x:Bind ViewModel.MicaChoices, Mode=OneWay}"
                         SelectedIndex="{x:Bind ViewModel.SelectedMicaKindIndex, Mode=TwoWay}"
                         MinWidth="180" />
+                </controls:SettingsCard>
+
+                <controls:SettingsCard
+                    Header="{x:Bind ViewModel.AccentColorHeaderText, Mode=OneWay}"
+                    Description="{x:Bind ViewModel.AccentColorDescText, Mode=OneWay}"
+                    HorizontalAlignment="Stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border
+                            Width="16"
+                            Height="16"
+                            CornerRadius="8"
+                            VerticalAlignment="Center"
+                            Background="{ThemeResource GhostAccentBrush}" />
+                        <ComboBox
+                            x:Name="AccentPresetCombo"
+                            ItemsSource="{x:Bind ViewModel.AccentPresetChoices, Mode=OneWay}"
+                            SelectedIndex="{x:Bind ViewModel.SelectedAccentPresetIndex, Mode=TwoWay}"
+                            MinWidth="180" />
+                        <TextBox
+                            Width="96"
+                            PlaceholderText="#2563EB"
+                            Visibility="{x:Bind ViewModel.CustomAccentVisibility, Mode=OneWay}"
+                            Text="{x:Bind ViewModel.CustomAccentHex, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    </StackPanel>
                 </controls:SettingsCard>
 
                 <controls:SettingsCard

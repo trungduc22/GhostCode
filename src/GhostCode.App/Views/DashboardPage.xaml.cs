@@ -81,4 +81,25 @@ public sealed partial class DashboardPage : Page
         if (sender is FrameworkElement { Tag: string kindKey })
             await ViewModel.OpenBrowserSetupCommand.ExecuteAsync(kindKey);
     }
+
+    private void NavigateArchive_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.RequestNavigate("Archive");
+
+    private async void OpenRecentArchive_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ArchiveFileGroupRow row })
+            await ViewModel.OpenRecentArchiveGroupAsync(row, autoRun: false);
+    }
+
+    private async void RunRecentArchive_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ArchiveFileGroupRow row })
+            await ViewModel.OpenRecentArchiveGroupAsync(row, autoRun: true);
+    }
+
+    private async void CopyRecentArchive_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: ArchiveFileGroupRow row })
+            await ViewModel.CopyRecentArchiveGroupCodeAsync(row);
+    }
 }

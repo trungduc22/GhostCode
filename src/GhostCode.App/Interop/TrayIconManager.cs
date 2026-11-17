@@ -138,6 +138,8 @@ public sealed class TrayIconManager : IDisposable
     public void HideToTray()
     {
         _appWindow.Hide();
+        _viewModel.SetWindowHiddenInTray(true);
+        TryTrimWorkingSet();
     }
 
     public void ShowAndActivateWindow()
@@ -149,6 +151,7 @@ public sealed class TrayIconManager : IDisposable
             ShowWindow(_hwnd, SW_SHOW);
         SetForegroundWindow(_hwnd);
         _window.Activate();
+        _viewModel.SetWindowHiddenInTray(false);
     }
 
     public void RequestFullExit()
@@ -166,6 +169,8 @@ public sealed class TrayIconManager : IDisposable
         {
             args.Cancel = true;
             _appWindow.Hide();
+            _viewModel.SetWindowHiddenInTray(true);
+            TryTrimWorkingSet();
             return;
         }
 
@@ -400,4 +405,17 @@ public sealed class TrayIconManager : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, nint dwMinimumWorkingSetSize, nint dwMaximumWorkingSetSize);
+
+    private static void TryTrimWorkingSet()
+    {
+        try { SetProcessWorkingSetSize(GetCurrentProcess(), -1, -1); }
+        catch { }
+    }
 }

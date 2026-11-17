@@ -342,7 +342,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                await Task.Delay(TimeSpan.FromSeconds(120), ct);
                 await ReconcileOnceAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

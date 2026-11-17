@@ -372,6 +372,12 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         return _activeContext;
     }
 
+    private bool HasFreshExtensionSessionLocked()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return _browserSessions.Values.Any(s => now - s.LastHeartbeatUnixMs <= 30_000);
+    }
+
     private async Task Win32ScannerLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -379,7 +385,13 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
             try
             {
                 ForceWin32ScanNow();
-                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                bool hasExtSession;
+                lock (_ctxLock)
+                {
+                    hasExtSession = HasFreshExtensionSessionLocked();
+                }
+                var delaySeconds = hasExtSession ? 6 : 4;
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

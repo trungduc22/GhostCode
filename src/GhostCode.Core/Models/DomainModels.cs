@@ -128,6 +128,17 @@ public enum MicaAppearanceKind
     SolidFallback
 }
 
+public enum AccentColorPreset
+{
+    GhostBlue,
+    Violet,
+    Teal,
+    Emerald,
+    Amber,
+    WindowsAccent,
+    CustomAccent
+}
+
 public sealed record BrowserStatusInfo(
     BrowserKind Kind,
     string DisplayName,
@@ -396,6 +407,8 @@ public sealed class GhostCodeConfig
     public List<string> DismissedBrowserPrompts { get; set; } = new();
     public List<string> KnownConnectedBrowsers { get; set; } = new();
     public MicaAppearanceKind MicaKind { get; set; } = MicaAppearanceKind.Mica;
+    public AccentColorPreset AccentPreset { get; set; } = AccentColorPreset.GhostBlue;
+    public string CustomAccentHex { get; set; } = "#2563EB";
     public string MicaTintColorHex { get; set; } = "#181C32";
     public double MicaTintOpacity { get; set; } = 0.5;
     public double MicaLuminosityOpacity { get; set; } = 0.85;
@@ -575,6 +588,8 @@ public sealed class GhostCodeConfig
             DismissedBrowserPrompts = DismissedBrowserPrompts.ToList(),
             KnownConnectedBrowsers = KnownConnectedBrowsers.ToList(),
             MicaKind = MicaKind,
+            AccentPreset = AccentPreset,
+            CustomAccentHex = CustomAccentHex,
             MicaTintColorHex = MicaTintColorHex,
             MicaTintOpacity = MicaTintOpacity,
             MicaLuminosityOpacity = MicaLuminosityOpacity,

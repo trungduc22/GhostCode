@@ -53,6 +53,9 @@ public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int Versio
     public string Subtitle => string.IsNullOrWhiteSpace(Latest.ProblemCode)
         ? $"{Latest.Platform} • {AvailabilityBadge}"
         : $"{Latest.Platform} • {Latest.ProblemCode} • {AvailabilityBadge}";
+    public string OpenButtonLabel => Language == UiLanguage.Vi ? "Mở" : "Open";
+    public string CopyButtonLabel => Language == UiLanguage.Vi ? "Sao chép" : "Copy";
+    public string RunButtonLabel => Language == UiLanguage.Vi ? "Chạy" : "Run";
 }
 
 public sealed record UploadQueueRow(UploadQueueView View, UiLanguage Language = UiLanguage.Vi)
@@ -148,9 +151,22 @@ public sealed record IdeStatusRow(IdeStatusInfo Info, UiLanguage Language = UiLa
         ? (Info.IsRunning ? "Đang chạy" : Info.IsInstalled ? "Đã cài đặt" : "Chưa cài đặt")
         : (Info.IsRunning ? "Running" : Info.IsInstalled ? "Installed" : "Not Installed");
     public string VersionText => Info.Version ?? string.Empty;
-    public string ToolchainText => string.IsNullOrWhiteSpace(Info.ToolchainSummary)
-        ? Info.ExecutablePath ?? (Language == UiLanguage.Vi ? "Chưa phát hiện" : "Not detected")
-        : $"{Info.ToolchainSummary} • {Info.ExecutablePath}";
+    public string ToolchainText
+    {
+        get
+        {
+            var summary = Info.ToolchainSummary ?? string.Empty;
+            if (Language == UiLanguage.Vi && summary.StartsWith("Not installed (Python runtime:", StringComparison.OrdinalIgnoreCase))
+            {
+                summary = summary.Replace("Not installed (Python runtime:", "Chưa cài đặt (Môi trường Python:", StringComparison.OrdinalIgnoreCase);
+            }
+            if (string.IsNullOrWhiteSpace(summary))
+                return Info.ExecutablePath ?? (Language == UiLanguage.Vi ? "Chưa phát hiện" : "Not detected");
+            return string.IsNullOrWhiteSpace(Info.ExecutablePath)
+                ? summary
+                : $"{summary} • {Info.ExecutablePath}";
+        }
+    }
 }
 
 public sealed record ToolchainRow(ToolchainInfo Info, UiLanguage Language = UiLanguage.Vi)
@@ -192,20 +208,23 @@ public sealed record DiffLineRow(DiffLinePair Pair)
 public sealed class WatchedFolderItem : ObservableObject
 {
     private readonly Action _onChanged;
+    private readonly UiLanguage _language;
     private bool _isEnabled;
     private bool _isRecursive;
 
-    public WatchedFolderItem(WatchedFolderConfig cfg, Action onChanged)
+    public WatchedFolderItem(WatchedFolderConfig cfg, Action onChanged, UiLanguage language = UiLanguage.Vi)
     {
         Path = cfg.Path;
         Label = string.IsNullOrWhiteSpace(cfg.Label) ? System.IO.Path.GetFileName(cfg.Path) : cfg.Label;
         _isEnabled = cfg.Enabled;
         _isRecursive = cfg.Recursive;
         _onChanged = onChanged;
+        _language = language;
     }
 
     public string Path { get; }
     public string Label { get; }
+    public string RecursiveLabel => _language == UiLanguage.Vi ? "Thư mục con" : "Recursive";
 
     public bool IsEnabled
     {
@@ -286,6 +305,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _timelineSummaryText = "Timeline: no recorded events for this problem yet.";
     private string _activeCodingTimeText = "Coding time estimation disabled (Opt-in in Settings)";
     private int _selectedMicaKindIndex;
+    private int _selectedAccentPresetIndex;
+    private string _customAccentHex = "#2563EB";
     private int _selectedNotificationLevelIndex;
     private bool _globalHotkeyEnabled = true;
     private string _globalHotkeyGesture = "Ctrl+Shift+F9";
@@ -391,6 +412,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _browserSetupStatusText = string.Empty;
     private bool _isOAuthInProgress;
     private CancellationTokenSource? _oauthCts;
+    private Action? _applyAccentCallback;
+    private bool _isWindowHiddenInTray;
+    private bool _dirtyWhileHidden;
+    private CancellationTokenSource? _coalescedRefreshCts;
+    private string _lastBrowserSignature = string.Empty;
+    private string _lastIdeSignature = string.Empty;
 
     public MainViewModel(
         GhostCodeConfig config,
@@ -444,11 +471,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _lastSyncTimeText = _uxStrings.NeverText;
         _recoverySummaryText = _uxStrings.NotRunYetText;
         _oAuthStageText = string.Empty;
+        _activeCodingTimeText = _codingTime.FormatEstimatedDuration(string.Empty, config.Language);
 
         LoadFieldsFromConfig();
 
         RefreshAllCommand = new AsyncRelayCommand(RefreshAllAsync);
-        RefreshDiscoveryCommand = new RelayCommand(RefreshProcessesAndWatches);
+        RefreshDiscoveryCommand = new RelayCommand(() => RefreshProcessesAndWatches(forceToolchainRescan: true));
         RunDiagnosticCommand = new AsyncRelayCommand(RunDiagnosticTestAsync);
         RunRecoveryCheckCommand = new AsyncRelayCommand(RunRecoveryCheckAsync);
         ToggleSyncPauseCommand = new RelayCommand(ToggleSyncPause);
@@ -515,7 +543,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _oneDrive.AuthStageChanged += OnAuthStageChanged;
         }
 
-        _discoveryRefreshTimer = new Timer(_ => _dispatch(RefreshBrowserAndIdeDiscovery), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        _discoveryRefreshTimer = new Timer(
+            _ =>
+            {
+                if (!_isWindowHiddenInTray)
+                    _dispatch(() => RefreshBrowserAndIdeDiscovery(forceToolchainRescan: false));
+            },
+            null,
+            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(15));
     }
 
     public ObservableCollection<ActiveWatchRow> ActiveWatches { get; } = new();
@@ -523,6 +559,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<ArchiveHistoryEventRow> HistoryEvents { get; } = new();
     public ObservableCollection<ArchiveVersionRow> ArchiveVersions { get; } = new();
     public ObservableCollection<ArchiveFileGroupRow> ArchiveFileGroups { get; } = new();
+    public ObservableCollection<ArchiveFileGroupRow> RecentDashboardArchives { get; } = new();
     public ObservableCollection<ArchiveVersionRow> SelectedFileVersions { get; } = new();
     public ObservableCollection<UploadQueueRow> UploadQueue { get; } = new();
     public ObservableCollection<WatchedFolderItem> WatchedFolders { get; } = new();
@@ -572,6 +609,35 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UxStrings.MicaAltLabel,
         UxStrings.MicaSolidLabel
     };
+
+    public IReadOnlyList<string> AccentPresetChoices => _config.Language == UiLanguage.Vi
+        ? new[]
+        {
+            "Ghost Blue (Mặc định)",
+            "Tím hiện đại (Violet)",
+            "Xanh ngọc (Teal)",
+            "Ngọc lục bảo (Emerald)",
+            "Hổ phách (Amber)",
+            "Theo màu nhấn Windows",
+            "Tùy chỉnh (#Hex)"
+        }
+        : new[]
+        {
+            "Ghost Blue (Default)",
+            "Violet",
+            "Teal",
+            "Emerald",
+            "Amber",
+            "Windows Accent",
+            "Custom Hex"
+        };
+
+    public string AccentColorHeaderText => _config.Language == UiLanguage.Vi ? "Bảng màu & màu nhấn" : "Color Theme & Accent";
+    public string AccentColorDescText => _config.Language == UiLanguage.Vi
+        ? "Chọn bảng màu Ghost Blue mặc định, các bộ màu chọn sẵn hoặc đồng bộ màu Windows."
+        : "Choose Signature Ghost Blue, curated presets, or Windows system accent while preserving Mica.";
+    public string RecentArchivesCardTitle => _config.Language == UiLanguage.Vi ? "Mã nguồn lưu gần đây" : "Recent Archived Files";
+    public Visibility HasRecentDashboardArchivesVisibility => RecentDashboardArchives.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
     public IReadOnlyList<string> NotificationLevelChoices => new[]
     {
@@ -995,6 +1061,40 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public int SelectedAccentPresetIndex
+    {
+        get => _selectedAccentPresetIndex;
+        set
+        {
+            if (value < 0 || value > 6 || !SetProperty(ref _selectedAccentPresetIndex, value))
+                return;
+            _config.AccentPreset = (AccentColorPreset)value;
+            SaveConfigSafe();
+            OnPropertyChanged(nameof(CustomAccentVisibility));
+            _applyAccentCallback?.Invoke();
+        }
+    }
+
+    public string CustomAccentHex
+    {
+        get => _customAccentHex;
+        set
+        {
+            if (!SetProperty(ref _customAccentHex, value))
+                return;
+            if (GhostCode.App.Theming.GhostThemePalette.TryParseHexColor(value, out _))
+            {
+                _config.CustomAccentHex = value.Trim();
+                SaveConfigSafe();
+                if (_config.AccentPreset == AccentColorPreset.CustomAccent)
+                    _applyAccentCallback?.Invoke();
+            }
+        }
+    }
+
+    public Visibility CustomAccentVisibility =>
+        _selectedAccentPresetIndex == (int)AccentColorPreset.CustomAccent ? Visibility.Visible : Visibility.Collapsed;
+
     public int SelectedNotificationLevelIndex
     {
         get => _selectedNotificationLevelIndex;
@@ -1091,7 +1191,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 _config.EstimateActiveCodingTime = value;
                 SaveConfigSafe();
-                ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey());
+                ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey(), _config.Language);
             }
         }
     }
@@ -1276,6 +1376,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(BrowserSetupStep2));
                 OnPropertyChanged(nameof(BrowserSetupStep3));
                 OnPropertyChanged(nameof(BrowserSetupStep4));
+                OnPropertyChanged(nameof(AccentPresetChoices));
+                OnPropertyChanged(nameof(AccentColorHeaderText));
+                OnPropertyChanged(nameof(AccentColorDescText));
+                OnPropertyChanged(nameof(RecentArchivesCardTitle));
+                ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey(), lang);
+                _suppressFolderSync = true;
+                WatchedFolders.Clear();
+                foreach (var wf in _config.WatchedFolders)
+                    WatchedFolders.Add(new WatchedFolderItem(wf, SyncWatchedFoldersToConfigAndReload, lang));
+                _suppressFolderSync = false;
             }
         }
     }
@@ -1621,10 +1731,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void AttachExpansionHooks(
         Action<MicaAppearanceKind> applyMica,
-        Func<bool, string, (bool Success, string Detail)> configureHotkey)
+        Func<bool, string, (bool Success, string Detail)> configureHotkey,
+        Action? applyAccent = null)
     {
         _applyMicaCallback = applyMica;
         _configureHotkeyCallback = configureHotkey;
+        _applyAccentCallback = applyAccent;
+        _applyAccentCallback?.Invoke();
     }
 
     public static ElementTheme ToElementTheme(ThemePreference pref) => pref switch
@@ -1643,6 +1756,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task RefreshAllAsync()
     {
+        _coalescedRefreshCts?.Cancel();
         RefreshProcessesAndWatches();
         await RefreshStatsAndEventsAsync();
         await RefreshArchiveAsync();
@@ -1667,7 +1781,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             RecoverySummaryText = rep.Summary;
             await RefreshHealthAsync();
             await RefreshStatsAndEventsAsync();
-            ShowInfoBar("Recovery Check Complete", rep.Summary,
+            ShowInfoBar(
+                _config.Language == UiLanguage.Vi ? "Hoàn tất kiểm tra phục hồi" : "Recovery Check Complete",
+                rep.Summary,
                 (rep.LocalCorruptedCount > 0 || rep.LocalMissingCount > 0) ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
         }
         finally
@@ -1679,81 +1795,124 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void ToggleSyncPause()
     {
         SyncPausedManually = !SyncPausedManually;
+        var vi = _config.Language == UiLanguage.Vi;
         ShowInfoBar(
-            SyncPausedManually ? "Sync Paused" : "Sync Resumed",
-            SyncPausedManually ? "Local archival remains active; cloud uploads are paused." : "Background cloud synchronization resumed.",
+            SyncPausedManually ? (vi ? "Đã tạm dừng đồng bộ" : "Sync Paused") : (vi ? "Đã tiếp tục đồng bộ" : "Sync Resumed"),
+            SyncPausedManually
+                ? (vi ? "Sao lưu cục bộ vẫn hoạt động; tạm dừng tải lên đám mây." : "Local archival remains active; cloud uploads are paused.")
+                : (vi ? "Đã tiếp tục đồng bộ đám mây nền." : "Background cloud synchronization resumed."),
             InfoBarSeverity.Informational);
     }
 
-    public void RefreshBrowserAndIdeDiscovery()
+    public void SetWindowHiddenInTray(bool hidden)
+    {
+        if (_isWindowHiddenInTray == hidden)
+            return;
+
+        _isWindowHiddenInTray = hidden;
+        if (hidden)
+        {
+            try { _discoveryRefreshTimer?.Change(Timeout.Infinite, Timeout.Infinite); } catch { }
+            return;
+        }
+
+        try { _discoveryRefreshTimer?.Change(TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15)); } catch { }
+        if (_dirtyWhileHidden)
+        {
+            _dirtyWhileHidden = false;
+            _dispatch(() => _ = RefreshAllAsync());
+        }
+        else
+        {
+            _dispatch(() => RefreshProcessesAndWatches());
+        }
+    }
+
+    public void RefreshBrowserAndIdeDiscovery() => RefreshBrowserAndIdeDiscovery(forceToolchainRescan: false);
+
+    public void RefreshBrowserAndIdeDiscovery(bool forceToolchainRescan)
     {
         var browserStates = _bridge.GetBrowserConnectionStates();
-        BrowserStatuses.Clear();
-        InstalledBrowserRows.Clear();
-        ConnectedBrowsers.Clear();
-        foreach (var b in browserStates)
+        var browserSig = string.Join("|", browserStates.Select(b =>
+            $"{b.Kind}:{(b.IsInstalled ? 1 : 0)}:{(b.IsRunning ? 1 : 0)}:{(int)b.ConnectionState}:{b.ExtensionVersion}:{_config.Language}"));
+
+        if (!string.Equals(browserSig, _lastBrowserSignature, StringComparison.Ordinal))
         {
-            var row = new BrowserStatusRow(b, _config.Language);
-            BrowserStatuses.Add(row);
-            if (b.IsInstalled)
-                InstalledBrowserRows.Add(row);
-            if (row.IsConnected)
-                ConnectedBrowsers.Add(row);
+            _lastBrowserSignature = browserSig;
+            BrowserStatuses.Clear();
+            InstalledBrowserRows.Clear();
+            ConnectedBrowsers.Clear();
+            foreach (var b in browserStates)
+            {
+                var row = new BrowserStatusRow(b, _config.Language);
+                BrowserStatuses.Add(row);
+                if (b.IsInstalled)
+                    InstalledBrowserRows.Add(row);
+                if (row.IsConnected)
+                    ConnectedBrowsers.Add(row);
+            }
+
+            OnPropertyChanged(nameof(HasConnectedBrowser));
+            OnPropertyChanged(nameof(NoConnectedBrowsersVisibility));
+            OnPropertyChanged(nameof(NoInstalledBrowsersVisibility));
+            OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+
+            var connectedNames = ConnectedBrowsers.Select(x => x.Name).ToList();
+            var runningNames = browserStates.Where(b => b.IsRunning).Select(b => b.DisplayName).ToList();
+            BrowserStatusSummary = connectedNames.Count > 0
+                ? $"{string.Join(", ", connectedNames)} • {Strings.BrowserConnectedBadge}"
+                : runningNames.Count > 0
+                    ? (_config.Language == UiLanguage.Vi
+                        ? $"{string.Join(", ", runningNames)} (Chưa kết nối tiện ích)"
+                        : $"{string.Join(", ", runningNames)} (Extension Not Connected)")
+                    : Strings.NoConnectedBrowsers;
         }
 
-        OnPropertyChanged(nameof(HasConnectedBrowser));
-        OnPropertyChanged(nameof(NoConnectedBrowsersVisibility));
-        OnPropertyChanged(nameof(NoInstalledBrowsersVisibility));
-        OnPropertyChanged(nameof(TitleBarBrowserBadgeText));
+        var (ides, toolchains) = _toolchains.DiscoverAllCached(_config, forceToolchainRescan);
+        var ideSig = string.Join("|", ides.Select(i => $"{i.Name}:{i.IsInstalled}:{i.IsRunning}:{i.ExecutablePath}:{_config.Language}"))
+            + "||" + string.Join("|", toolchains.Select(t => $"{t.Kind}:{t.IsAvailable}:{t.ExecutablePath}:{t.Version}:{_config.Language}"));
 
-        var connectedNames = ConnectedBrowsers.Select(x => x.Name).ToList();
-        var runningNames = browserStates.Where(b => b.IsRunning).Select(b => b.DisplayName).ToList();
-        BrowserStatusSummary = connectedNames.Count > 0
-            ? $"{string.Join(", ", connectedNames)} • {Strings.BrowserConnectedBadge}"
-            : runningNames.Count > 0
-                ? (_config.Language == UiLanguage.Vi
-                    ? $"{string.Join(", ", runningNames)} (Chưa kết nối tiện ích)"
-                    : $"{string.Join(", ", runningNames)} (Extension Not Connected)")
-                : Strings.NoConnectedBrowsers;
-
-        var (ides, toolchains) = _toolchains.DiscoverAll(_config);
-        IdeStatuses.Clear();
-        foreach (var i in ides)
-            IdeStatuses.Add(new IdeStatusRow(i, _config.Language));
-
-        Toolchains.Clear();
-        foreach (var t in toolchains)
-            Toolchains.Add(new ToolchainRow(t, _config.Language));
-
-        var runningIdes = ides.Where(i => i.IsRunning).Select(i => i.Name).ToList();
-        var installedIdes = ides.Where(i => i.IsInstalled).Select(i => i.Name).ToList();
-        bool vi = _config.Language == UiLanguage.Vi;
-        IdeStatusSummary = runningIdes.Count > 0
-            ? (vi ? $"Đang chạy: {string.Join(", ", runningIdes)}" : $"Running: {string.Join(", ", runningIdes)}")
-            : installedIdes.Count > 0
-                ? (vi ? $"Đã cài đặt: {string.Join(", ", installedIdes)}" : $"Installed: {string.Join(", ", installedIdes)}")
-                : (vi ? "Chưa phát hiện IDE" : "No IDE detected");
-
-        string FormatToolPill(string kind, string shortName)
+        if (!string.Equals(ideSig, _lastIdeSignature, StringComparison.Ordinal) || forceToolchainRescan)
         {
-            var found = toolchains.FirstOrDefault(t => string.Equals(t.Kind, kind, StringComparison.OrdinalIgnoreCase));
-            return found is { IsAvailable: true } ? $"{shortName} ✓" : $"{shortName} ✗";
+            _lastIdeSignature = ideSig;
+            IdeStatuses.Clear();
+            foreach (var i in ides)
+                IdeStatuses.Add(new IdeStatusRow(i, _config.Language));
+
+            Toolchains.Clear();
+            foreach (var t in toolchains)
+                Toolchains.Add(new ToolchainRow(t, _config.Language));
+
+            var runningIdes = ides.Where(i => i.IsRunning).Select(i => i.Name).ToList();
+            var installedIdes = ides.Where(i => i.IsInstalled).Select(i => i.Name).ToList();
+            bool vi = _config.Language == UiLanguage.Vi;
+            IdeStatusSummary = runningIdes.Count > 0
+                ? (vi ? $"Đang chạy: {string.Join(", ", runningIdes)}" : $"Running: {string.Join(", ", runningIdes)}")
+                : installedIdes.Count > 0
+                    ? (vi ? $"Đã cài đặt: {string.Join(", ", installedIdes)}" : $"Installed: {string.Join(", ", installedIdes)}")
+                    : (vi ? "Chưa phát hiện IDE" : "No IDE detected");
+
+            string FormatToolPill(string kind, string shortName)
+            {
+                var found = toolchains.FirstOrDefault(t => string.Equals(t.Kind, kind, StringComparison.OrdinalIgnoreCase));
+                return found is { IsAvailable: true } ? $"{shortName} ✓" : $"{shortName} ✗";
+            }
+            var pills = string.Join(" · ", new[]
+            {
+                FormatToolPill("C", "GCC"),
+                FormatToolPill("C++", "G++"),
+                FormatToolPill("Python", "Python")
+            });
+            var ideSuffix = installedIdes.Count > 0 ? $" · {installedIdes[0]} ✓" : string.Empty;
+            CompactToolchainSummaryText = vi
+                ? $"Công cụ: {pills}{ideSuffix}"
+                : $"Tools: {pills}{ideSuffix}";
         }
-        var pills = string.Join(" · ", new[]
-        {
-            FormatToolPill("gcc", "GCC"),
-            FormatToolPill("g++", "G++"),
-            FormatToolPill("python", "Python")
-        });
-        var ideSuffix = installedIdes.Count > 0 ? $" · {installedIdes[0]} ✓" : string.Empty;
-        CompactToolchainSummaryText = vi
-            ? $"Công cụ: {pills}{ideSuffix}"
-            : $"Tools: {pills}{ideSuffix}";
     }
 
     private void TestToolchains()
     {
-        RefreshBrowserAndIdeDiscovery();
+        RefreshBrowserAndIdeDiscovery(forceToolchainRescan: true);
         bool vi = _config.Language == UiLanguage.Vi;
         var summary = string.Join(" • ", Toolchains.Select(t => $"{t.Name}: {t.StatusBadge}"));
         bool anyAvailable = Toolchains.Any(t => t.Info.IsAvailable);
@@ -1768,7 +1927,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CCompilerPath = string.Empty;
         CppCompilerPath = string.Empty;
         PythonInterpreterPath = string.Empty;
-        RefreshBrowserAndIdeDiscovery();
+        RefreshBrowserAndIdeDiscovery(forceToolchainRescan: true);
         bool vi = _config.Language == UiLanguage.Vi;
         ShowInfoBar(
             vi ? "Đã đặt lại tự động dò tìm" : "Toolchains Reset to Auto",
@@ -1776,9 +1935,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             InfoBarSeverity.Informational);
     }
 
-    public void RefreshProcessesAndWatches()
+    public void RefreshProcessesAndWatches() => RefreshProcessesAndWatches(forceToolchainRescan: false);
+
+    public void RefreshProcessesAndWatches(bool forceToolchainRescan)
     {
-        RefreshBrowserAndIdeDiscovery();
+        RefreshBrowserAndIdeDiscovery(forceToolchainRescan);
 
         LastDetectedFileText = FormatMonitorStatus(_monitor.LastDetectedFile);
         LastSuccessfulBackupText = FormatMonitorStatus(_monitor.LastSuccessfulBackup);
@@ -1868,6 +2029,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language));
         }
 
+        if (string.IsNullOrWhiteSpace(SearchQuery) && SelectedPlatformFilter == "All" && SelectedAvailabilityFilterIndex == 0)
+        {
+            RecentDashboardArchives.Clear();
+            foreach (var g in ArchiveFileGroups.Take(4))
+                RecentDashboardArchives.Add(g);
+            OnPropertyChanged(nameof(HasRecentDashboardArchivesVisibility));
+        }
+
         OnPropertyChanged(nameof(ArchiveEmptyStateVisibility));
         OnPropertyChanged(nameof(ArchiveWorkspaceVisibility));
 
@@ -1931,7 +2100,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             : SelectedFileVersions.FirstOrDefault();
 
         if (pick is not null)
-            SelectedVersion = pick;
+        {
+            if (SetProperty(ref _selectedVersion, pick, nameof(SelectedVersion)))
+            {
+                OnPropertyChanged(nameof(SelectedVersionIsCloudOnly));
+                OnPropertyChanged(nameof(CanRunSelectedVersion));
+                OnPropertyChanged(nameof(SelectedVersionHeaderText));
+                RunCodeCommand.NotifyCanExecuteChanged();
+                RunOrStopCodeCommand.NotifyCanExecuteChanged();
+            }
+            await LoadSelectedVersionSourceAsync(pick);
+        }
     }
 
     public async Task RefreshCloudStateAsync()
@@ -2133,22 +2312,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task PullCloudArchiveAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var provider = ResolveActiveCloudProvider();
         if (provider is null)
         {
-            ShowInfoBar("Local-Only Mode", "Cloud pull skipped because Local-Only mode is selected.", InfoBarSeverity.Informational);
+            ShowInfoBar(
+                vi ? "Chế độ chỉ lưu trên máy" : "Local-Only Mode",
+                vi ? "Đã bỏ qua kéo dữ liệu đám mây vì đang chọn chế độ chỉ lưu trên máy." : "Cloud pull skipped because Local-Only mode is selected.",
+                InfoBarSeverity.Informational);
             return;
         }
 
         IsSyncing = true;
         SyncProgressPercent = 0;
-        SyncProgressText = "Pulling cloud index...";
+        SyncProgressText = vi ? "Đang kéo danh mục đám mây..." : "Pulling cloud index...";
         try
         {
             var progress = new Progress<DriveSyncProgress>(p =>
             {
                 SyncProgressPercent = p.PercentComplete;
-                SyncProgressText = p.Total > 0 ? $"Pull {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
+                SyncProgressText = p.Total > 0
+                    ? $"{(vi ? "Đang kéo" : "Pull")} {p.Completed}/{p.Total}: {p.CurrentFileName}"
+                    : (vi ? "Đang chờ" : "Idle");
             });
             var pull = await provider.PullAndReconcileAsync(progress);
             SaveConfigSafe();
@@ -2178,10 +2363,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task DownloadAllCloudAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var provider = ResolveActiveCloudProvider();
         if (provider is null)
         {
-            ShowInfoBar("Local-Only Mode", "Cloud download skipped because Local-Only mode is selected.", InfoBarSeverity.Informational);
+            ShowInfoBar(
+                vi ? "Chế độ chỉ lưu trên máy" : "Local-Only Mode",
+                vi ? "Đã bỏ qua tải xuống đám mây vì đang chọn chế độ chỉ lưu trên máy." : "Cloud download skipped because Local-Only mode is selected.",
+                InfoBarSeverity.Informational);
             return;
         }
 
@@ -2191,13 +2380,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             var progress = new Progress<DriveSyncProgress>(p =>
             {
                 SyncProgressPercent = p.PercentComplete;
-                SyncProgressText = p.Total > 0 ? $"Download {p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
+                SyncProgressText = p.Total > 0
+                    ? $"{(vi ? "Đang tải" : "Download")} {p.Completed}/{p.Total}: {p.CurrentFileName}"
+                    : (vi ? "Đang chờ" : "Idle");
             });
             var (ok, failed, err) = await CloudTransferHelpers.DownloadAllCloudOnlyVersionsAsync(provider, _store, progress);
             await RefreshAllAsync();
             ShowInfoBar(
-                failed > 0 ? "Download Partial" : "All Cloud Files Downloaded",
-                $"Downloaded & verified: {ok}, Failed: {failed}. {err}".Trim(),
+                failed > 0 ? (vi ? "Tải xuống chưa hoàn tất" : "Download Partial") : (vi ? "Đã tải tất cả tệp đám mây" : "All Cloud Files Downloaded"),
+                vi ? $"Đã tải & xác minh: {ok}, Lỗi: {failed}. {err}".Trim() : $"Downloaded & verified: {ok}, Failed: {failed}. {err}".Trim(),
                 failed > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
         }
         finally
@@ -2483,22 +2674,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task SyncNowAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var provider = ResolveActiveCloudProvider();
         if (provider is null)
         {
-            ShowInfoBar("Local-Only Mode", "Cloud sync skipped (Local-Only mode keeps all backups strictly on this device).", InfoBarSeverity.Informational);
+            ShowInfoBar(
+                vi ? "Chế độ chỉ lưu trên máy" : "Local-Only Mode",
+                vi ? "Đã bỏ qua đồng bộ đám mây (chế độ chỉ lưu trên máy giữ toàn bộ bản sao lưu trên thiết bị)." : "Cloud sync skipped (Local-Only mode keeps all backups strictly on this device).",
+                InfoBarSeverity.Informational);
             return;
         }
 
         IsSyncing = true;
         SyncProgressPercent = 0;
-        SyncProgressText = $"Starting {provider.DisplayName} bidirectional sync...";
+        SyncProgressText = vi
+            ? $"Đang bắt đầu đồng bộ hai chiều {provider.DisplayName}..."
+            : $"Starting {provider.DisplayName} bidirectional sync...";
         try
         {
             var progress = new Progress<DriveSyncProgress>(p =>
             {
                 SyncProgressPercent = p.PercentComplete;
-                SyncProgressText = p.Total > 0 ? $"{p.Completed}/{p.Total}: {p.CurrentFileName}" : "Idle";
+                SyncProgressText = p.Total > 0 ? $"{p.Completed}/{p.Total}: {p.CurrentFileName}" : (vi ? "Đang chờ" : "Idle");
             });
             var (report, pull) = await provider.SyncBidirectionalAsync(progress);
             SaveConfigSafe();
@@ -2534,26 +2731,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void AddWatchedFolder(string folderPath)
     {
+        var vi = _config.Language == UiLanguage.Vi;
         if (string.IsNullOrWhiteSpace(folderPath))
             return;
         if (KnownFoldersResolver.IsDriveRoot(folderPath))
         {
-            ShowInfoBar("Drive Root Refused", "Watching an entire drive root is blocked for safety and performance.", InfoBarSeverity.Error);
+            ShowInfoBar(
+                vi ? "Từ chối ổ đĩa gốc" : "Drive Root Refused",
+                vi ? "Không theo dõi toàn bộ ổ đĩa gốc để đảm bảo an toàn và hiệu năng." : "Watching an entire drive root is blocked for safety and performance.",
+                InfoBarSeverity.Error);
             return;
         }
         if (_monitor.IsExcludedOrOutputDirectory(folderPath))
         {
-            ShowInfoBar("Output Directory Excluded", "ArchiveDir and ReadyDir cannot be monitored to prevent infinite feedback loops.", InfoBarSeverity.Error);
+            ShowInfoBar(
+                vi ? "Đã loại trừ thư mục đầu ra" : "Output Directory Excluded",
+                vi ? "Không thể theo dõi ArchiveDir và ReadyDir để tránh vòng lặp sao lưu vô hạn." : "ArchiveDir and ReadyDir cannot be monitored to prevent infinite feedback loops.",
+                InfoBarSeverity.Error);
             return;
         }
         if (WatchedFolders.Any(w => string.Equals(w.Path, folderPath, StringComparison.OrdinalIgnoreCase)))
         {
-            ShowInfoBar("Already Monitored", folderPath, InfoBarSeverity.Informational);
+            ShowInfoBar(vi ? "Thư mục đã được theo dõi" : "Already Monitored", folderPath, InfoBarSeverity.Informational);
             return;
         }
 
         _suppressFolderSync = true;
-        WatchedFolders.Add(new WatchedFolderItem(new WatchedFolderConfig(folderPath, true, true, Path.GetFileName(folderPath)), SyncWatchedFoldersToConfigAndReload));
+        WatchedFolders.Add(new WatchedFolderItem(new WatchedFolderConfig(folderPath, true, true, Path.GetFileName(folderPath)), SyncWatchedFoldersToConfigAndReload, _config.Language));
         _suppressFolderSync = false;
         _onboardingDismissedForSession = false;
         SyncWatchedFoldersToConfigAndReload();
@@ -2584,7 +2788,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 continue;
             if (WatchedFolders.Any(w => string.Equals(w.Path, f.Path, StringComparison.OrdinalIgnoreCase)))
                 continue;
-            WatchedFolders.Add(new WatchedFolderItem(f, SyncWatchedFoldersToConfigAndReload));
+            WatchedFolders.Add(new WatchedFolderItem(f, SyncWatchedFoldersToConfigAndReload, _config.Language));
             added++;
         }
         _suppressFolderSync = false;
@@ -2739,6 +2943,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _selectedConflictPolicyIndex = (int)_config.ConflictPolicy;
         _syncPausedManually = _config.SyncPausedManually;
         _selectedMicaKindIndex = (int)_config.MicaKind;
+        _selectedAccentPresetIndex = (int)_config.AccentPreset;
+        _customAccentHex = string.IsNullOrWhiteSpace(_config.CustomAccentHex) ? "#2563EB" : _config.CustomAccentHex;
         _selectedNotificationLevelIndex = (int)_config.NotificationLevel;
         _globalHotkeyEnabled = _config.GlobalHotkeyEnabled;
         _globalHotkeyGesture = _config.GlobalHotkeyGesture;
@@ -2747,12 +2953,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _trimTrailingWhitespaceOnCompare = _config.TrimTrailingWhitespaceOnCompare;
         _estimateActiveCodingTime = _config.EstimateActiveCodingTime;
         _aiAssistanceOptIn = _config.AiAssistanceOptIn;
-        _activeCodingTimeText = _codingTime.FormatEstimatedDuration(string.Empty);
+        _activeCodingTimeText = _codingTime.FormatEstimatedDuration(string.Empty, _config.Language);
 
         _suppressFolderSync = true;
         WatchedFolders.Clear();
         foreach (var wf in _config.WatchedFolders)
-            WatchedFolders.Add(new WatchedFolderItem(wf, SyncWatchedFoldersToConfigAndReload));
+            WatchedFolders.Add(new WatchedFolderItem(wf, SyncWatchedFoldersToConfigAndReload, _config.Language));
         _suppressFolderSync = false;
     }
 
@@ -2791,61 +2997,70 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task CopySelectedCodeAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         if (SelectedVersion is null || !SelectedVersion.IsLocalAvailable)
         {
-            ShowInfoBar("Cannot Copy", Strings.NoVersionSelected, InfoBarSeverity.Warning);
+            ShowInfoBar(vi ? "Không thể sao chép" : "Cannot Copy", Strings.NoVersionSelected, InfoBarSeverity.Warning);
             return;
         }
 
         // Preserve exact verified historical text cleanly (no Markdown fences, no version change)
         var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(SelectedVersion.Id);
         var (exactText, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
-        TryCopyRawTextToClipboard(exactText, $"Copied {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) exact source.");
+        TryCopyRawTextToClipboard(exactText, vi
+            ? $"Đã sao chép {SelectedVersion.VersionBadge} ({SelectedVersion.FileName})."
+            : $"Copied {SelectedVersion.VersionBadge} ({SelectedVersion.FileName}) exact source.");
     }
 
     private async Task CopyLatestProblemCodeAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var target = await ResolveTargetVersionForQuickCopyAsync();
         if (target is null)
         {
-            ShowInfoBar("No Target File", "Select a problem file explicitly before copying.", InfoBarSeverity.Warning);
+            ShowInfoBar(vi ? "Chưa có tệp đích" : "No Target File", vi ? "Hãy chọn một tệp bài làm trước khi sao chép." : "Select a problem file explicitly before copying.", InfoBarSeverity.Warning);
             return;
         }
 
         var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(target.Id);
         var (exactText, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
-        TryCopyRawTextToClipboard(exactText, $"Copied latest {target.FileName} (v{target.VersionNum}).");
+        TryCopyRawTextToClipboard(exactText, vi
+            ? $"Đã sao chép bản mới nhất {target.FileName} (v{target.VersionNum})."
+            : $"Copied latest {target.FileName} (v{target.VersionNum}).");
     }
 
     private void CopyActiveSampleInput()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         if (string.IsNullOrEmpty(_activeSampleInputText))
         {
-            ShowInfoBar("No Sample Input", "No sample input detected or selected yet.", InfoBarSeverity.Informational);
+            ShowInfoBar(vi ? "Chưa có dữ liệu vào mẫu" : "No Sample Input", vi ? "Chưa phát hiện hoặc chọn test mẫu nào." : "No sample input detected or selected yet.", InfoBarSeverity.Informational);
             return;
         }
-        TryCopyRawTextToClipboard(_activeSampleInputText, "Copied sample input.");
+        TryCopyRawTextToClipboard(_activeSampleInputText, vi ? "Đã sao chép Input mẫu." : "Copied sample input.");
     }
 
     private void CopyActiveSampleOutput()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         if (string.IsNullOrEmpty(_activeSampleOutputText))
         {
-            ShowInfoBar("No Sample Output", "No expected sample output available yet.", InfoBarSeverity.Informational);
+            ShowInfoBar(vi ? "Chưa có kết quả mẫu" : "No Sample Output", vi ? "Chưa có kết quả mẫu kỳ vọng nào." : "No expected sample output available yet.", InfoBarSeverity.Informational);
             return;
         }
-        TryCopyRawTextToClipboard(_activeSampleOutputText, "Copied sample output.");
+        TryCopyRawTextToClipboard(_activeSampleOutputText, vi ? "Đã sao chép Output mẫu." : "Copied sample output.");
     }
 
     private void CopyActiveProblemUrl()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var url = !string.IsNullOrWhiteSpace(ActiveUrl) ? ActiveUrl : SelectedVersion?.Record.ProblemCode ?? string.Empty;
         if (string.IsNullOrWhiteSpace(url))
         {
-            ShowInfoBar("No Problem URL", "No active problem URL available.", InfoBarSeverity.Informational);
+            ShowInfoBar(vi ? "Chưa có URL bài tập" : "No Problem URL", vi ? "Chưa có URL bài tập đang hoạt động." : "No active problem URL available.", InfoBarSeverity.Informational);
             return;
         }
-        TryCopyRawTextToClipboard(url, $"Copied URL: {url}");
+        TryCopyRawTextToClipboard(url, vi ? $"Đã sao chép URL: {url}" : $"Copied URL: {url}");
     }
 
     private void CopySelectedSourcePath()
@@ -2853,7 +3068,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var path = SelectedVersion?.SourcePath ?? SelectedQuickActionTarget?.SourcePath ?? string.Empty;
         if (string.IsNullOrWhiteSpace(path))
             return;
-        TryCopyRawTextToClipboard(path, $"Copied source path: {path}");
+        TryCopyRawTextToClipboard(path, _config.Language == UiLanguage.Vi ? $"Đã sao chép đường dẫn: {path}" : $"Copied source path: {path}");
+    }
+
+    public async Task OpenRecentArchiveGroupAsync(ArchiveFileGroupRow? row, bool autoRun = false)
+    {
+        if (row is null)
+            return;
+        SelectedFileGroup = row;
+        RequestNavigate("Archive");
+        await SelectArchiveVersionByIdAsync(row.Latest.Id);
+        if (autoRun)
+            await RunSelectedVersionAsync();
+    }
+
+    public async Task CopyRecentArchiveGroupCodeAsync(ArchiveFileGroupRow? row)
+    {
+        if (row is null || !row.Latest.IsLocalAvailable)
+            return;
+        var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Latest.Id);
+        var (exactText, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
+        TryCopyRawTextToClipboard(exactText, _config.Language == UiLanguage.Vi
+            ? $"Đã sao chép {row.FileName} (v{row.Latest.VersionNum})."
+            : $"Copied {row.FileName} (v{row.Latest.VersionNum}).");
     }
 
     private async Task<ArchiveVersionRecord?> ResolveTargetVersionForQuickCopyAsync()
@@ -3122,14 +3359,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             : (vi ? "Dòng thời gian (UTC): " : "Timeline (UTC): ") + string.Join(" | ", timeline.Take(4).Select(t =>
                 $"[{DateTimeOffset.FromUnixTimeMilliseconds(t.OccurredAtUnixMs).UtcDateTime:HH:mm:ss}] {t.EventType}"));
 
-        ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(effCode);
+        ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(effCode, _config.Language);
     }
 
     public async Task RunSelectedSampleAsync()
     {
+        var vi = _config.Language == UiLanguage.Vi;
         if (SelectedVersion is null || SelectedSampleTest is null)
         {
-            ShowInfoBar("Run Sample", "Select both an archived version and a sample test case first.", InfoBarSeverity.Informational);
+            ShowInfoBar(
+                vi ? "Chạy test mẫu" : "Run Sample",
+                vi ? "Hãy chọn một phiên bản mã nguồn và một test mẫu trước." : "Select both an archived version and a sample test case first.",
+                InfoBarSeverity.Informational);
             return;
         }
         IsExecuting = true;
@@ -3175,16 +3416,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public async Task AddCustomSampleAsync(string inputText, string expectedOutput)
     {
+        var vi = _config.Language == UiLanguage.Vi;
         var key = ResolveCurrentProblemKey();
         if (string.IsNullOrEmpty(key))
         {
-            ShowInfoBar("Custom Sample", "Select a problem first to attach a custom test case.", InfoBarSeverity.Warning);
+            ShowInfoBar(
+                vi ? "Test tùy chỉnh" : "Custom Sample",
+                vi ? "Hãy chọn một bài làm trước khi thêm test riêng." : "Select a problem first to attach a custom test case.",
+                InfoBarSeverity.Warning);
             return;
         }
         var added = await _sampleRunner.AddCustomSampleAsync(key, inputText, expectedOutput, ActiveUrl);
         SampleTests.Add(added);
         SelectedSampleTest = added;
-        ShowInfoBar("Custom Test Added", $"Added Custom Test #{added.CaseIndex}.", InfoBarSeverity.Success);
+        ShowInfoBar(
+            vi ? "Đã thêm test riêng" : "Custom Test Added",
+            vi ? $"Đã thêm Test riêng #{added.CaseIndex}." : $"Added Custom Test #{added.CaseIndex}.",
+            InfoBarSeverity.Success);
     }
 
     public async Task DeleteSelectedSampleAsync()
@@ -3263,6 +3511,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     });
 
+    private void ScheduleCoalescedRefreshAsync(int delayMs = 350)
+    {
+        if (_isWindowHiddenInTray)
+        {
+            _dirtyWhileHidden = true;
+            return;
+        }
+
+        _coalescedRefreshCts?.Cancel();
+        _coalescedRefreshCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _coalescedRefreshCts = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(delayMs, cts.Token);
+                if (!cts.Token.IsCancellationRequested)
+                    _dispatch(() => _ = RefreshAllAsync());
+            }
+            catch (OperationCanceledException) { }
+        });
+    }
+
     private void OnVersionArchived(ArchiveVersionRecord version)
     {
         _codingTime.RecordActivity(string.IsNullOrWhiteSpace(version.ProblemCode) ? version.SourcePath : version.ProblemCode, version.CreatedAtUnixMs);
@@ -3270,7 +3542,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             if (_config.AutoCopyReadyPath && !string.IsNullOrWhiteSpace(version.ReadyPath))
                 _clipboardCopyWithRetry?.Invoke(version.ReadyPath);
-            _ = RefreshAllAsync();
+            ScheduleCoalescedRefreshAsync();
         });
     }
 
@@ -3278,22 +3550,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _dispatch(() =>
         {
+            LastDetectedFileText = FormatMonitorStatus(_monitor.LastDetectedFile);
+            LastSuccessfulBackupText = FormatMonitorStatus(_monitor.LastSuccessfulBackup);
+            LastMonitoringErrorText = FormatMonitorStatus(_monitor.LastMonitoringError);
+            if (_isWindowHiddenInTray)
+            {
+                _dirtyWhileHidden = true;
+                return;
+            }
             RecentEvents.Insert(0, new MonitorEventRow(ev));
             while (RecentEvents.Count > 50)
                 RecentEvents.RemoveAt(RecentEvents.Count - 1);
-            RefreshProcessesAndWatches();
         });
     }
 
     private void OnReconciliationCompleted(int archivedCount)
     {
-        _dispatch(() =>
-        {
-            _ = RefreshAllAsync();
-        });
+        if (archivedCount > 0)
+            ScheduleCoalescedRefreshAsync(250);
     }
 
-    private void OnDriveSyncCompleted(DriveSyncReport report) => _dispatch(() => { _ = RefreshAllAsync(); });
+    private void OnDriveSyncCompleted(DriveSyncReport report) => ScheduleCoalescedRefreshAsync(250);
 
     private void OnAuthStageChanged(OAuthConnectionStage stage, string message) => _dispatch(() =>
     {
@@ -3323,6 +3600,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _discoveryRefreshTimer?.Dispose();
         _discoveryRefreshTimer = null;
+        _coalescedRefreshCts?.Cancel();
+        _coalescedRefreshCts?.Dispose();
+        _coalescedRefreshCts = null;
         _execCts?.Dispose();
         _oauthCts?.Dispose();
         _archiver.VersionArchived -= OnVersionArchived;

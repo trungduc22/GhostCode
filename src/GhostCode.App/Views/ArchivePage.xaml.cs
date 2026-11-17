@@ -18,6 +18,14 @@ public sealed partial class ArchivePage : Page
         ViewModel = App.Services.GetRequiredService<MainViewModel>();
         InitializeComponent();
         UpdateTabButtonStyles();
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        Unloaded += (_, _) => ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.RunnerTabIndex))
+            UpdateTabButtonStyles();
     }
 
     public MainViewModel ViewModel { get; }

@@ -47,6 +47,14 @@ public partial class App : Application
         }
         config.Save(configPath);
 
+        var initialTheme = config.Theme switch
+        {
+            ThemePreference.Light => ElementTheme.Light,
+            ThemePreference.Dark => ElementTheme.Dark,
+            _ => Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light
+        };
+        GhostCode.App.Theming.GhostThemePalette.Apply(initialTheme, config.AccentPreset, config.CustomAccentHex);
+
         var appDataDir = Path.GetDirectoryName(configPath)!;
         var credPath = Path.Combine(appDataDir, "credentials.dpapi");
 

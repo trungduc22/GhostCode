@@ -170,6 +170,9 @@ public sealed class ToolchainDiscoveryService
     private readonly object _cacheLock = new();
     private string? _cacheKey;
     private List<ToolchainInfo>? _cachedToolchains;
+    private string? _ideCacheKey;
+    private DateTime _ideCacheExpiresUtc = DateTime.MinValue;
+    private List<IdeStatusInfo>? _cachedIdes;
 
     public ToolchainDiscoveryService(IToolchainEnvironmentProbe? probe = null)
     {
@@ -180,6 +183,49 @@ public sealed class ToolchainDiscoveryService
     {
         var toolchains = DiscoverToolchains(config);
         var ides = DiscoverIdes(config, toolchains);
+        return (ides, toolchains);
+    }
+
+    public (List<IdeStatusInfo> Ides, List<ToolchainInfo> Toolchains) DiscoverAllCached(
+        GhostCodeConfig config,
+        bool forceRescan = false)
+    {
+        var toolchains = DiscoverToolchains(config, forceRescan);
+        var customKey = string.Join(";", config.CustomIdePaths.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => $"{kv.Key}={kv.Value}"));
+        var fullKey = $"{customKey}|{string.Join(",", toolchains.Select(t => $"{t.Kind}:{t.DisplayName}:{t.IsAvailable}"))}";
+        var nowUtc = DateTime.UtcNow;
+
+        lock (_cacheLock)
+        {
+            if (!forceRescan
+                && _cachedIdes is not null
+                && nowUtc < _ideCacheExpiresUtc
+                && string.Equals(_ideCacheKey, fullKey, StringComparison.Ordinal))
+            {
+                var running = _probe.GetRunningProcessNames();
+                var updated = _cachedIdes.Select(ide => ide with
+                {
+                    IsRunning = ide.Name switch
+                    {
+                        "Dev-C++" => running.Contains("devcpp"),
+                        "VS Code" => running.Contains("Code"),
+                        "PyCharm" => running.Contains("pycharm64") || running.Contains("pycharm"),
+                        "Visual Studio" => running.Contains("devenv"),
+                        _ => ide.IsRunning
+                    }
+                }).ToList();
+                return (updated, toolchains);
+            }
+        }
+
+        var ides = DiscoverIdes(config, toolchains);
+        lock (_cacheLock)
+        {
+            _ideCacheKey = fullKey;
+            _ideCacheExpiresUtc = nowUtc.AddMinutes(5);
+            _cachedIdes = ides;
+        }
         return (ides, toolchains);
     }
 

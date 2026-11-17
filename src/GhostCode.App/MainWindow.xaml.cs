@@ -91,7 +91,8 @@ public sealed partial class MainWindow : Window
             ApplyMicaBackdrop,
             (enabled, gesture) => _tray is not null
                 ? _tray.ConfigureGlobalHotkey(enabled, gesture)
-                : (false, "Tray inactive"));
+                : (false, "Tray inactive"),
+            ApplyTitleBarThemeColors);
         ApplyMicaBackdrop(ViewModel.Config.MicaKind);
         ViewModel.PropertyChanged += (_, e) =>
         {
@@ -206,10 +207,16 @@ public sealed partial class MainWindow : Window
 
     private void ApplyTitleBarThemeColors()
     {
+        var resolvedTheme = RootGrid.ActualTheme == ElementTheme.Default
+            ? (Application.Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light)
+            : RootGrid.ActualTheme;
+
+        GhostCode.App.Theming.GhostThemePalette.Apply(resolvedTheme, ViewModel.Config.AccentPreset, ViewModel.Config.CustomAccentHex);
+
         if (!AppWindowTitleBar.IsCustomizationSupported())
             return;
 
-        var isDark = RootGrid.ActualTheme == ElementTheme.Dark;
+        var isDark = resolvedTheme == ElementTheme.Dark;
         _appWindow.TitleBar.ButtonBackgroundColor = Colors.Transparent;
         _appWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         _appWindow.TitleBar.ButtonForegroundColor = isDark ? Colors.White : Colors.Black;

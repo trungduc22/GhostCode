@@ -341,7 +341,7 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
     {
         var toolchains = new ToolchainDiscoveryService();
         var cpp = toolchains.DiscoverToolchains(new GhostCodeConfig())
-            .FirstOrDefault(t => t.Kind.Equals("g++", StringComparison.OrdinalIgnoreCase) && t.IsAvailable);
+            .FirstOrDefault(t => (t.Kind.Equals("C++", StringComparison.OrdinalIgnoreCase) || t.Kind.Equals("g++", StringComparison.OrdinalIgnoreCase)) && t.IsAvailable);
         if (cpp is null)
             return;
 
@@ -376,5 +376,59 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
         Assert.Equal(ExecutionStatus.CompileError, res.Status);
         Assert.True(string.IsNullOrWhiteSpace(res.Stdout));
         Assert.False(string.IsNullOrWhiteSpace(res.CompilerOutput));
+    }
+
+    [Fact]
+    public void P5_AccentPresetPersistenceAndViCodingTimeLocalization()
+    {
+        var cfgPath = Path.Combine(_root, "accent_cfg.json");
+        var cfg = GhostCodeConfig.CreateDefault();
+        Assert.Equal(AccentColorPreset.GhostBlue, cfg.AccentPreset);
+
+        cfg.AccentPreset = AccentColorPreset.Teal;
+        cfg.CustomAccentHex = "#0D9488";
+        cfg.Save(cfgPath);
+
+        var reloaded = GhostCodeConfig.LoadOrDefault(cfgPath);
+        Assert.Equal(AccentColorPreset.Teal, reloaded.AccentPreset);
+        Assert.Equal("#0D9488", reloaded.CustomAccentHex);
+
+        var tracker = new CodingTimeTracker(cfg);
+        Assert.Contains("Ước lượng", tracker.FormatEstimatedDuration("prob1", UiLanguage.Vi));
+    }
+
+    [Fact]
+    public async Task P6_BridgeSurvivesOccupiedPortAndDiscoveryCacheSkipsRepeatedRegistryScans()
+    {
+        using var blocker = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        blocker.Start();
+        int occupiedPort = ((System.Net.IPEndPoint)blocker.LocalEndpoint).Port;
+
+        var cfg = new GhostCodeConfig { HttpPort = occupiedPort };
+        await using var bridge = new AuthenticatedBrowserBridge(cfg);
+        bridge.Start();
+        Assert.NotEqual(occupiedPort, bridge.ListeningPort);
+        Assert.True(bridge.ListeningPort > 0);
+        Assert.False(string.IsNullOrWhiteSpace(bridge.ListenerStartError));
+
+        var probe = new CountingProbe();
+        var svc = new ToolchainDiscoveryService(probe);
+        svc.DiscoverAllCached(cfg);
+        svc.DiscoverAllCached(cfg);
+        svc.DiscoverAllCached(cfg);
+        Assert.Equal(1, probe.UninstallCalls);
+    }
+
+    private sealed class CountingProbe : IToolchainEnvironmentProbe
+    {
+        public int UninstallCalls { get; private set; }
+        public bool FileExists(string path) => false;
+        public IEnumerable<string> EnumerateFiles(string directory, string searchPattern, SearchOption searchOption) => Array.Empty<string>();
+        public IEnumerable<string> EnumerateDirectories(string directory) => Array.Empty<string>();
+        public IReadOnlyCollection<string> GetRunningProcessNames() => Array.Empty<string>();
+        public string? GetFileVersion(string path) => null;
+        public string? ReadRegistryString(string fullKeyPath, string valueName) => null;
+        public IEnumerable<string> ReadRegistryUninstallDisplayNames() { UninstallCalls++; return Array.Empty<string>(); }
+        public (int ExitCode, string Stdout, string Stderr) RunProcess(string executable, IReadOnlyList<string> args, string? stdinText = null, int timeoutMs = 4000) => (-1, "", "");
     }
 }

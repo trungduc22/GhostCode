@@ -240,6 +240,58 @@
                 </Border>
             </Grid>
 
+            <!-- 3b. Recent Archived Files Priority Quick-Access (only when archives exist) -->
+            <Border
+                x:Name="RecentArchivesCard"
+                Visibility="{x:Bind ViewModel.HasRecentDashboardArchivesVisibility, Mode=OneWay}"
+                Padding="16"
+                CornerRadius="8"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1">
+                <StackPanel Spacing="8">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <FontIcon Grid.Column="0" Glyph="&#xE8F1;" FontSize="16" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.RecentArchivesCardTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                        <Button Grid.Column="2" Padding="10,4" FontSize="12" Content="{x:Bind ViewModel.Strings.NavArchive, Mode=OneWay}" Click="NavigateArchive_Click" />
+                    </Grid>
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.RecentDashboardArchives}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ArchiveFileGroupRow">
+                                <Border
+                                    Margin="0,0,0,6"
+                                    Padding="10,8"
+                                    CornerRadius="6"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{x:Bind Subtitle}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="CopyRecentArchive_Click" Content="{x:Bind CopyButtonLabel}" />
+                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="OpenRecentArchive_Click" Content="{x:Bind OpenButtonLabel}" />
+                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="RunRecentArchive_Click" Style="{ThemeResource AccentButtonStyle}" Content="{x:Bind RunButtonLabel}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
             <!-- 4. Backup Health & Protection Status + Quick Actions -->
             <Border Padding="14" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                 <Grid ColumnSpacing="12">
@@ -248,8 +300,8 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Border Grid.Column="0" Padding="10,4" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
-                        <TextBlock Text="{x:Bind ViewModel.BackupProtectionBadge, Mode=OneWay}" FontWeight="SemiBold" FontSize="12" />
+                    <Border Grid.Column="0" Padding="10,4" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource GhostSuccessBgBrush}">
+                        <TextBlock Text="{x:Bind ViewModel.BackupProtectionBadge, Mode=OneWay}" Foreground="{ThemeResource GhostSuccessFgBrush}" FontWeight="SemiBold" FontSize="12" />
                     </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                         <TextBlock Text="{x:Bind ViewModel.ExpStrings.BackupHealthTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
