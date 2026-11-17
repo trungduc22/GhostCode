@@ -9,13 +9,55 @@ namespace GhostCode.App.Views;
 
 public sealed partial class DashboardPage : Page
 {
+    private bool _isStacked;
+
     public DashboardPage()
     {
         ViewModel = App.Services.GetRequiredService<MainViewModel>();
         InitializeComponent();
+        SizeChanged += DashboardPage_SizeChanged;
+        Loaded += DashboardPage_Loaded;
     }
 
     public MainViewModel ViewModel { get; }
+
+    private void DashboardPage_Loaded(object sender, RoutedEventArgs e) =>
+        UpdateTwoColumnLayout(ActualWidth);
+
+    private void DashboardPage_SizeChanged(object sender, SizeChangedEventArgs e) =>
+        UpdateTwoColumnLayout(e.NewSize.Width);
+
+    public void UpdateTwoColumnLayout(double pageWidth)
+    {
+        if (pageWidth <= 0)
+            return;
+
+        // Content inside ScrollViewer has 40px horizontal padding.
+        // Stack vertically only below 700px page width; at 1100x720 (even with Nav open) page width is ~880px.
+        bool shouldStack = pageWidth < 700;
+        if (shouldStack == _isStacked)
+            return;
+
+        _isStacked = shouldStack;
+        if (shouldStack)
+        {
+            DashboardLeftCol.Width = new GridLength(1, GridUnitType.Star);
+            DashboardRightCol.Width = new GridLength(0, GridUnitType.Pixel);
+            Grid.SetRow(RecentArchivesCard, 0);
+            Grid.SetColumn(RecentArchivesCard, 0);
+            Grid.SetRow(DashboardRightColumnStack, 1);
+            Grid.SetColumn(DashboardRightColumnStack, 0);
+        }
+        else
+        {
+            DashboardLeftCol.Width = new GridLength(43, GridUnitType.Star);
+            DashboardRightCol.Width = new GridLength(57, GridUnitType.Star);
+            Grid.SetRow(RecentArchivesCard, 0);
+            Grid.SetColumn(RecentArchivesCard, 0);
+            Grid.SetRow(DashboardRightColumnStack, 0);
+            Grid.SetColumn(DashboardRightColumnStack, 1);
+        }
+    }
 
     private async void AutoDetectFolders_Click(object sender, RoutedEventArgs e)
     {
@@ -76,14 +118,11 @@ public sealed partial class DashboardPage : Page
             ViewModel.AddWatchedFolder(path);
     }
 
-    private async void ConfigureBrowserExtension_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: string kindKey })
-            await ViewModel.OpenBrowserSetupCommand.ExecuteAsync(kindKey);
-    }
-
     private void OpenDevToolsBrowsers_Click(object sender, RoutedEventArgs e) =>
         ViewModel.RequestNavigate("DevTools");
+
+    private void OpenSettingsFolders_Click(object sender, RoutedEventArgs e) =>
+        ViewModel.RequestNavigate("Settings");
 
     private void NavigateArchive_Click(object sender, RoutedEventArgs e) =>
         ViewModel.RequestNavigate("Archive");

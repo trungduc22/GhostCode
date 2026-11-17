@@ -54,9 +54,14 @@ public sealed record ArchiveFileGroupRow(ArchiveVersionRecord Latest, int Versio
     public string Subtitle => string.IsNullOrWhiteSpace(Latest.ProblemCode)
         ? $"{Latest.Platform} • {AvailabilityBadge}"
         : $"{Latest.Platform} • {Latest.ProblemCode} • {AvailabilityBadge}";
+    public string ShortTimeText => DateTimeOffset.FromUnixTimeMilliseconds(Latest.CreatedAtUnixMs)
+        .ToLocalTime().ToString("HH:mm");
+    public string MetaWithTimeText => $"{Subtitle} • {ShortTimeText}";
     public string OpenButtonLabel => Language == UiLanguage.Vi ? "Mở" : "Open";
     public string CopyButtonLabel => Language == UiLanguage.Vi ? "Sao chép" : "Copy";
     public string RunButtonLabel => Language == UiLanguage.Vi ? "Chạy" : "Run";
+    public string RunInArchiveMenuLabel => Language == UiLanguage.Vi ? "Chạy trong Kho lưu trữ" : "Run in Archive";
+    public string OpenInIdeMenuLabel => Language == UiLanguage.Vi ? "Mở trong IDE" : "Open in IDE";
 }
 
 public sealed record UploadQueueRow(UploadQueueView View, UiLanguage Language = UiLanguage.Vi)
@@ -420,6 +425,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isWindowHiddenInTray;
     private bool _dirtyWhileHidden;
     private CancellationTokenSource? _coalescedRefreshCts;
+    private CancellationTokenSource? _loadSourceCts;
+    private string _loadedProblemDataKey = string.Empty;
+    private int _protectionStateLevel = 1; // 0=Protected(Green), 1=Attention/Paused(Amber), 2=Unhealthy/Error(Red)
+    private string _protectionHeadlineText = "Đang kiểm tra...";
+    private string _protectionDetailText = string.Empty;
+    private LatestBackupSummary? _latestBackup;
+    private bool _isProblemDetailsExpanded;
     private string _lastBrowserSignature = string.Empty;
     private string _lastIdeSignature = string.Empty;
 
@@ -531,6 +543,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OpenDevToolsPageCommand = new RelayCommand(() => RequestNavigate("DevTools"));
         TestToolchainCommand = new RelayCommand(TestToolchains);
         ResetToolchainsToAutoCommand = new RelayCommand(ResetToolchainsToAuto);
+        OpenLatestBackupCommand = new AsyncRelayCommand(OpenLatestBackupAsync);
+        ToggleProblemDetailsCommand = new RelayCommand(() => IsProblemDetailsExpanded = !IsProblemDetailsExpanded);
 
         _archiver.VersionArchived += OnVersionArchived;
         _monitor.EventRecorded += OnMonitorEventRecorded;
@@ -554,8 +568,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     _dispatch(() => RefreshBrowserAndIdeDiscovery(forceToolchainRescan: false));
             },
             null,
-            TimeSpan.FromSeconds(15),
-            TimeSpan.FromSeconds(15));
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromSeconds(30));
     }
 
     public ObservableCollection<ActiveWatchRow> ActiveWatches { get; } = new();
@@ -642,6 +656,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         : "Choose Signature Ghost Blue, curated presets, or Windows system accent while preserving Mica.";
     public string RecentArchivesCardTitle => _config.Language == UiLanguage.Vi ? "Mã nguồn lưu gần đây" : "Recent Archived Files";
     public Visibility HasRecentDashboardArchivesVisibility => RecentDashboardArchives.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility NoRecentDashboardArchivesVisibility => RecentDashboardArchives.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    public async Task OpenLatestBackupAsync()
+    {
+        if (_latestBackup is null)
+            return;
+        RequestNavigate("Archive");
+        await SelectArchiveVersionByIdAsync(_latestBackup.VersionId);
+    }
 
     private static readonly int[] NotificationDurationValuesSeconds = { 3, 5, 10, 15, 30, 0 };
 
@@ -777,6 +800,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public IRelayCommand OpenDevToolsPageCommand { get; }
     public IRelayCommand TestToolchainCommand { get; }
     public IRelayCommand ResetToolchainsToAutoCommand { get; }
+    public IAsyncRelayCommand OpenLatestBackupCommand { get; }
+    public IRelayCommand ToggleProblemDetailsCommand { get; }
 
     public UxOverhaulTextBundle UxStrings
     {
@@ -932,19 +957,201 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    public int TotalVersions { get => _totalVersions; private set => SetProperty(ref _totalVersions, value); }
+    public int TotalVersions
+    {
+        get => _totalVersions;
+        private set
+        {
+            if (SetProperty(ref _totalVersions, value))
+                NotifyTitleBarStatsChanged();
+        }
+    }
     public int PendingUploads
     {
         get => _pendingUploads;
         private set
         {
             if (SetProperty(ref _pendingUploads, value))
+            {
                 OnPropertyChanged(nameof(TitleBarDriveBadgeText));
+                NotifyTitleBarStatsChanged();
+            }
         }
     }
-    public int SyncedUploads { get => _syncedUploads; private set => SetProperty(ref _syncedUploads, value); }
-    public int FailedUploads { get => _failedUploads; private set => SetProperty(ref _failedUploads, value); }
+    public int SyncedUploads
+    {
+        get => _syncedUploads;
+        private set
+        {
+            if (SetProperty(ref _syncedUploads, value))
+                NotifyTitleBarStatsChanged();
+        }
+    }
+    public int FailedUploads
+    {
+        get => _failedUploads;
+        private set
+        {
+            if (SetProperty(ref _failedUploads, value))
+                NotifyTitleBarStatsChanged();
+        }
+    }
     public string LastSyncTimeText { get => _lastSyncTimeText; private set => SetProperty(ref _lastSyncTimeText, value); }
+
+    // Adaptive single-row Title Bar Statistics & Flyout Properties
+    public string TitleBarStatsWideText
+    {
+        get
+        {
+            bool vi = _config.Language == UiLanguage.Vi;
+            if (FailedUploads > 0)
+            {
+                return vi
+                    ? $"{TotalVersions} bản lưu · {FailedUploads} lỗi tải lên"
+                    : $"{TotalVersions} saved · {FailedUploads} failed";
+            }
+            if (PendingUploads > 0)
+            {
+                return vi
+                    ? $"{TotalVersions} bản lưu · {PendingUploads} chờ"
+                    : $"{TotalVersions} saved · {PendingUploads} pending";
+            }
+            return vi ? $"{TotalVersions} bản lưu" : $"{TotalVersions} saved";
+        }
+    }
+
+    public string TitleBarStatsCompactText => FailedUploads > 0
+        ? $"{TotalVersions} · !{FailedUploads}"
+        : PendingUploads > 0
+            ? $"{TotalVersions} · {PendingUploads}"
+            : $"{TotalVersions}";
+
+    public string TitleBarStatsTooltipText
+    {
+        get
+        {
+            bool vi = _config.Language == UiLanguage.Vi;
+            return vi
+                ? $"Đã lưu: {TotalVersions} | Chờ tải: {PendingUploads} | Đã đồng bộ: {SyncedUploads} | Lỗi: {FailedUploads}\n{TitleBarDriveBadgeText}"
+                : $"Saved: {TotalVersions} | Pending: {PendingUploads} | Synced: {SyncedUploads} | Failed: {FailedUploads}\n{TitleBarDriveBadgeText}";
+        }
+    }
+
+    public bool TitleBarStatsHasError => FailedUploads > 0;
+    public Visibility TitleBarStatsWarningVisibility => FailedUploads > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility TitleBarStatsNormalVisibility => FailedUploads == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public string TitleBarStatsFlyoutHeader => _config.Language == UiLanguage.Vi
+        ? "Thống kê lưu trữ & đồng bộ"
+        : "Archive & Sync Summary";
+    public string StatsFlyoutSavedLabel => Strings.TotalVersionsLabel;
+    public string StatsFlyoutPendingLabel => Strings.PendingUploadsLabel;
+    public string StatsFlyoutSyncedLabel => Strings.SyncedUploadsLabel;
+    public string StatsFlyoutFailedLabel => Strings.FailedUploadsLabel;
+    public string StatsFlyoutCloudStatusText => TitleBarDriveBadgeText;
+    public string DashboardViewAllText => _config.Language == UiLanguage.Vi ? "Xem tất cả" : "View all";
+    public string RecentArchivesSectionTitle => _config.Language == UiLanguage.Vi ? "Mã nguồn lưu gần đây" : "Recent Source Archives";
+    public string RecentArchivesEmptyText => _config.Language == UiLanguage.Vi
+        ? "Chưa có mã nguồn nào được lưu. Hãy lưu một file code trong thư mục đang theo dõi."
+        : "No archived code yet. Save a source file inside any monitored folder.";
+    public string ProtectionSectionTitle => _config.Language == UiLanguage.Vi ? "Trạng thái bảo vệ" : "Protection Status";
+    public string LatestBackupSectionTitle => _config.Language == UiLanguage.Vi ? "Bản lưu thành công gần nhất" : "Latest Successful Backup";
+    public string LatestBackupEmptyText => _config.Language == UiLanguage.Vi
+        ? "Chưa có bản sao lưu nào được ghi nhận."
+        : "No backup recorded yet.";
+    public string OpenShortText => _config.Language == UiLanguage.Vi ? "Mở" : "Open";
+    public string MoreActionsTooltipText => _config.Language == UiLanguage.Vi ? "Tùy chọn khác" : "More options";
+    public string ProblemDetailsTooltipText => _config.Language == UiLanguage.Vi ? "Chi tiết trình duyệt & URL" : "Browser & URL details";
+
+    public bool IsProblemDetailsExpanded
+    {
+        get => _isProblemDetailsExpanded;
+        set
+        {
+            if (SetProperty(ref _isProblemDetailsExpanded, value))
+                OnPropertyChanged(nameof(ProblemDetailsVisibility));
+        }
+    }
+
+    public Visibility ProblemDetailsVisibility => IsProblemDetailsExpanded ? Visibility.Visible : Visibility.Collapsed;
+
+    // Right Column Block A — Protection Status (Semantic: 0=Green, 1=Amber, 2=Red)
+    public int ProtectionStateLevel
+    {
+        get => _protectionStateLevel;
+        private set
+        {
+            if (SetProperty(ref _protectionStateLevel, value))
+            {
+                OnPropertyChanged(nameof(ProtectionOkVisibility));
+                OnPropertyChanged(nameof(ProtectionAttentionVisibility));
+                OnPropertyChanged(nameof(ProtectionErrorVisibility));
+            }
+        }
+    }
+
+    public Visibility ProtectionOkVisibility => ProtectionStateLevel == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility ProtectionAttentionVisibility => ProtectionStateLevel == 1 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility ProtectionErrorVisibility => ProtectionStateLevel == 2 ? Visibility.Visible : Visibility.Collapsed;
+
+    public string ProtectionHeadlineText
+    {
+        get => _protectionHeadlineText;
+        private set => SetProperty(ref _protectionHeadlineText, value);
+    }
+
+    public string ProtectionDetailText
+    {
+        get => _protectionDetailText;
+        private set => SetProperty(ref _protectionDetailText, value);
+    }
+
+    // Right Column Block B — Real DB-Backed Latest Successful Backup
+    public Visibility HasLatestBackupVisibility => _latestBackup is not null ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility NoLatestBackupVisibility => _latestBackup is null ? Visibility.Visible : Visibility.Collapsed;
+    public string LatestBackupTitle => _latestBackup?.FileName ?? string.Empty;
+    public string LatestBackupTimestampText => _latestBackup is null
+        ? string.Empty
+        : (_config.Language == UiLanguage.Vi
+            ? $"Sao lưu lúc {DateTimeOffset.FromUnixTimeMilliseconds(_latestBackup.CreatedAtUnixMs).ToLocalTime():HH:mm:ss} · {_latestBackup.Platform}"
+            : $"Backed up at {DateTimeOffset.FromUnixTimeMilliseconds(_latestBackup.CreatedAtUnixMs).ToLocalTime():HH:mm:ss} · {_latestBackup.Platform}");
+    public string LatestBackupStatusText => _latestBackup is null
+        ? string.Empty
+        : UiStrings.ForAvailability(_latestBackup.Availability, _config.Language);
+
+    private void NotifyTitleBarStatsChanged()
+    {
+        OnPropertyChanged(nameof(TitleBarStatsWideText));
+        OnPropertyChanged(nameof(TitleBarStatsCompactText));
+        OnPropertyChanged(nameof(TitleBarStatsTooltipText));
+        OnPropertyChanged(nameof(TitleBarStatsHasError));
+        OnPropertyChanged(nameof(TitleBarStatsWarningVisibility));
+        OnPropertyChanged(nameof(TitleBarStatsNormalVisibility));
+        OnPropertyChanged(nameof(StatsFlyoutCloudStatusText));
+    }
+
+    private void NotifyLatestBackupAndDashboardLabelsChanged()
+    {
+        OnPropertyChanged(nameof(TitleBarStatsFlyoutHeader));
+        OnPropertyChanged(nameof(StatsFlyoutSavedLabel));
+        OnPropertyChanged(nameof(StatsFlyoutPendingLabel));
+        OnPropertyChanged(nameof(StatsFlyoutSyncedLabel));
+        OnPropertyChanged(nameof(StatsFlyoutFailedLabel));
+        OnPropertyChanged(nameof(DashboardViewAllText));
+        OnPropertyChanged(nameof(RecentArchivesSectionTitle));
+        OnPropertyChanged(nameof(RecentArchivesEmptyText));
+        OnPropertyChanged(nameof(ProtectionSectionTitle));
+        OnPropertyChanged(nameof(LatestBackupSectionTitle));
+        OnPropertyChanged(nameof(LatestBackupEmptyText));
+        OnPropertyChanged(nameof(OpenShortText));
+        OnPropertyChanged(nameof(MoreActionsTooltipText));
+        OnPropertyChanged(nameof(ProblemDetailsTooltipText));
+        OnPropertyChanged(nameof(HasLatestBackupVisibility));
+        OnPropertyChanged(nameof(NoLatestBackupVisibility));
+        OnPropertyChanged(nameof(LatestBackupTitle));
+        OnPropertyChanged(nameof(LatestBackupTimestampText));
+        OnPropertyChanged(nameof(LatestBackupStatusText));
+        NotifyTitleBarStatsChanged();
+    }
 
     public string SearchQuery
     {
@@ -1483,9 +1690,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(NotificationDurationChoices));
                 OnPropertyChanged(nameof(NotificationDurationHeaderText));
                 OnPropertyChanged(nameof(NotificationDurationDescText));
+                NotifyTitleBarStatsChanged();
                 OnPropertyChanged(nameof(CompactBrowserSummaryText));
                 OnPropertyChanged(nameof(SampleCountBadgeText));
                 OnPropertyChanged(nameof(RunnerDiagnosticsHeaderText));
+                NotifyLatestBackupAndDashboardLabelsChanged();
                 ActiveCodingTimeText = _codingTime.FormatEstimatedDuration(ResolveCurrentProblemKey(), lang);
                 _suppressFolderSync = true;
                 WatchedFolders.Clear();
@@ -1889,6 +2098,37 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var snap = await _healthService.EvaluateHealthAsync(attemptWatchRecovery: false);
         BackupProtectionBadge = UiStrings.ForProtectionBadge(snap.ProtectionState, _config.Language);
         BackupHealthSummary = snap.StatusSummary;
+
+        bool vi = _config.Language == UiLanguage.Vi;
+        ProtectionStateLevel = snap.ProtectionState switch
+        {
+            BackupProtectionState.Protected => 0,
+            BackupProtectionState.Unhealthy => 2,
+            _ => 1
+        };
+
+        ProtectionHeadlineText = snap.ProtectionState switch
+        {
+            BackupProtectionState.Protected => vi
+                ? $"Đang bảo vệ · {snap.ActiveWatchCount} thư mục"
+                : $"Protected · {snap.ActiveWatchCount} folder(s)",
+            BackupProtectionState.Unhealthy when snap.ErroredWatchCount > 0 => vi
+                ? $"Cần chú ý · {snap.ErroredWatchCount} thư mục không khả dụng"
+                : $"Attention · {snap.ErroredWatchCount} unavailable folder(s)",
+            BackupProtectionState.Unhealthy => vi
+                ? "Lỗi bảo vệ · Cần kiểm tra"
+                : "Protection Error · Check storage",
+            BackupProtectionState.Degraded => vi
+                ? $"Cần chú ý · {snap.FailedCloudUploads} lỗi tải lên"
+                : $"Attention · {snap.FailedCloudUploads} failed upload(s)",
+            _ when snap.ActiveWatchCount == 0 => vi
+                ? "Tạm dừng · Chưa có thư mục theo dõi"
+                : "Paused · No active folders",
+            _ => vi
+                ? $"Bảo vệ cục bộ · {snap.ActiveWatchCount} thư mục (đồng bộ tạm dừng)"
+                : $"Local only · {snap.ActiveWatchCount} folder(s) (sync paused)"
+        };
+        ProtectionDetailText = snap.StatusSummary;
         OnPropertyChanged(nameof(OnboardingCardVisibility));
     }
 
@@ -1936,7 +2176,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        try { _discoveryRefreshTimer?.Change(TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15)); } catch { }
+        try { _discoveryRefreshTimer?.Change(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)); } catch { }
         if (_dirtyWhileHidden)
         {
             _dirtyWhileHidden = false;
@@ -2094,17 +2334,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ? DateTimeOffset.FromUnixTimeMilliseconds(ts).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
             : UxStrings.NeverText;
 
-        var events = await _store.GetRecentMonitorEventsAsync(40);
+        _latestBackup = await _store.GetLatestBackupSummaryAsync();
+        NotifyLatestBackupAndDashboardLabelsChanged();
+
+        var events = await _store.GetRecentMonitorEventsAsync(25);
         RecentEvents.Clear();
         foreach (var ev in events)
             RecentEvents.Add(new MonitorEventRow(ev));
 
-        var history = await _store.GetArchiveHistoryEventsAsync(80);
+        var history = await _store.GetArchiveHistoryEventsAsync(40);
         HistoryEvents.Clear();
         foreach (var h in history)
             HistoryEvents.Add(new ArchiveHistoryEventRow(h));
 
-        var notifs = await _store.GetRecentNotificationsAsync(30);
+        var notifs = await _store.GetRecentNotificationsAsync(20);
         NotificationHistory.Clear();
         foreach (var nr in notifs)
             NotificationHistory.Add(nr);
@@ -2115,11 +2358,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         List<ArchiveVersionRecord> list;
         if (string.IsNullOrWhiteSpace(SearchQuery))
         {
-            list = await _store.QueryVersionsAsync(null, SelectedPlatformFilter, 500);
+            list = await _store.QueryVersionsAsync(null, SelectedPlatformFilter, 250);
         }
         else
         {
-            var found = await _store.SearchArchiveAsync(SearchQuery, 500);
+            var found = await _store.SearchArchiveAsync(SearchQuery, 250);
             list = found.Select(f => f.Version)
                 .Where(v => SelectedPlatformFilter == "All" || string.Equals(v.Platform, SelectedPlatformFilter, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -2153,9 +2396,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(SearchQuery) && SelectedPlatformFilter == "All" && SelectedAvailabilityFilterIndex == 0)
         {
             RecentDashboardArchives.Clear();
-            foreach (var g in ArchiveFileGroups.Take(4))
+            foreach (var g in ArchiveFileGroups.Take(6))
                 RecentDashboardArchives.Add(g);
             OnPropertyChanged(nameof(HasRecentDashboardArchivesVisibility));
+            OnPropertyChanged(nameof(NoRecentDashboardArchivesVisibility));
         }
 
         OnPropertyChanged(nameof(ArchiveEmptyStateVisibility));
@@ -3450,6 +3694,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task LoadSelectedVersionSourceAsync(ArchiveVersionRow? row)
     {
+        _loadSourceCts?.Cancel();
+        _loadSourceCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _loadSourceCts = cts;
+        var ct = cts.Token;
+
         if (row is null)
         {
             SelectedVersionSource = string.Empty;
@@ -3464,11 +3714,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Id);
+            var bytes = await _archiver.ReadAndVerifyVersionBytesAsync(row.Id, ct);
+            if (ct.IsCancellationRequested)
+                return;
             var (text, _) = SourceAnalyzer.DecodePreservingInfo(bytes);
             SelectedVersionSource = text;
             if (IsDiffModeActive)
                 await RecomputeDiffAsync();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return;
         }
         catch (Exception ex)
         {
@@ -3477,7 +3733,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            await LoadProblemDataForSelectionAsync(row.Record.Platform, row.Record.ProblemCode);
+            if (!ct.IsCancellationRequested)
+                await LoadProblemDataForSelectionAsync(row.Record.Platform, row.Record.ProblemCode);
         }
     }
 
@@ -3684,11 +3941,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         UpdateContext(ctx);
         if (ctx is not null)
-            _ = LoadProblemDataForSelectionAsync(ctx.Platform.ToString(), ctx.Code);
+        {
+            var key = ProblemStatementRecord.BuildKey(ctx.Platform.ToString(), ctx.Code);
+            if (!string.Equals(key, _loadedProblemDataKey, StringComparison.OrdinalIgnoreCase))
+            {
+                _loadedProblemDataKey = key;
+                _ = LoadProblemDataForSelectionAsync(ctx.Platform.ToString(), ctx.Code);
+            }
+        }
+        else
+        {
+            _loadedProblemDataKey = string.Empty;
+        }
     });
 
     private void OnProblemStatementReceived(ProblemStatementRecord stmt, IReadOnlyList<SampleTestCaseRecord> samples) =>
-        _dispatch(() => { _ = LoadProblemDataForSelectionAsync(stmt.Platform, stmt.ProblemCode); });
+        _dispatch(() =>
+        {
+            _loadedProblemDataKey = ProblemStatementRecord.BuildKey(stmt.Platform, stmt.ProblemCode);
+            _ = LoadProblemDataForSelectionAsync(stmt.Platform, stmt.ProblemCode);
+        });
 
     private void OnSubmissionVerdictReceived(SubmissionRecord sub) =>
         _dispatch(() =>
@@ -3811,6 +4083,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _coalescedRefreshCts?.Cancel();
         _coalescedRefreshCts?.Dispose();
         _coalescedRefreshCts = null;
+        _loadSourceCts?.Cancel();
+        _loadSourceCts?.Dispose();
+        _loadSourceCts = null;
         _infoBarDismissCts?.Cancel();
         _infoBarDismissCts?.Dispose();
         _infoBarDismissCts = null;

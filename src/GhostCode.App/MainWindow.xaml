@@ -61,7 +61,7 @@
                 x:Name="GlobalSearchBox"
                 Grid.Column="1"
                 Height="32"
-                MinWidth="180"
+                MinWidth="140"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Center"
                 QueryIcon="Find"
@@ -80,35 +80,120 @@
                 </AutoSuggestBox.ItemTemplate>
             </AutoSuggestBox>
 
-            <!-- Compact Status Pills (Same Horizontal Row) -->
+            <!-- Compact Adaptive Status Pills + Stats Flyout + Quick Actions (Single Title Bar Row) -->
             <StackPanel
                 x:Name="TitleBarStatusPanel"
                 Grid.Column="2"
                 Orientation="Horizontal"
                 Spacing="6"
                 VerticalAlignment="Center">
-                <Border
+                <Button
+                    x:Name="TitleBarBrowserButton"
                     Padding="8,3"
                     CornerRadius="10"
                     Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1">
+                    BorderThickness="1"
+                    Click="TitleBarBrowserButton_Click"
+                    ToolTipService.ToolTip="{x:Bind ViewModel.CompactBrowserSummaryText, Mode=OneWay}">
                     <TextBlock
                         Text="{x:Bind ViewModel.TitleBarBrowserBadgeText, Mode=OneWay}"
                         FontSize="11"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </Border>
-                <Border
+                </Button>
+
+                <Button
+                    x:Name="TitleBarStatsButton"
                     Padding="8,3"
                     CornerRadius="10"
                     Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1">
-                    <TextBlock
-                        Text="{x:Bind ViewModel.TitleBarDriveBadgeText, Mode=OneWay}"
-                        FontSize="11"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </Border>
+                    BorderThickness="1"
+                    ToolTipService.ToolTip="{x:Bind ViewModel.TitleBarStatsTooltipText, Mode=OneWay}">
+                    <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+                        <FontIcon
+                            Glyph="&#xE7BA;"
+                            FontSize="11"
+                            Foreground="#C42B1C"
+                            Visibility="{x:Bind ViewModel.TitleBarStatsWarningVisibility, Mode=OneWay}"
+                            VerticalAlignment="Center" />
+                        <FontIcon
+                            Glyph="&#xE8F1;"
+                            FontSize="11"
+                            Foreground="{ThemeResource GhostAccentBrush}"
+                            Visibility="{x:Bind ViewModel.TitleBarStatsNormalVisibility, Mode=OneWay}"
+                            VerticalAlignment="Center" />
+                        <TextBlock
+                            x:Name="TitleBarStatsWideTextBlock"
+                            Text="{x:Bind ViewModel.TitleBarStatsWideText, Mode=OneWay}"
+                            FontSize="11"
+                            FontWeight="SemiBold"
+                            Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                            VerticalAlignment="Center" />
+                        <TextBlock
+                            x:Name="TitleBarStatsCompactTextBlock"
+                            Visibility="Collapsed"
+                            Text="{x:Bind ViewModel.TitleBarStatsCompactText, Mode=OneWay}"
+                            FontSize="11"
+                            FontWeight="SemiBold"
+                            Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                            VerticalAlignment="Center" />
+                    </StackPanel>
+                    <Button.Flyout>
+                        <Flyout x:Name="TitleBarStatsFlyout">
+                            <StackPanel Width="290" Spacing="10">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.TitleBarStatsFlyoutHeader, Mode=OneWay}"
+                                    FontSize="14"
+                                    FontWeight="SemiBold" />
+                                <Grid ColumnSpacing="8" RowSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Border Grid.Row="0" Grid.Column="0" Padding="10,8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind ViewModel.StatsFlyoutSavedLabel, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind ViewModel.TotalVersions, Mode=OneWay}" FontSize="18" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Row="0" Grid.Column="1" Padding="10,8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind ViewModel.StatsFlyoutPendingLabel, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind ViewModel.PendingUploads, Mode=OneWay}" FontSize="18" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Row="1" Grid.Column="0" Padding="10,8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind ViewModel.StatsFlyoutSyncedLabel, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind ViewModel.SyncedUploads, Mode=OneWay}" FontSize="18" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Row="1" Grid.Column="1" Padding="10,8" CornerRadius="6" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock Text="{x:Bind ViewModel.StatsFlyoutFailedLabel, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind ViewModel.FailedUploads, Mode=OneWay}" FontSize="18" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.StatsFlyoutCloudStatusText, Mode=OneWay}"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Padding="10,4" FontSize="12" Command="{x:Bind ViewModel.SyncNowCommand}" />
+                                    <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Padding="10,4" FontSize="12" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
+
                 <Button
                     x:Name="QuickActionsTitleBarButton"
                     Padding="8,2"

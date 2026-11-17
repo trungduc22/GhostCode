@@ -67,6 +67,8 @@ public sealed partial class MainWindow : Window
         CustomTitleBarGrid.Loaded += (_, _) => UpdateTitleBarRegions();
         CustomTitleBarGrid.SizeChanged += (_, _) => UpdateTitleBarRegions();
         GlobalSearchBox.SizeChanged += (_, _) => UpdateTitleBarRegions();
+        TitleBarBrowserButton.SizeChanged += (_, _) => UpdateTitleBarRegions();
+        TitleBarStatsButton.SizeChanged += (_, _) => UpdateTitleBarRegions();
         QuickActionsTitleBarButton.SizeChanged += (_, _) => UpdateTitleBarRegions();
         RootGrid.ActualThemeChanged += (_, _) => ApplyTitleBarThemeColors();
         RootGrid.PreviewKeyDown += RootGrid_PreviewKeyDown;
@@ -163,6 +165,8 @@ public sealed partial class MainWindow : Window
         if (RootGrid.XamlRoot is null)
             return;
 
+        UpdateAdaptiveTitleBarStatsLayout();
+
         var scale = RootGrid.XamlRoot.RasterizationScale;
         if (scale <= 0) scale = 1.0;
 
@@ -177,13 +181,15 @@ public sealed partial class MainWindow : Window
             var nonClient = InputNonClientPointerSource.GetForWindowId(_windowId);
             var passthrough = new List<RectInt32>();
 
-            var searchRect = ToPhysicalRect(GlobalSearchBox, scale);
-            if (searchRect.Width > 0 && searchRect.Height > 0)
-                passthrough.Add(searchRect);
-
-            var quickActionsBtnRect = ToPhysicalRect(QuickActionsTitleBarButton, scale);
-            if (quickActionsBtnRect.Width > 0 && quickActionsBtnRect.Height > 0)
-                passthrough.Add(quickActionsBtnRect);
+            foreach (FrameworkElement interactive in new FrameworkElement[]
+                     { GlobalSearchBox, TitleBarBrowserButton, TitleBarStatsButton, QuickActionsTitleBarButton })
+            {
+                if (interactive.Visibility != Visibility.Visible)
+                    continue;
+                var rect = ToPhysicalRect(interactive, scale);
+                if (rect.Width > 0 && rect.Height > 0)
+                    passthrough.Add(rect);
+            }
 
             nonClient.SetRegionRects(NonClientRegionKind.Passthrough, passthrough.ToArray());
         }
@@ -192,6 +198,35 @@ public sealed partial class MainWindow : Window
             // Older OS builds without InputNonClientPointerSource fallback gracefully
         }
     }
+
+    private void UpdateAdaptiveTitleBarStatsLayout()
+    {
+        double w = CustomTitleBarGrid.ActualWidth;
+        if (w <= 0)
+            return;
+
+        if (w >= 1180)
+        {
+            TitleBarBrowserButton.Visibility = Visibility.Visible;
+            TitleBarStatsWideTextBlock.Visibility = Visibility.Visible;
+            TitleBarStatsCompactTextBlock.Visibility = Visibility.Collapsed;
+        }
+        else if (w >= 960)
+        {
+            TitleBarBrowserButton.Visibility = Visibility.Visible;
+            TitleBarStatsWideTextBlock.Visibility = Visibility.Collapsed;
+            TitleBarStatsCompactTextBlock.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            TitleBarBrowserButton.Visibility = Visibility.Collapsed;
+            TitleBarStatsWideTextBlock.Visibility = Visibility.Collapsed;
+            TitleBarStatsCompactTextBlock.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void TitleBarBrowserButton_Click(object sender, RoutedEventArgs e) =>
+        NavigateToTag("DevTools");
 
     private RectInt32 ToPhysicalRect(FrameworkElement element, double scale)
     {

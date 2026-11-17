@@ -3,388 +3,483 @@
     x:Class="GhostCode.App.Views.DashboardPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:controls="using:CommunityToolkit.WinUI.Controls"
-    xmlns:vm="using:GhostCode.App.ViewModels">
+    xmlns:vm="using:GhostCode.App.ViewModels"
+    NavigationCacheMode="Enabled">
 
-    <ScrollViewer Padding="24,16,24,24" HorizontalScrollMode="Disabled">
-        <StackPanel Spacing="16" MaxWidth="1080" HorizontalAlignment="Stretch">
+    <ScrollViewer
+        x:Name="DashboardScrollViewer"
+        Padding="20,14,20,20"
+        VerticalScrollBarVisibility="Auto"
+        HorizontalScrollMode="Disabled"
+        HorizontalScrollBarVisibility="Disabled">
+        <Grid x:Name="DashboardRootGrid" RowSpacing="12" HorizontalAlignment="Stretch">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-            <!-- 0. First-Run / No Protected Folders Onboarding Card -->
+            <!-- 0. First-Run / No Watched Folders Banner -->
             <Border
                 x:Name="OnboardingNoFolderCard"
+                Grid.Row="0"
                 Visibility="{x:Bind ViewModel.OnboardingCardVisibility, Mode=OneWay}"
-                Padding="16"
+                Padding="14,12"
                 CornerRadius="8"
                 Background="{ThemeResource SystemFillColorAttentionBackgroundBrush}"
                 BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
                 BorderThickness="1">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <FontIcon Glyph="&#xE8B7;" FontSize="20" Foreground="{ThemeResource AccentFillColorDefaultBrush}" VerticalAlignment="Center" />
-                        <StackPanel Spacing="2">
-                            <TextBlock
-                                Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderTitle, Mode=OneWay}"
-                                FontWeight="SemiBold"
-                                FontSize="15" />
-                            <TextBlock
-                                Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderBody, Mode=OneWay}"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                TextWrapping="Wrap"
-                                FontSize="13" />
-                        </StackPanel>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button
-                            Content="{x:Bind ViewModel.ExpStrings.OnboardingAutoDetectButton, Mode=OneWay}"
-                            Style="{ThemeResource AccentButtonStyle}"
-                            Click="AutoDetectFolders_Click" />
-                        <Button
-                            Content="{x:Bind ViewModel.ExpStrings.OnboardingChooseFolderButton, Mode=OneWay}"
-                            Click="PickFolderOnboarding_Click" />
-                        <Button
-                            Content="{x:Bind ViewModel.ExpStrings.OnboardingLaterButton, Mode=OneWay}"
-                            Command="{x:Bind ViewModel.DismissOnboardingCommand}" />
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-
-            <!-- 1. Compact Browser Connection Summary Bar (Clicking navigates to Development Tools) -->
-            <Button
-                x:Name="BrowserSummaryButton"
-                HorizontalAlignment="Stretch"
-                HorizontalContentAlignment="Stretch"
-                Padding="14,10"
-                CornerRadius="8"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                Click="OpenDevToolsBrowsers_Click">
-                <Grid ColumnSpacing="10">
+                <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="16" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
-                    <TextBlock
-                        Grid.Column="1"
-                        x:Name="CompactBrowserSummaryTextBlock"
-                        Text="{x:Bind ViewModel.CompactBrowserSummaryText, Mode=OneWay}"
-                        FontWeight="SemiBold"
-                        FontSize="13"
-                        VerticalAlignment="Center"
-                        TextTrimming="CharacterEllipsis" />
-                    <TextBlock
-                        Grid.Column="2"
-                        Text="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}"
-                        FontSize="12"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        VerticalAlignment="Center" />
-                    <FontIcon Grid.Column="3" Glyph="&#xE76C;" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                    <FontIcon Grid.Column="0" Glyph="&#xE8B7;" FontSize="18" Foreground="{ThemeResource AccentFillColorDefaultBrush}" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                        <TextBlock Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{x:Bind ViewModel.ExpStrings.OnboardingNoFolderBody, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" FontSize="12" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Button Content="{x:Bind ViewModel.ExpStrings.OnboardingAutoDetectButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Padding="10,5" FontSize="12" Click="AutoDetectFolders_Click" />
+                        <Button Content="{x:Bind ViewModel.ExpStrings.OnboardingChooseFolderButton, Mode=OneWay}" Padding="10,5" FontSize="12" Click="PickFolderOnboarding_Click" />
+                        <Button Content="{x:Bind ViewModel.ExpStrings.OnboardingLaterButton, Mode=OneWay}" Padding="8,5" FontSize="12" Command="{x:Bind ViewModel.DismissOnboardingCommand}" />
+                    </StackPanel>
                 </Grid>
-            </Button>
+            </Border>
 
-            <!-- 2. Detected Problem Card (IMMEDIATELY UNDERNEATH Connected Browsers) -->
-            <Border
-                x:Name="DetectedProblemCard"
-                Padding="16"
-                CornerRadius="8"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1">
-                <StackPanel Spacing="10">
-                    <Grid ColumnSpacing="8">
+            <!-- 1. Compact Top Section: Slim Browser Status + Active Detected Problem -->
+            <StackPanel Grid.Row="1" Spacing="10" HorizontalAlignment="Stretch">
+                <Button
+                    x:Name="BrowserSummaryButton"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Stretch"
+                    Padding="12,8"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    Click="OpenDevToolsBrowsers_Click">
+                    <Grid ColumnSpacing="10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <FontIcon Grid.Column="0" Glyph="&#xE943;" FontSize="18" VerticalAlignment="Center" />
+                        <FontIcon Grid.Column="0" Glyph="&#xE774;" FontSize="14" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
                         <TextBlock
                             Grid.Column="1"
-                            Text="{x:Bind ViewModel.Strings.ActiveContextTitle, Mode=OneWay}"
+                            x:Name="CompactBrowserSummaryTextBlock"
+                            Text="{x:Bind ViewModel.CompactBrowserSummaryText, Mode=OneWay}"
                             FontWeight="SemiBold"
-                            FontSize="15"
-                            VerticalAlignment="Center" />
-                        <Border
+                            FontSize="13"
+                            VerticalAlignment="Center"
+                            TextTrimming="CharacterEllipsis" />
+                        <TextBlock
                             Grid.Column="2"
-                            Padding="8,3"
+                            Text="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}"
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            VerticalAlignment="Center" />
+                        <FontIcon Grid.Column="3" Glyph="&#xE76C;" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                    </Grid>
+                </Button>
+
+                <Border
+                    x:Name="DetectedProblemCard"
+                    Padding="14,12"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Padding="9,3" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.ActivePlatform, Mode=OneWay}"
+                                    Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                    FontWeight="SemiBold"
+                                    FontSize="12" />
+                            </Border>
+
+                            <TextBlock
+                                Grid.Column="1"
+                                Text="{x:Bind ViewModel.ActiveCode, Mode=OneWay}"
+                                FontSize="15"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center" />
+
+                            <TextBlock
+                                Grid.Column="2"
+                                Text="{x:Bind ViewModel.ActiveTitle, Mode=OneWay}"
+                                FontSize="14"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                VerticalAlignment="Center"
+                                TextTrimming="CharacterEllipsis" />
+
+                            <Border
+                                Grid.Column="3"
+                                Padding="8,3"
+                                CornerRadius="6"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                                <TextBlock Text="{x:Bind ViewModel.ActiveContextStateBadge, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" />
+                            </Border>
+
+                            <Button
+                                Grid.Column="4"
+                                Padding="6,4"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Command="{x:Bind ViewModel.ToggleProblemDetailsCommand}"
+                                ToolTipService.ToolTip="{x:Bind ViewModel.ProblemDetailsTooltipText, Mode=OneWay}">
+                                <FontIcon Glyph="&#xE946;" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Button>
+                        </Grid>
+
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock
+                                Grid.Column="0"
+                                Text="{x:Bind ViewModel.Strings.FilenamePreviewLabel, Mode=OneWay}"
+                                FontSize="12"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                VerticalAlignment="Center" />
+                            <TextBlock
+                                Grid.Column="1"
+                                x:Name="FilenamePreviewText"
+                                Text="{x:Bind ViewModel.ActiveFilenamePreview, Mode=OneWay}"
+                                FontFamily="Consolas"
+                                FontWeight="SemiBold"
+                                FontSize="12"
+                                TextTrimming="CharacterEllipsis"
+                                VerticalAlignment="Center" />
+                        </Grid>
+
+                        <!-- Collapsible secondary technical details (hidden by default) -->
+                        <StackPanel
+                            x:Name="ProblemTechnicalDetailsPanel"
+                            Spacing="3"
+                            Padding="10,8"
                             CornerRadius="6"
                             Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1">
-                            <TextBlock Text="{x:Bind ViewModel.ActiveContextStateBadge, Mode=OneWay}" FontSize="12" FontWeight="SemiBold" />
-                        </Border>
-                    </Grid>
-
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Border Padding="10,4" CornerRadius="6" Background="{ThemeResource AccentFillColorDefaultBrush}">
-                            <TextBlock
-                                Text="{x:Bind ViewModel.ActivePlatform, Mode=OneWay}"
-                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                FontWeight="SemiBold"
-                                FontSize="12" />
-                        </Border>
-                        <TextBlock Text="{x:Bind ViewModel.ActiveCode, Mode=OneWay}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <TextBlock Text="—" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                        <TextBlock Text="{x:Bind ViewModel.ActiveTitle, Mode=OneWay}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <Grid ColumnSpacing="16" RowSpacing="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="{x:Bind ViewModel.Strings.FilenamePreviewLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="FilenamePreviewText" Text="{x:Bind ViewModel.ActiveFilenamePreview, Mode=OneWay}" FontFamily="Consolas" FontWeight="SemiBold" FontSize="12" />
-
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="{x:Bind ViewModel.Strings.BrowserSourceLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.ActiveBrowserName, Mode=OneWay}" FontSize="12" />
-
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="URL" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.ActiveUrl, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" />
-                    </Grid>
-
-                    <TextBlock Text="{x:Bind ViewModel.Strings.OpenBrowserHint, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
-                </StackPanel>
-            </Border>
-
-            <!-- 3. Summary Metrics Grid -->
-            <Grid ColumnSpacing="12">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.TotalVersionsLabel, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind ViewModel.TotalVersions, Mode=OneWay}" FontSize="26" FontWeight="SemiBold" />
+                            Visibility="{x:Bind ViewModel.ProblemDetailsVisibility, Mode=OneWay}">
+                            <TextBlock FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis">
+                                <Run Text="{x:Bind ViewModel.Strings.BrowserSourceLabel, Mode=OneWay}" />
+                                <Run Text=": " />
+                                <Run Text="{x:Bind ViewModel.ActiveBrowserName, Mode=OneWay}" />
+                            </TextBlock>
+                            <TextBlock Text="{x:Bind ViewModel.ActiveUrl, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{x:Bind ViewModel.Strings.OpenBrowserHint, Mode=OneWay}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
-
-                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.PendingUploadsLabel, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind ViewModel.PendingUploads, Mode=OneWay}" FontSize="26" FontWeight="SemiBold" />
-                    </StackPanel>
-                </Border>
-
-                <Border Grid.Column="2" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.SyncedUploadsLabel, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind ViewModel.SyncedUploads, Mode=OneWay}" FontSize="26" FontWeight="SemiBold" />
-                    </StackPanel>
-                </Border>
-
-                <Border Grid.Column="3" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.FailedUploadsLabel, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
-                        <TextBlock Text="{x:Bind ViewModel.FailedUploads, Mode=OneWay}" FontSize="26" FontWeight="SemiBold" />
-                    </StackPanel>
-                </Border>
-            </Grid>
-
-            <!-- 3b. Recent Archived Files Priority Quick-Access (only when archives exist) -->
-            <Border
-                x:Name="RecentArchivesCard"
-                Visibility="{x:Bind ViewModel.HasRecentDashboardArchivesVisibility, Mode=OneWay}"
-                Padding="16"
-                CornerRadius="8"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1">
-                <StackPanel Spacing="8">
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <FontIcon Grid.Column="0" Glyph="&#xE8F1;" FontSize="16" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.RecentArchivesCardTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
-                        <Button Grid.Column="2" Padding="10,4" FontSize="12" Content="{x:Bind ViewModel.Strings.NavArchive, Mode=OneWay}" Click="NavigateArchive_Click" />
-                    </Grid>
-                    <ItemsControl ItemsSource="{x:Bind ViewModel.RecentDashboardArchives}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:ArchiveFileGroupRow">
-                                <Border
-                                    Margin="0,0,0,6"
-                                    Padding="10,8"
-                                    CornerRadius="6"
-                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1">
-                                    <Grid ColumnSpacing="10">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                            <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{x:Bind Subtitle}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="CopyRecentArchive_Click" Content="{x:Bind CopyButtonLabel}" />
-                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="OpenRecentArchive_Click" Content="{x:Bind OpenButtonLabel}" />
-                                            <Button Padding="8,4" FontSize="11" Tag="{x:Bind}" Click="RunRecentArchive_Click" Style="{ThemeResource AccentButtonStyle}" Content="{x:Bind RunButtonLabel}" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </StackPanel>
-            </Border>
-
-            <!-- 4. Backup Health & Protection Status + Quick Actions -->
-            <Border Padding="14" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <Border Grid.Column="0" Padding="10,4" CornerRadius="6" VerticalAlignment="Center" Background="{ThemeResource GhostSuccessBgBrush}">
-                        <TextBlock Text="{x:Bind ViewModel.BackupProtectionBadge, Mode=OneWay}" Foreground="{ThemeResource GhostSuccessFgBrush}" FontWeight="SemiBold" FontSize="12" />
-                    </Border>
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                        <TextBlock Text="{x:Bind ViewModel.ExpStrings.BackupHealthTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
-                        <TextBlock Text="{x:Bind ViewModel.BackupHealthSummary, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                        <Button Content="{x:Bind ViewModel.ExpStrings.RunRecoveryCheckButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunRecoveryCheckCommand}" />
-                        <Button Content="{x:Bind ViewModel.SyncPauseButtonText, Mode=OneWay}" Command="{x:Bind ViewModel.ToggleSyncPauseCommand}" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <!-- 5. Quick Actions (Compact 4-button row fitting 1100x720 without clipping) -->
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button Content="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
-                <Button Content="{x:Bind ViewModel.Strings.SyncNowButton, Mode=OneWay}" Style="{ThemeResource AccentButtonStyle}" Command="{x:Bind ViewModel.SyncNowCommand}" />
-                <Button Content="{x:Bind ViewModel.Strings.PullCloudButton, Mode=OneWay}" Command="{x:Bind ViewModel.PullCloudArchiveCommand}" />
-                <Button Content="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
             </StackPanel>
 
-            <!-- 5. Compact Development Tools Summary Bar (Navigates to Dedicated DevTools Page) -->
-            <Border
-                x:Name="DevToolsSummaryCard"
-                Padding="14"
-                CornerRadius="8"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1">
-                <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <FontIcon Grid.Column="0" Glyph="&#xE943;" FontSize="16" VerticalAlignment="Center" />
-                    <TextBlock
-                        Grid.Column="1"
-                        Text="{x:Bind ViewModel.CompactToolchainSummaryText, Mode=OneWay}"
-                        FontSize="13"
-                        VerticalAlignment="Center"
-                        TextTrimming="CharacterEllipsis" />
-                    <Button
-                        Grid.Column="2"
-                        Content="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}"
-                        Command="{x:Bind ViewModel.OpenDevToolsPageCommand}" />
-                </Grid>
-            </Border>
-
-            <!-- 6. Monitoring Health & Diagnostics -->
-            <Border Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                <Grid ColumnSpacing="16" RowSpacing="8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
-                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastDetectedFileLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.LastDetectedFileText, Mode=OneWay}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
-                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastSuccessfulBackupLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.LastSuccessfulBackupText, Mode=OneWay}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
-                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastMonitoringErrorLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.LastMonitoringErrorText, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
-                        <TextBlock Text="{x:Bind ViewModel.UxStrings.LastDiagnosticResultLabel, Mode=OneWay}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="{x:Bind ViewModel.LastDiagnosticResultText, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <!-- 7. Watched Folders & Persistent Archive History Side-by-Side -->
-            <Grid ColumnSpacing="16">
+            <!-- 2. Responsive Two-Column Main Workspace (Left: Recent Archives | Right: Protection + Latest Backup) -->
+            <Grid
+                x:Name="DashboardTwoColumnGrid"
+                Grid.Row="2"
+                ColumnSpacing="14"
+                RowSpacing="14"
+                HorizontalAlignment="Stretch">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition x:Name="DashboardLeftCol" Width="43*" />
+                    <ColumnDefinition x:Name="DashboardRightCol" Width="57*" />
                 </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.ActiveWatchesTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ItemsControl ItemsSource="{x:Bind ViewModel.ActiveWatches}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate x:DataType="vm:ActiveWatchRow">
-                                    <StackPanel Padding="0,6">
-                                        <TextBlock Text="{x:Bind FolderPath}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{x:Bind StatusText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
+                <!-- LEFT COLUMN: Compact Recent Source Archives (4-6 items, virtualized & height-bounded) -->
+                <Border
+                    x:Name="RecentArchivesCard"
+                    Grid.Row="0"
+                    Grid.Column="0"
+                    Padding="14"
+                    CornerRadius="8"
+                    VerticalAlignment="Top"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <StackPanel Spacing="10">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <FontIcon Grid.Column="0" Glyph="&#xE8F1;" FontSize="15" Foreground="{ThemeResource GhostAccentBrush}" VerticalAlignment="Center" />
+                            <TextBlock
+                                Grid.Column="1"
+                                Text="{x:Bind ViewModel.RecentArchivesSectionTitle, Mode=OneWay}"
+                                FontWeight="SemiBold"
+                                FontSize="14"
+                                VerticalAlignment="Center"
+                                TextTrimming="CharacterEllipsis" />
+                            <HyperlinkButton
+                                x:Name="ViewAllArchivesButton"
+                                Grid.Column="2"
+                                Padding="4,2"
+                                FontSize="12"
+                                Content="{x:Bind ViewModel.DashboardViewAllText, Mode=OneWay}"
+                                Click="NavigateArchive_Click" />
+                        </Grid>
 
-                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                    <StackPanel Spacing="8">
-                        <TextBlock Text="{x:Bind ViewModel.Strings.RecentEventsTitle, Mode=OneWay}" FontWeight="SemiBold" FontSize="15" />
-                        <ListView ItemsSource="{x:Bind ViewModel.HistoryEvents}" SelectionMode="None" MaxHeight="240">
+                        <TextBlock
+                            x:Name="RecentArchivesEmptyTextBlock"
+                            Visibility="{x:Bind ViewModel.NoRecentDashboardArchivesVisibility, Mode=OneWay}"
+                            Text="{x:Bind ViewModel.RecentArchivesEmptyText, Mode=OneWay}"
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Margin="0,4" />
+
+                        <ListView
+                            x:Name="RecentArchivesListView"
+                            Visibility="{x:Bind ViewModel.HasRecentDashboardArchivesVisibility, Mode=OneWay}"
+                            ItemsSource="{x:Bind ViewModel.RecentDashboardArchives}"
+                            SelectionMode="None"
+                            IsItemClickEnabled="False"
+                            MaxHeight="340"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Padding" Value="0,3" />
+                                    <Setter Property="MinHeight" Value="0" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="vm:ArchiveHistoryEventRow">
-                                    <Grid Padding="0,6" ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0">
-                                            <TextBlock Text="{x:Bind EventType}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{x:Bind Summary}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                                        </StackPanel>
-                                        <TextBlock Grid.Column="1" Text="{x:Bind TimeText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                    </Grid>
+                                <DataTemplate x:DataType="vm:ArchiveFileGroupRow">
+                                    <Border
+                                        Padding="10,7"
+                                        CornerRadius="6"
+                                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="1">
+                                                <TextBlock Text="{x:Bind FileName}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{x:Bind MetaWithTimeText}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                <Button
+                                                    Padding="7,5"
+                                                    Tag="{x:Bind}"
+                                                    Click="CopyRecentArchive_Click"
+                                                    ToolTipService.ToolTip="{x:Bind CopyButtonLabel}">
+                                                    <FontIcon Glyph="&#xE8C8;" FontSize="12" />
+                                                </Button>
+                                                <Button
+                                                    Padding="8,4"
+                                                    FontSize="11"
+                                                    Tag="{x:Bind}"
+                                                    Click="OpenRecentArchive_Click"
+                                                    Content="{x:Bind OpenButtonLabel}" />
+                                                <Button
+                                                    Padding="6,5"
+                                                    Background="Transparent"
+                                                    BorderThickness="0"
+                                                    ToolTipService.ToolTip="{x:Bind FileName}">
+                                                    <FontIcon Glyph="&#xE712;" FontSize="12" />
+                                                    <Button.Flyout>
+                                                        <MenuFlyout>
+                                                            <MenuFlyoutItem Text="{x:Bind RunInArchiveMenuLabel}" Tag="{x:Bind}" Click="RunRecentArchive_Click" />
+                                                            <MenuFlyoutItem Text="{x:Bind CopyButtonLabel}" Tag="{x:Bind}" Click="CopyRecentArchive_Click" />
+                                                        </MenuFlyout>
+                                                    </Button.Flyout>
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
                     </StackPanel>
                 </Border>
-            </Grid>
 
-        </StackPanel>
+                <!-- RIGHT COLUMN: Block A (Protection Status) + Block B (Latest Successful Backup) -->
+                <StackPanel
+                    x:Name="DashboardRightColumnStack"
+                    Grid.Row="0"
+                    Grid.Column="1"
+                    Spacing="12"
+                    VerticalAlignment="Top">
+
+                    <!-- Block A: Protection Status -->
+                    <Border
+                        x:Name="ProtectionStatusCard"
+                        Padding="14"
+                        CornerRadius="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                        <StackPanel Spacing="8">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock
+                                    Grid.Column="0"
+                                    Text="{x:Bind ViewModel.ProtectionSectionTitle, Mode=OneWay}"
+                                    FontSize="13"
+                                    FontWeight="SemiBold"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    VerticalAlignment="Center" />
+                                <Button
+                                    Grid.Column="1"
+                                    Padding="6,4"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    ToolTipService.ToolTip="{x:Bind ViewModel.MoreActionsTooltipText, Mode=OneWay}">
+                                    <FontIcon Glyph="&#xE712;" FontSize="13" />
+                                    <Button.Flyout>
+                                        <MenuFlyout>
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.Strings.DiagnosticButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunDiagnosticCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.ExpStrings.RunRecoveryCheckButton, Mode=OneWay}" Command="{x:Bind ViewModel.RunRecoveryCheckCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.SyncPauseButtonText, Mode=OneWay}" Command="{x:Bind ViewModel.ToggleSyncPauseCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.Strings.OpenArchiveButton, Mode=OneWay}" Command="{x:Bind ViewModel.OpenArchiveFolderCommand}" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.Strings.NavSettings, Mode=OneWay}" Click="OpenSettingsFolders_Click" />
+                                            <MenuFlyoutItem Text="{x:Bind ViewModel.UxStrings.NavDevTools, Mode=OneWay}" Click="OpenDevToolsBrowsers_Click" />
+                                        </MenuFlyout>
+                                    </Button.Flyout>
+                                </Button>
+                            </Grid>
+
+                            <!-- Semantic Indicators: Green (Ok) / Amber (Paused or Degraded) / Red (Unhealthy) -->
+                            <Border
+                                x:Name="ProtectionGreenBadge"
+                                Visibility="{x:Bind ViewModel.ProtectionOkVisibility, Mode=OneWay}"
+                                Padding="10,7"
+                                CornerRadius="6"
+                                Background="{ThemeResource GhostSuccessBgBrush}">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE73E;" FontSize="14" Foreground="{ThemeResource GhostSuccessFgBrush}" VerticalAlignment="Center" />
+                                    <TextBlock Text="{x:Bind ViewModel.ProtectionHeadlineText, Mode=OneWay}" Foreground="{ThemeResource GhostSuccessFgBrush}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border
+                                x:Name="ProtectionAmberBadge"
+                                Visibility="{x:Bind ViewModel.ProtectionAttentionVisibility, Mode=OneWay}"
+                                Padding="10,7"
+                                CornerRadius="6"
+                                Background="#26FFB900">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE7BA;" FontSize="14" Foreground="#C87E00" VerticalAlignment="Center" />
+                                    <TextBlock Text="{x:Bind ViewModel.ProtectionHeadlineText, Mode=OneWay}" Foreground="#C87E00" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border
+                                x:Name="ProtectionRedBadge"
+                                Visibility="{x:Bind ViewModel.ProtectionErrorVisibility, Mode=OneWay}"
+                                Padding="10,7"
+                                CornerRadius="6"
+                                Background="#26E81123">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xEA39;" FontSize="14" Foreground="#D13438" VerticalAlignment="Center" />
+                                    <TextBlock Text="{x:Bind ViewModel.ProtectionHeadlineText, Mode=OneWay}" Foreground="#D13438" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock
+                                Text="{x:Bind ViewModel.ProtectionDetailText, Mode=OneWay}"
+                                FontSize="12"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Block B: Latest Successful Backup (Real DB Timestamp, Honest Empty State) -->
+                    <Border
+                        x:Name="LatestBackupCard"
+                        Padding="14"
+                        CornerRadius="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                        <StackPanel Spacing="8">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock
+                                    Grid.Column="0"
+                                    Text="{x:Bind ViewModel.LatestBackupSectionTitle, Mode=OneWay}"
+                                    FontSize="13"
+                                    FontWeight="SemiBold"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    VerticalAlignment="Center" />
+                                <Button
+                                    Grid.Column="1"
+                                    Padding="10,4"
+                                    FontSize="12"
+                                    Visibility="{x:Bind ViewModel.HasLatestBackupVisibility, Mode=OneWay}"
+                                    Content="{x:Bind ViewModel.OpenShortText, Mode=OneWay}"
+                                    Command="{x:Bind ViewModel.OpenLatestBackupCommand}" />
+                            </Grid>
+
+                            <StackPanel
+                                x:Name="LatestBackupPopulatedPanel"
+                                Visibility="{x:Bind ViewModel.HasLatestBackupVisibility, Mode=OneWay}"
+                                Spacing="4">
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.LatestBackupTitle, Mode=OneWay}"
+                                    FontSize="14"
+                                    FontWeight="SemiBold"
+                                    TextTrimming="CharacterEllipsis" />
+                                <TextBlock
+                                    Text="{x:Bind ViewModel.LatestBackupTimestampText, Mode=OneWay}"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    TextTrimming="CharacterEllipsis" />
+                                <Border
+                                    HorizontalAlignment="Left"
+                                    Padding="8,3"
+                                    CornerRadius="5"
+                                    Margin="0,2,0,0"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                    <TextBlock
+                                        Text="{x:Bind ViewModel.LatestBackupStatusText, Mode=OneWay}"
+                                        FontSize="11"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Border>
+                            </StackPanel>
+
+                            <TextBlock
+                                x:Name="LatestBackupEmptyTextBlock"
+                                Visibility="{x:Bind ViewModel.NoLatestBackupVisibility, Mode=OneWay}"
+                                Text="{x:Bind ViewModel.LatestBackupEmptyText, Mode=OneWay}"
+                                FontSize="12"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Grid>
     </ScrollViewer>
 </Page>

@@ -160,10 +160,31 @@ public static class UiSelfTestRunner
             window.NavigateToTag("Dashboard");
             await Task.Delay(150);
 
-            bool compactDevToolsOk = window.CurrentPageContent is DashboardPage dp2
-                && dp2.FindName("DevToolsSummaryCard") is FrameworkElement
-                && !string.IsNullOrWhiteSpace(vm.CompactToolchainSummaryText);
-            Record("CompactDashboardDevToolsSummary", compactDevToolsOk, vm.CompactToolchainSummaryText);
+            bool twoColumnLayoutOk = false;
+            bool statsFlyoutOk = false;
+            bool pausedProtectionHonestOk = vm.ProtectionStateLevel != 0 && string.IsNullOrEmpty(vm.LatestBackupTitle);
+            if (window.CurrentPageContent is DashboardPage dp2)
+            {
+                dp2.UpdateLayout();
+                var recentCard = dp2.FindName("RecentArchivesCard") as FrameworkElement;
+                var protCard = dp2.FindName("ProtectionStatusCard") as FrameworkElement;
+                var latestCard = dp2.FindName("LatestBackupCard") as FrameworkElement;
+                var dashSv = dp2.FindName("DashboardScrollViewer") as ScrollViewer;
+                var noRemovedCards = dp2.FindName("DevToolsSummaryCard") is null;
+                if (recentCard is not null && protCard is not null && latestCard is not null && dashSv is not null && noRemovedCards)
+                {
+                    var rPt = recentCard.TransformToVisual(dp2).TransformPoint(new Windows.Foundation.Point(0, 0));
+                    var pPt = protCard.TransformToVisual(dp2).TransformPoint(new Windows.Foundation.Point(0, 0));
+                    var lbPt = latestCard.TransformToVisual(dp2).TransformPoint(new Windows.Foundation.Point(0, 0));
+                    twoColumnLayoutOk = rPt.X < pPt.X && Math.Abs(pPt.X - lbPt.X) < 4.0 && pPt.Y < lbPt.Y && dashSv.ScrollableWidth <= 2.0;
+                }
+            }
+            if ((window.Content as FrameworkElement)?.FindName("TitleBarStatsButton") is Button tbBtn && tbBtn.Flyout is Flyout)
+            {
+                statsFlyoutOk = !string.IsNullOrWhiteSpace(vm.TitleBarStatsWideText) && !string.IsNullOrWhiteSpace(vm.TitleBarStatsCompactText);
+            }
+            Record("DashboardTwoColumnCompactLayout", twoColumnLayoutOk, $"twoCol={twoColumnLayoutOk}");
+            Record("TitleBarAdaptiveStatsFlyout", statsFlyoutOk, $"wide='{vm.TitleBarStatsWideText}', compact='{vm.TitleBarStatsCompactText}'");
             await CaptureAsync("01_dashboard.png");
 
             // 4. Settings: add folder, toggle recursive, refuse ArchiveDir, verify non-squeezed layout
@@ -338,6 +359,21 @@ public static class UiSelfTestRunner
                     && vm.InfoBarSeverity == InfoBarSeverity.Error;
 
                 Record("RestoreAndIntegrityCheck", restoreOk && corruptBlocked);
+
+                // Check populated Dashboard (Protection Green + Real Latest Backup + Recent Archives Left) BEFORE removing folder
+                window.NavigateToTag("Dashboard");
+                await Task.Delay(200);
+                bool activeProtectionAndBackupOk = pausedProtectionHonestOk
+                    && vm.ProtectionStateLevel == 0
+                    && !string.IsNullOrWhiteSpace(vm.LatestBackupTitle)
+                    && vm.HasLatestBackupVisibility == Visibility.Visible
+                    && vm.RecentDashboardArchives.Count >= 1;
+                Record("ProtectionSemanticStatesAndLatestBackup", activeProtectionAndBackupOk,
+                    $"pausedBefore={pausedProtectionHonestOk}, level={vm.ProtectionStateLevel}, latest='{vm.LatestBackupTitle}', recentCount={vm.RecentDashboardArchives.Count}");
+                await CaptureAsync("01_dashboard.png");
+                vm.SelectedThemeIndex = 2; // Dark
+                await CaptureAsync("05_dark_dashboard.png");
+                vm.SelectedThemeIndex = 0; // Restore System
             }
             else
             {
@@ -345,6 +381,7 @@ public static class UiSelfTestRunner
                 Record("CopyCodeCommand", false, "Skipped");
                 Record("LiveCodeRunnerSplitIo", false, "Skipped");
                 Record("RestoreAndIntegrityCheck", false, "Skipped");
+                Record("ProtectionSemanticStatesAndLatestBackup", false, "No version archived");
             }
 
             if (addedItem is not null)
@@ -398,11 +435,9 @@ public static class UiSelfTestRunner
             Record("CloudControlsAndDpapi", connectGuardOk && dpapiSecretOk && !vm.IsDriveConnected);
             await CaptureAsync("04_cloud.png");
 
-            // 10. Dark Theme Dashboard + Live Mica Backdrop Switch
+            // 10. Live Mica Backdrop Switch
             window.NavigateToTag("Dashboard");
-            vm.SelectedThemeIndex = 2; // Dark
-            await CaptureAsync("05_dark_dashboard.png");
-            vm.SelectedThemeIndex = 0; // Restore System
+            await Task.Delay(120);
 
             vm.SelectedMicaKindIndex = 1; // MicaAlt
             bool altOk = window.SystemBackdrop is MicaBackdrop mbAlt && mbAlt.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt;
@@ -412,10 +447,41 @@ public static class UiSelfTestRunner
             bool baseOk = window.SystemBackdrop is MicaBackdrop mbBase && mbBase.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base;
             Record("MicaAppearanceSwitch", altOk && solidOk && baseOk);
 
-            // 10b. Responsive layout check across 1100x720, 1280x720, 1366x768, 1920x1080 in Light & Dark
+            // 10b. End-to-End HTTP /context -> UI ViewModel Update Latency Benchmark (25 trials, p95 target <= 500ms)
+            var detectLatencies = new List<double>();
+            if (!string.IsNullOrEmpty(sessionToken))
+            {
+                for (int i = 0; i < 25; i++)
+                {
+                    var code = $"P{i + 100:D4}";
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/context");
+                    req.Headers.Add("X-GhostCode-Token", sessionToken);
+                    req.Headers.Add("X-GhostCode-Browser", "Edge");
+                    req.Content = new StringContent(
+                        $"{{\"problem_code\":\"{code}\",\"problem_title\":\"Latency Trial {i}\",\"platform\":\"PTIT\",\"url\":\"https://code.ptit.edu.vn/student/question/{code}\",\"tab_active\":true,\"browser_name\":\"Edge\"}}",
+                        Encoding.UTF8,
+                        "application/json");
+                    await http.SendAsync(req);
+                    var ctxDeadline = Environment.TickCount64 + 1500;
+                    while (Environment.TickCount64 < ctxDeadline && vm.ActiveCode != code)
+                        await Task.Delay(5);
+                    sw.Stop();
+                    if (vm.ActiveCode == code)
+                        detectLatencies.Add(sw.Elapsed.TotalMilliseconds);
+                }
+            }
+            detectLatencies.Sort();
+            double detectMedian = detectLatencies.Count > 0 ? detectLatencies[detectLatencies.Count / 2] : 9999;
+            double detectP95 = detectLatencies.Count > 0 ? detectLatencies[(int)Math.Ceiling(detectLatencies.Count * 0.95) - 1] : 9999;
+            Record("EndToEndContextDetectionLatency", detectLatencies.Count == 25 && detectP95 <= 500.0,
+                $"trials={detectLatencies.Count}/25, median={detectMedian:F2}ms, p95={detectP95:F2}ms");
+
+            // 10c. Responsive layout check across 1100x720, 1280x720, 1366x768, 1920x1080 in Light & Dark & Collapsed/Expanded Nav
             bool multiResOk = true;
             if (window.TrayManager is not null && window.Content is FrameworkElement rootEl)
             {
+                var navView = (window.Content as FrameworkElement)?.FindName("RootNav") as NavigationView;
                 var sizes = new[] { (1100, 720), (1280, 720), (1366, 768), (1920, 1080) };
                 foreach (var (w, h) in sizes)
                 {
@@ -423,12 +489,17 @@ public static class UiSelfTestRunner
                     foreach (var themeIdx in new[] { 1, 2 })
                     {
                         vm.SelectedThemeIndex = themeIdx;
+                        if (navView is not null)
+                            navView.IsPaneOpen = w >= 1280;
                         await Task.Delay(70);
                         rootEl.UpdateLayout();
-                        if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16)
+                        bool dashSvOk = window.CurrentPageContent is not DashboardPage curDash
+                            || (curDash.FindName("DashboardScrollViewer") is ScrollViewer dsv && dsv.ScrollableWidth <= 2.0);
+                        if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16 || !dashSvOk)
                             multiResOk = false;
                     }
                 }
+                if (navView is not null) navView.IsPaneOpen = true;
                 vm.SelectedThemeIndex = 0;
                 window.TrayManager.AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 820));
             }
