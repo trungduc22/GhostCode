@@ -6,10 +6,12 @@ using GhostCode.Core.Analysis;
 using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
+using GhostCode.Core.Execution;
 using GhostCode.Core.Models;
 using GhostCode.Core.Monitoring;
 using GhostCode.Core.Notifications;
 using GhostCode.Core.Storage;
+using GhostCode.Core.Toolchains;
 
 namespace GhostCode.Tests;
 
@@ -332,5 +334,47 @@ public sealed class UxOverhaulAcceptanceTests : IDisposable
         await using var drive = new GoogleDriveService(cfg, store, creds);
         var acct = await drive.GetAccountInfoAsync();
         Assert.True(acct.IsConnected);
+    }
+
+    [Fact]
+    public async Task P4_ScenarioG_CompilerErrorSeparatesCompilerOutputFromStdout()
+    {
+        var toolchains = new ToolchainDiscoveryService();
+        var cpp = toolchains.DiscoverToolchains(new GhostCodeConfig())
+            .FirstOrDefault(t => t.Kind.Equals("g++", StringComparison.OrdinalIgnoreCase) && t.IsAvailable);
+        if (cpp is null)
+            return;
+
+        var watchDir = Path.Combine(_root, "Watched");
+        var archiveDir = Path.Combine(_root, "Archive");
+        var readyDir = Path.Combine(_root, "Ready");
+        Directory.CreateDirectory(watchDir);
+        Directory.CreateDirectory(archiveDir);
+        Directory.CreateDirectory(readyDir);
+
+        var cfg = new GhostCodeConfig
+        {
+            ArchiveDir = archiveDir,
+            ReadyDir = readyDir,
+            DatabasePath = Path.Combine(archiveDir, "ghostcode.db"),
+            ExecutionTimeoutMs = 5000,
+            ExecutionMemoryLimitMb = 256
+        };
+
+        await using var store = new SqliteArchiveStore(cfg.DatabasePath);
+        await store.InitializeAsync();
+        var archiver = new LosslessArchiver(cfg, store);
+        var runner = new CodeExecutionService(cfg, store, archiver, toolchains);
+
+        var badCpp = Path.Combine(watchDir, "broken.cpp");
+        const string badSource = "#include <iostream>\nint main(){ std::cout << UNDEFINED_SYMBOL << std::endl; return 0; }\n";
+        await File.WriteAllTextAsync(badCpp, badSource);
+        var arch = await archiver.ProcessFileSaveAsync(badCpp, Encoding.UTF8.GetBytes(badSource), null);
+        Assert.NotNull(arch.Version);
+
+        var res = await runner.ExecuteArchivedVersionAsync(new CodeExecutionRequest(arch.Version!.Id, string.Empty));
+        Assert.Equal(ExecutionStatus.CompileError, res.Status);
+        Assert.True(string.IsNullOrWhiteSpace(res.Stdout));
+        Assert.False(string.IsNullOrWhiteSpace(res.CompilerOutput));
     }
 }

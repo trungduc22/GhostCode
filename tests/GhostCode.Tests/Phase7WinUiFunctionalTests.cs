@@ -101,23 +101,29 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
         {
             "MicaBackdropAttached",
             "SingleRowTitleBarGeometry",
+            "FreshUserOnboardingAndArchiveEmptyState",
             "NavigationViewPages",
             "DashboardBrowsersAboveProblem",
+            "CompactDashboardDevToolsSummary",
             "RepairedSettingsLayout",
             "LightDarkThemeSwitch",
             "BilingualSwitch",
+            "VietnameseLocalizationNoEnglishLeaks",
             "ArchiveAndReadyPathControls",
             "DiagnosticButton",
             "GlobalSearchCtrlKAndArchive",
             "SourcePreviewAndDiagnostics",
             "CopyCodeCommand",
             "LiveCodeRunnerSplitIo",
+            "SingleRunButtonAndSeparatedDiagnostics",
             "RestoreAndIntegrityCheck",
             "RemoveWatchedFolder",
+            "DriveThreeOptionExclusivityAndNoStaleOAuth",
             "CloudControlsAndDpapi",
             "QuickActionsOverlay",
             "VersionDiffAndSamples",
             "MicaAppearanceSwitch",
+            "MultiResolutionAndThemeLayout",
             "SystemTrayAndHideRestore"
         };
         foreach (var key in expectedChecks)
@@ -128,13 +134,15 @@ public sealed class Phase7WinUiFunctionalTests : IDisposable
 
         string[] expectedScreenshots =
         {
+            "00_onboarding_empty.png",
             "01_dashboard.png",
             "02_archive_runner.png",
             "03_settings.png",
             "04_cloud.png",
             "05_dark_dashboard.png",
             "06_quick_actions.png",
-            "07_samples_timeline.png"
+            "07_samples_timeline.png",
+            "08_devtools.png"
         };
         foreach (var file in expectedScreenshots)
         {

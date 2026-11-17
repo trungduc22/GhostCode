@@ -71,11 +71,21 @@ public static class UiSelfTestRunner
             Record("SingleRowTitleBarGeometry", titleRowOk,
                 $"Extends={geo.ExtendsContentIntoTitleBar}, TitleBar=[{geo.TitleBarTop:F1}..{geo.TitleBarBottom:F1}], Search=[{geo.SearchBoxLeft:F1}..{geo.SearchBoxRight:F1}, Y={geo.SearchBoxTop:F1}..{geo.SearchBoxBottom:F1}], LogoY=[{geo.LogoTop:F1}..{geo.LogoBottom:F1}]");
 
-            // 2. Navigate across all 4 NavigationView pages
+            // 2. Scenario A: Fresh User Onboarding Card & Archive Empty State + 5-Page Navigation
+            bool onboardingVisible = vm.OnboardingCardVisibility == Visibility.Visible;
+            await CaptureAsync("00_onboarding_empty.png");
+
             var navOk = window.NavigateToTag("Archive") && window.CurrentPageType == typeof(ArchivePage);
             await Task.Delay(120);
+            bool archiveEmptyOk = vm.ArchiveEmptyStateVisibility == Visibility.Visible && vm.ArchiveWorkspaceVisibility == Visibility.Collapsed;
+            Record("FreshUserOnboardingAndArchiveEmptyState", onboardingVisible && archiveEmptyOk,
+                $"onboarding={onboardingVisible}, archiveEmpty={archiveEmptyOk}");
+
             navOk &= window.NavigateToTag("Cloud") && window.CurrentPageType == typeof(CloudPage);
             await Task.Delay(120);
+            navOk &= window.NavigateToTag("DevTools") && window.CurrentPageType == typeof(DevelopmentToolsPage);
+            await Task.Delay(120);
+            await CaptureAsync("08_devtools.png");
             navOk &= window.NavigateToTag("Settings") && window.CurrentPageType == typeof(SettingsPage);
             await Task.Delay(120);
             navOk &= window.NavigateToTag("Dashboard") && window.CurrentPageType == typeof(DashboardPage);
@@ -138,6 +148,11 @@ public static class UiSelfTestRunner
                 && cardOrderOk;
             Record("DashboardBrowsersAboveProblem", dashOk,
                 $"emptyInit={initialEmptyOk}, connected={vm.ConnectedBrowsers.Count}, preview={vm.ActiveFilenamePreview}, cardOrder={cardOrderOk}");
+
+            bool compactDevToolsOk = window.CurrentPageContent is DashboardPage dp2
+                && dp2.FindName("DevToolsSummaryCard") is FrameworkElement
+                && !string.IsNullOrWhiteSpace(vm.CompactToolchainSummaryText);
+            Record("CompactDashboardDevToolsSummary", compactDevToolsOk, vm.CompactToolchainSummaryText);
             await CaptureAsync("01_dashboard.png");
 
             // 4. Settings: add folder, toggle recursive, refuse ArchiveDir, verify non-squeezed layout
@@ -181,10 +196,23 @@ public static class UiSelfTestRunner
             Record("LightDarkThemeSwitch", themeOk);
 
             vm.SelectedLanguageIndex = 1; // English
-            bool enOk = vm.Strings.NavDashboard == "Dashboard";
+            bool enOk = vm.Strings.NavDashboard == "Dashboard" && vm.Strings.NavCloud == "Drive" && vm.UxStrings.NavDevTools == "Development Tools";
             vm.SelectedLanguageIndex = 0; // Vietnamese
-            bool viOk = vm.Strings.NavDashboard == "Tổng quan";
+            bool viOk = vm.Strings.NavDashboard == "Tổng quan"
+                && vm.Strings.NavCloud == "Drive"
+                && vm.UxStrings.NavDevTools == "Công cụ lập trình"
+                && vm.ExpStrings.SamplesTabLabel == "Test mẫu"
+                && vm.Strings.RunCodeButton == "Chạy"
+                && vm.Strings.CopyCodeButton == "Sao chép code";
             Record("BilingualSwitch", enOk && viOk);
+
+            bool noEnglishLeaksInVi = !vm.TitleBarBrowserBadgeText.Contains("0 Browsers", StringComparison.Ordinal)
+                && !vm.TitleBarDriveBadgeText.Contains("Drive: Local", StringComparison.Ordinal)
+                && !vm.LastSyncTimeText.Contains("Never", StringComparison.Ordinal)
+                && vm.IdeStatuses.All(i => i.StatusBadge is not ("Running" or "Installed" or "Not Installed"))
+                && vm.Toolchains.All(t => t.StatusBadge is not ("Ready" or "Unavailable"));
+            Record("VietnameseLocalizationNoEnglishLeaks", viOk && noEnglishLeaksInVi,
+                $"browser='{vm.TitleBarBrowserBadgeText}', drive='{vm.TitleBarDriveBadgeText}', lastSync='{vm.LastSyncTimeText}'");
 
             // 6. Archive & Ready path updates
             var newReady = Path.Combine(testWorkspaceRoot, "SelfTestReady");
@@ -234,12 +262,20 @@ public static class UiSelfTestRunner
                 vm.IsQuickActionsOpen = false;
                 Record("QuickActionsOverlay", qaOk);
 
-                // Live execution in split I/O panel
+                // Live execution in split I/O panel + single primary Run/Stop button check
+                bool singleRunBtnOk = window.CurrentPageContent is ArchivePage archPage
+                    && archPage.FindName("RunSourceButton") is Button
+                    && archPage.FindName("PanelRunButton") is null
+                    && archPage.FindName("PanelStopButton") is null;
+
                 vm.RunnerTabIndex = 1;
                 vm.StdinText = "123 456\n";
-                await vm.RunCodeCommand.ExecuteAsync(null);
+                await vm.RunOrStopCodeCommand.ExecuteAsync(null);
                 bool runnerOk = vm.StdoutText.Trim() == "579" && vm.IoOutputText.Trim() == "579";
+                bool cleanDiagOk = vm.StderrPanelVisibility == Visibility.Collapsed;
                 Record("LiveCodeRunnerSplitIo", runnerOk, $"stdout='{vm.StdoutText.Trim()}', status='{vm.RunnerStatusText}'");
+                Record("SingleRunButtonAndSeparatedDiagnostics", singleRunBtnOk && runnerOk && cleanDiagOk,
+                    $"singleBtn={singleRunBtnOk}, stdout='{vm.StdoutText.Trim()}', stderrCollapsed={cleanDiagOk}");
                 await CaptureAsync("02_archive_runner.png");
 
                 // Version Diff & Samples / Timeline tab
@@ -286,8 +322,31 @@ public static class UiSelfTestRunner
                 Record("RemoveWatchedFolder", false);
             }
 
-            // 9. Cloud controls + Screenshot
+            // 9. Cloud controls, 3-Option Provider Exclusivity + No Stale OAuth Waiting Text + Screenshot
             window.NavigateToTag("Cloud");
+            await Task.Delay(120);
+
+            vm.SelectedCloudProviderIndex = 2; // LocalOnly ("Không sử dụng")
+            bool localOnlyOk = vm.LocalOnlyCloudCardVisibility == Visibility.Visible
+                && vm.GoogleDriveCardVisibility == Visibility.Collapsed
+                && vm.OneDriveCardVisibility == Visibility.Collapsed
+                && vm.ActiveCloudQueueVisibility == Visibility.Collapsed;
+
+            vm.SelectedCloudProviderIndex = 1; // OneDrive
+            bool oneDriveOk = vm.OneDriveCardVisibility == Visibility.Visible
+                && vm.GoogleDriveCardVisibility == Visibility.Collapsed
+                && vm.LocalOnlyCloudCardVisibility == Visibility.Collapsed
+                && vm.ActiveCloudQueueVisibility == Visibility.Visible;
+
+            vm.SelectedCloudProviderIndex = 0; // Google Drive
+            bool gDriveOk = vm.GoogleDriveCardVisibility == Visibility.Visible
+                && vm.OneDriveCardVisibility == Visibility.Collapsed
+                && vm.LocalOnlyCloudCardVisibility == Visibility.Collapsed
+                && vm.ActiveCloudQueueVisibility == Visibility.Visible
+                && vm.OAuthStageVisibility == Visibility.Collapsed;
+            Record("DriveThreeOptionExclusivityAndNoStaleOAuth", localOnlyOk && oneDriveOk && gDriveOk,
+                $"local={localOnlyOk}, oneDrive={oneDriveOk}, gDrive={gDriveOk}");
+
             await vm.ConnectGoogleCommand.ExecuteAsync(null);
             bool connectGuardOk = vm.InfoBarSeverity == InfoBarSeverity.Warning;
 
@@ -317,6 +376,28 @@ public static class UiSelfTestRunner
             vm.SelectedMicaKindIndex = 0; // Restore Mica Base
             bool baseOk = window.SystemBackdrop is MicaBackdrop mbBase && mbBase.Kind == Microsoft.UI.Composition.SystemBackdrops.MicaKind.Base;
             Record("MicaAppearanceSwitch", altOk && solidOk && baseOk);
+
+            // 10b. Scenario H: Multi-resolution layout check across 1280x720, 1366x768, 1920x1080 in Light & Dark
+            bool multiResOk = true;
+            if (window.TrayManager is not null && window.Content is FrameworkElement rootEl)
+            {
+                var sizes = new[] { (1280, 720), (1366, 768), (1920, 1080) };
+                foreach (var (w, h) in sizes)
+                {
+                    window.TrayManager.AppWindow.Resize(new Windows.Graphics.SizeInt32(w, h));
+                    foreach (var themeIdx in new[] { 1, 2 })
+                    {
+                        vm.SelectedThemeIndex = themeIdx;
+                        await Task.Delay(80);
+                        rootEl.UpdateLayout();
+                        if (rootEl.ActualWidth <= 0 || rootEl.ActualHeight <= 0 || rootEl.ActualWidth > w + 16)
+                            multiResOk = false;
+                    }
+                }
+                vm.SelectedThemeIndex = 0;
+                window.TrayManager.AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 820));
+            }
+            Record("MultiResolutionAndThemeLayout", multiResOk);
 
             // 11. System Tray hide / restore
             bool taskbarPresent = GhostCode.App.Interop.TrayIconManager.IsTaskbarPresent;
