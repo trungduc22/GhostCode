@@ -388,10 +388,23 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         return _activeContext;
     }
 
+    public bool ShouldRunWin32FallbackScan()
+    {
+        lock (_authLock)
+        {
+            return !HasFreshExtensionSessionLocked();
+        }
+    }
+
     private bool HasFreshExtensionSessionLocked()
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        return _browserSessions.Values.Any(s => now - s.LastHeartbeatUnixMs <= 30_000);
+        foreach (var kv in _browserSessions)
+        {
+            if (now - kv.Value.LastHeartbeatUnixMs <= 30_000)
+                return true;
+        }
+        return false;
     }
 
     private async Task Win32ScannerLoopAsync(CancellationToken ct)
@@ -400,14 +413,26 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         {
             try
             {
-                ForceWin32ScanNow();
-                bool hasExtSession;
-                lock (_ctxLock)
+                bool shouldScan = ShouldRunWin32FallbackScan();
+                if (shouldScan)
                 {
-                    hasExtSession = HasFreshExtensionSessionLocked();
+                    ForceWin32ScanNow();
                 }
-                var delaySeconds = hasExtSession ? 6 : 4;
-                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
+                else
+                {
+                    // Check context expiry cheaply without enumerating desktop windows or OS processes
+                    bool notifyExpired = false;
+                    lock (_ctxLock)
+                    {
+                        var had = _activeContext is not null;
+                        if (had && GetActiveContextLocked() is null)
+                            notifyExpired = true;
+                    }
+                    if (notifyExpired)
+                        ContextChanged?.Invoke(null);
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(shouldScan ? 6 : 10), ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1139,17 +1164,24 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
                     return true;
                 var title = sb.ToString();
 
-                GetWindowThreadProcessId(hWnd, out uint pid);
-                string procName = string.Empty;
-                try
-                {
-                    using var proc = System.Diagnostics.Process.GetProcessById((int)pid);
-                    procName = proc.ProcessName.ToLowerInvariant();
-                }
-                catch { }
-
                 var lowerTitle = title.ToLowerInvariant();
-                bool isBrowser = procName is "msedge" or "thorium"
+                bool titleLooksLikeBrowser = lowerTitle.Contains("microsoft\u200b edge")
+                    || lowerTitle.Contains("microsoft edge")
+                    || lowerTitle.Contains("- thorium")
+                    || lowerTitle.Contains("google chrome")
+                    || lowerTitle.Contains("mozilla firefox")
+                    || lowerTitle.Contains("ptit")
+                    || lowerTitle.Contains("codeforces")
+                    || lowerTitle.Contains("leetcode")
+                    || lowerTitle.Contains("vnoj")
+                    || lowerTitle.Contains("hackerrank");
+                if (!titleLooksLikeBrowser)
+                    return true;
+
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                string procName = GhostCode.Core.Monitoring.WindowsProcessSnapshot.TryGetProcessNameByPid((int)pid)?.ToLowerInvariant() ?? string.Empty;
+
+                bool isBrowser = procName is "msedge" or "thorium" or "chrome" or "firefox"
                     || lowerTitle.Contains("microsoft\u200b edge")
                     || lowerTitle.Contains("microsoft edge")
                     || lowerTitle.Contains("- thorium");

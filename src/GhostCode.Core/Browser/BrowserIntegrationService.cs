@@ -20,20 +20,8 @@ public sealed class WindowsBrowserEnvironmentProbe : IBrowserEnvironmentProbe
 {
     public bool FileExists(string path) => !string.IsNullOrWhiteSpace(path) && File.Exists(path);
 
-    public IReadOnlyCollection<string> GetRunningProcessNames()
-    {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            foreach (var p in Process.GetProcesses())
-            {
-                try { set.Add(p.ProcessName); } catch { }
-                finally { p.Dispose(); }
-            }
-        }
-        catch { }
-        return set;
-    }
+    public IReadOnlyCollection<string> GetRunningProcessNames() =>
+        WindowsProcessSnapshot.GetRunningProcessNames();
 
     public string? GetFileVersion(string path)
     {
@@ -76,6 +64,10 @@ public sealed class BrowserIntegrationService
     private readonly IBrowserEnvironmentProbe _probe;
     private readonly object _stateLock = new();
     private readonly HashSet<BrowserKind> _guidedInstalling = new();
+    private readonly Dictionary<BrowserKind, (string DisplayName, string? ExePath, string? Version, string ProcName)> _staticInstallCache = new();
+    private string _cachedCustomPathsKey = string.Empty;
+    private long _staticInstallCacheExpiresAtMs;
+    private readonly Dictionary<BrowserKind, (string Path, long LastWriteTicks, long Length, bool Detected)> _profileExtCache = new();
 
     public BrowserIntegrationService(IBrowserEnvironmentProbe? probe = null)
     {
@@ -122,22 +114,54 @@ public sealed class BrowserIntegrationService
         return Path.Combine(baseExtRoot, kind.ToString().ToLowerInvariant());
     }
 
-    public List<(BrowserKind Kind, string DisplayName, bool IsInstalled, bool IsRunning, string? ExePath, string? Version)> DiscoverInstalledBrowsers(GhostCodeConfig config)
+    public List<(BrowserKind Kind, string DisplayName, bool IsInstalled, bool IsRunning, string? ExePath, string? Version)> DiscoverInstalledBrowsers(
+        GhostCodeConfig config,
+        bool forceRescan = false)
     {
         var running = _probe.GetRunningProcessNames();
-        var list = new List<(BrowserKind, string, bool, bool, string?, string?)>();
-        foreach (var kind in new[] { BrowserKind.Chrome, BrowserKind.Edge, BrowserKind.Firefox, BrowserKind.Thorium })
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var customKey = string.Join("|", config.CustomBrowserPaths.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}"));
+
+        bool refreshStatic;
+        lock (_stateLock)
         {
-            var (name, exe, ver, isRun) = ProbeSingle(kind, config, running);
-            list.Add((kind, name, exe is not null, isRun, exe, ver));
+            refreshStatic = forceRescan
+                || _staticInstallCache.Count == 0
+                || nowMs >= _staticInstallCacheExpiresAtMs
+                || !string.Equals(_cachedCustomPathsKey, customKey, StringComparison.Ordinal);
+        }
+
+        if (refreshStatic)
+        {
+            var fresh = new Dictionary<BrowserKind, (string DisplayName, string? ExePath, string? Version, string ProcName)>();
+            foreach (var kind in new[] { BrowserKind.Chrome, BrowserKind.Edge, BrowserKind.Firefox, BrowserKind.Thorium })
+                fresh[kind] = ProbeSingleStatic(kind, config);
+
+            lock (_stateLock)
+            {
+                _staticInstallCache.Clear();
+                foreach (var kv in fresh)
+                    _staticInstallCache[kv.Key] = kv.Value;
+                _cachedCustomPathsKey = customKey;
+                _staticInstallCacheExpiresAtMs = nowMs + 60_000;
+            }
+        }
+
+        var list = new List<(BrowserKind, string, bool, bool, string?, string?)>(4);
+        lock (_stateLock)
+        {
+            foreach (var kind in new[] { BrowserKind.Chrome, BrowserKind.Edge, BrowserKind.Firefox, BrowserKind.Thorium })
+            {
+                var entry = _staticInstallCache[kind];
+                list.Add((kind, entry.DisplayName, entry.ExePath is not null, running.Contains(entry.ProcName), entry.ExePath, entry.Version));
+            }
         }
         return list;
     }
 
-    private (string DisplayName, string? ExePath, string? Version, bool IsRunning) ProbeSingle(
+    private (string DisplayName, string? ExePath, string? Version, string ProcName) ProbeSingleStatic(
         BrowserKind kind,
-        GhostCodeConfig config,
-        IReadOnlyCollection<string> running)
+        GhostCodeConfig config)
     {
         var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
@@ -190,7 +214,7 @@ public sealed class BrowserIntegrationService
 
         var found = candidates.FirstOrDefault(p => _probe.FileExists(p));
         var ver = found is not null ? _probe.GetFileVersion(found) : null;
-        return (displayName, found, ver, running.Contains(procName));
+        return (displayName, found, ver, procName);
     }
 
     private void AddRegistryAppPath(List<string> candidates, string exeName)
@@ -395,10 +419,28 @@ public sealed class BrowserIntegrationService
             {
                 if (!File.Exists(prefPath))
                     continue;
+                var fi = new FileInfo(prefPath);
+                lock (_stateLock)
+                {
+                    if (_profileExtCache.TryGetValue(kind, out var cached)
+                        && string.Equals(cached.Path, prefPath, StringComparison.OrdinalIgnoreCase)
+                        && cached.LastWriteTicks == fi.LastWriteTimeUtc.Ticks
+                        && cached.Length == fi.Length)
+                    {
+                        if (cached.Detected)
+                            return true;
+                        continue;
+                    }
+                }
                 using var fs = new FileStream(prefPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var sr = new StreamReader(fs, Encoding.UTF8);
                 var text = sr.ReadToEnd();
-                if (text.Contains(ChromiumDeterministicExtensionId, StringComparison.OrdinalIgnoreCase))
+                bool detected = text.Contains(ChromiumDeterministicExtensionId, StringComparison.OrdinalIgnoreCase);
+                lock (_stateLock)
+                {
+                    _profileExtCache[kind] = (prefPath, fi.LastWriteTimeUtc.Ticks, fi.Length, detected);
+                }
+                if (detected)
                     return true;
             }
             catch { }

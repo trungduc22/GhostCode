@@ -155,7 +155,10 @@ public sealed class GoogleDriveService : ICloudArchiveProvider, IAsyncDisposable
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(20), ct);
+                bool activeProvider = !_config.SyncPausedManually
+                    && _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive
+                    && _config.DriveEnabled;
+                await Task.Delay(TimeSpan.FromSeconds(activeProvider ? 20 : 60), ct);
                 if (!_config.SyncPausedManually
                     && _config.PrimaryCloudProvider == CloudProviderKind.GoogleDrive
                     && _config.DriveEnabled

@@ -909,7 +909,8 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
                 (SELECT COUNT(*) FROM upload_queue WHERE status = 'Pending' OR status = 'Uploading'),
                 (SELECT COUNT(*) FROM upload_queue WHERE status = 'Failed'),
                 (SELECT COUNT(*) FROM upload_queue WHERE status = 'Synced'),
-                (SELECT MAX(updated_at) FROM upload_queue WHERE status = 'Synced');
+                (SELECT MAX(updated_at) FROM upload_queue WHERE status = 'Synced'),
+                (SELECT COUNT(*) FROM archive_versions WHERE is_local_available = 0);
             """;
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         await reader.ReadAsync(ct);
@@ -918,7 +919,43 @@ public sealed class SqliteArchiveStore : IAsyncDisposable
             reader.GetInt32(1),
             reader.GetInt32(2),
             reader.GetInt32(3),
-            reader.IsDBNull(4) ? null : reader.GetInt64(4));
+            reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            reader.GetInt32(5));
+    }
+
+    public async Task<LatestBackupSummary?> GetLatestBackupSummaryAsync(CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, file_name, platform, problem_code, source_path, archive_path, is_local_available, drive_file_id, is_conflict, created_at
+            FROM archive_versions
+            ORDER BY created_at DESC, version_num DESC
+            LIMIT 1;
+            """;
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return null;
+
+        bool isLocal = reader.GetInt32(6) != 0;
+        string? driveId = reader.IsDBNull(7) ? null : reader.GetString(7);
+        bool isConflict = reader.GetInt32(8) != 0;
+        var avail = isConflict
+            ? VersionAvailability.Conflict
+            : (!isLocal
+                ? VersionAvailability.CloudOnly
+                : (!string.IsNullOrEmpty(driveId) ? VersionAvailability.Synced : VersionAvailability.LocalOnly));
+
+        return new LatestBackupSummary(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5),
+            avail,
+            reader.GetInt64(9));
     }
 
     public async Task RecordArchiveHistoryEventAsync(ArchiveHistoryEvent ev, CancellationToken ct = default)

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
 using GhostCode.Core.Models;
+using GhostCode.Core.Monitoring;
 using Microsoft.Win32;
 
 namespace GhostCode.Core.Toolchains;
@@ -42,20 +43,8 @@ public sealed class WindowsToolchainEnvironmentProbe : IToolchainEnvironmentProb
         catch { return Enumerable.Empty<string>(); }
     }
 
-    public IReadOnlyCollection<string> GetRunningProcessNames()
-    {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            foreach (var p in Process.GetProcesses())
-            {
-                try { set.Add(p.ProcessName); } catch { }
-                finally { p.Dispose(); }
-            }
-        }
-        catch { }
-        return set;
-    }
+    public IReadOnlyCollection<string> GetRunningProcessNames() =>
+        WindowsProcessSnapshot.GetRunningProcessNames();
 
     public string? GetFileVersion(string path)
     {

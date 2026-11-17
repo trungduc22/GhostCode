@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace GhostCode.Core.Monitoring;
 
 public sealed record ActiveIdeStatus(
@@ -26,42 +24,12 @@ public static class IdeProcessDetector
 {
     public static ActiveIdeStatus Detect()
     {
-        bool devcpp = false, vscode = false, python = false, edge = false, thorium = false;
-        try
-        {
-            foreach (var proc in Process.GetProcesses())
-            {
-                try
-                {
-                    var name = proc.ProcessName.ToLowerInvariant();
-                    switch (name)
-                    {
-                        case "devcpp":
-                            devcpp = true;
-                            break;
-                        case "code":
-                            vscode = true;
-                            break;
-                        case "python" or "pythonw":
-                            python = true;
-                            break;
-                        case "msedge":
-                            edge = true;
-                            break;
-                        case "thorium":
-                            thorium = true;
-                            break;
-                    }
-                }
-                catch { }
-                finally
-                {
-                    proc.Dispose();
-                }
-            }
-        }
-        catch { }
-
-        return new ActiveIdeStatus(devcpp, vscode, python, edge, thorium);
+        var names = WindowsProcessSnapshot.GetRunningProcessNames();
+        return new ActiveIdeStatus(
+            names.Contains("devcpp"),
+            names.Contains("code"),
+            names.Contains("python") || names.Contains("pythonw"),
+            names.Contains("msedge"),
+            names.Contains("thorium"));
     }
 }

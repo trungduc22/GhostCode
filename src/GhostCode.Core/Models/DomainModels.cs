@@ -329,12 +329,23 @@ public sealed record MonitorEventRecord(
     string Message,
     long OccurredAtUnixMs);
 
+public sealed record LatestBackupSummary(
+    string VersionId,
+    string FileName,
+    string Platform,
+    string? ProblemCode,
+    string SourcePath,
+    string ArchivePath,
+    VersionAvailability Availability,
+    long CreatedAtUnixMs);
+
 public sealed record ArchiveStats(
     int TotalVersions,
     int PendingUploads,
     int FailedUploads,
     int SyncedUploads,
-    long? LastSuccessfulSyncUnixMs);
+    long? LastSuccessfulSyncUnixMs,
+    int CloudOnlyVersions = 0);
 
 public sealed class GhostCodeConfig
 {

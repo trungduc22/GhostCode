@@ -89,8 +89,7 @@ public sealed class BackupHealthAndRecoveryService
         var (dbOk, dbDetail) = await _store.CheckDatabaseHealthAsync(ct);
 
         var stats = await _store.GetStatsAsync(ct);
-        var allVersions = await _store.QueryVersionsAsync(limit: 5000, ct: ct);
-        int cloudOnlyPending = allVersions.Count(v => !v.IsLocalAvailable);
+        int cloudOnlyPending = stats.CloudOnlyVersions;
         bool isVi = _config.Language == UiLanguage.Vi;
 
         BackupProtectionState state;

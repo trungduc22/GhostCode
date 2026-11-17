@@ -35,6 +35,7 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
     private readonly List<(WatchedFolderConfig Config, FileSystemWatcher? Watcher, string? Error, bool CoveredByParent)> _watchers = new();
     private readonly ConcurrentDictionary<string, (long DueMs, string EventType, string FolderPath)> _pending =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _pendingSignal = new(0, 1);
 
     private CancellationTokenSource? _cts;
     private Task? _workerTask;
@@ -263,6 +264,10 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         var full = Path.GetFullPath(filePath);
         var dueMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 250;
         _pending.AddOrUpdate(full, (dueMs, eventType, watchedRoot), (_, _) => (dueMs, eventType, watchedRoot));
+        if (_pendingSignal.CurrentCount == 0)
+        {
+            try { _pendingSignal.Release(); } catch (SemaphoreFullException) { }
+        }
     }
 
     private async Task DebounceWorkerAsync(CancellationToken ct)
@@ -271,8 +276,31 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         {
             try
             {
-                await Task.Delay(120, ct);
+                if (_pending.IsEmpty)
+                {
+                    await _pendingSignal.WaitAsync(ct);
+                    continue;
+                }
+
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long nextDueMs = long.MaxValue;
+                foreach (var kv in _pending)
+                {
+                    if (kv.Value.DueMs < nextDueMs)
+                        nextDueMs = kv.Value.DueMs;
+                }
+
+                if (nextDueMs == long.MaxValue)
+                    continue;
+
+                if (nextDueMs > now)
+                {
+                    int waitMs = (int)Math.Min(nextDueMs - now, 250);
+                    await _pendingSignal.WaitAsync(waitMs, ct);
+                    continue;
+                }
+
+                now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 foreach (var kv in _pending.ToArray())
                 {
                     if (kv.Value.DueMs <= now && _pending.TryRemove(kv.Key, out var item))
@@ -567,5 +595,9 @@ public sealed class MultiDirectoryMonitor : IAsyncDisposable
         cts.Dispose();
     }
 
-    public ValueTask DisposeAsync() => new(StopAsync());
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
+        _pendingSignal.Dispose();
+    }
 }
