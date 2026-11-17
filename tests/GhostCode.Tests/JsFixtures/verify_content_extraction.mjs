@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -209,6 +210,17 @@ class Doc {
   );
   assert.equal(details.interactive_or_custom, true);
   assert.equal(details.samples.length, 0);
+}
+
+// 5. Verify fast SPA hooks + zero 5s blind DOM polling + fast HMAC before native spawn
+{
+  const bgText = fs.readFileSync(path.resolve(__dirname, "../../../browser-extension/background.js"), "utf8");
+  const ctText = fs.readFileSync(contentPath, "utf8");
+  assert.ok(!ctText.includes("setInterval("), "content.js must not run blind setInterval DOM polling");
+  assert.ok(ctText.includes("pushState") && ctText.includes("visibilitychange"), "content.js must use event-driven SPA & visibility hooks");
+  const idxPairing = bgText.indexOf("loadLocalPairing(");
+  const idxNative = bgText.indexOf("tryNativeHandshake()", bgText.indexOf("async function ensureToken"));
+  assert.ok(idxPairing > 0 && idxNative > idxPairing, "background.js ensureToken must authenticate via fast HMAC pairing before slow native spawn fallback");
 }
 
 console.log("ALL_CONTENT_JS_EXTRACTION_FIXTURES_PASSED");

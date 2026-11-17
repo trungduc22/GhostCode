@@ -741,7 +741,7 @@ public sealed class AuthenticatedBrowserBridge : IAsyncDisposable
         bool updated;
         lock (_ctxLock)
         {
-            var key = $"{parsed.Platform}|{parsed.Code}|{parsed.Title}|{parsed.BrowserName}";
+            var key = $"{parsed.Platform}|{parsed.Code}|{parsed.Title}|{parsed.Url}|{parsed.BrowserName}";
             if (key == _lastDedupKey && nowMs - _lastDedupAtMs < 5_000)
             {
                 _activeContext = parsed with { SeenAtUnixMs = nowMs };

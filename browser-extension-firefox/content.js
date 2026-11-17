@@ -479,6 +479,16 @@
     }
   }
 
+  function canonicalizeUrl(rawUrl) {
+    try {
+      const u = new URL(rawUrl);
+      u.hash = "";
+      return u.toString();
+    } catch {
+      return rawUrl || "";
+    }
+  }
+
   function syncContext(force) {
     const ctx = extractContext();
     if (!ctx) return;
@@ -486,17 +496,27 @@
     const taggedTitle = ctx.problem_title
       ? `[${ctx.problem_code}] ${ctx.problem_title} - ${ctx.platform}`
       : `[${ctx.problem_code}] - ${ctx.platform}`;
-    if (document.title !== taggedTitle) {
+    if (document.title !== taggedTitle && ctx.problem_title) {
       document.title = taggedTitle;
     }
 
-    const key = `${ctx.problem_code}|${ctx.problem_title}|${ctx.url}`;
+    const canon = canonicalizeUrl(ctx.url);
+    const key = `${ctx.platform}|${ctx.problem_code}|${ctx.problem_title}|${canon}`;
     if (force || key !== lastSentKey) {
       lastSentKey = key;
       sendViaBackground(ctx);
+      syncProblemAndVerdicts(ctx, true);
+      return;
     }
 
-    syncProblemAndVerdicts(ctx, force);
+    syncProblemAndVerdicts(ctx, false);
+  }
+
+  function handleUrlOrDomChange(force = false) {
+    const cur = location.href;
+    const urlChanged = cur !== lastUrl;
+    if (urlChanged) lastUrl = cur;
+    syncContext(force || urlChanged);
   }
 
   window.__autonameSyncNow = syncContext;
@@ -510,21 +530,36 @@
     });
   }
 
-  setInterval(() => {
-    const changed = location.href !== lastUrl;
-    if (changed) lastUrl = location.href;
-    syncContext(changed);
-  }, 5000);
-
-  const obs = new MutationObserver(() => {
-    if (mutationTimer) clearTimeout(mutationTimer);
-    mutationTimer = setTimeout(() => {
-      const changed = location.href !== lastUrl;
-      if (changed) lastUrl = location.href;
-      syncContext(changed);
-    }, 300);
+  // Event-driven SPA & tab visibility navigation hooks (zero 5s blind DOM polling)
+  const wrapHistoryMethod = (fnName) => {
+    try {
+      const orig = history[fnName];
+      if (typeof orig === "function") {
+        history[fnName] = function () {
+          const ret = orig.apply(this, arguments);
+          queueMicrotask(() => handleUrlOrDomChange(true));
+          return ret;
+        };
+      }
+    } catch {}
+  };
+  wrapHistoryMethod("pushState");
+  wrapHistoryMethod("replaceState");
+  window.addEventListener("popstate", () => handleUrlOrDomChange(true));
+  window.addEventListener("hashchange", () => handleUrlOrDomChange(true));
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) handleUrlOrDomChange(false);
   });
-  if (document.body) {
-    obs.observe(document.body, { childList: true, subtree: true });
+
+  // Scoped MutationObserver with 200ms debounce so irrelevant header/clock/ad churn does not rescan DOM
+  const targetNode = document.querySelector(
+    ".submit__des, .problem-statement, [data-track-load='description_content'], .challenge-body-html, main"
+  ) || document.body;
+  if (targetNode) {
+    const obs = new MutationObserver(() => {
+      if (mutationTimer) clearTimeout(mutationTimer);
+      mutationTimer = setTimeout(() => handleUrlOrDomChange(false), 200);
+    });
+    obs.observe(targetNode, { childList: true, subtree: true });
   }
 })();

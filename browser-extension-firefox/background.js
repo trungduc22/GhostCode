@@ -7,6 +7,9 @@ let sessionToken = "";
 let sessionExpiresAt = 0;
 let lastSentKey = "";
 let lastSentAt = 0;
+let lastHeartbeatAt = 0;
+let cachedPairing = null;
+let inflightKey = "";
 
 function cleanText(raw) {
   return (raw || "").replace(/\s+/g, " ").trim();
@@ -126,7 +129,8 @@ async function tryNativeHandshake() {
   }
 }
 
-async function loadLocalPairing() {
+async function loadLocalPairing(forceReload = false) {
+  if (!forceReload && cachedPairing) return cachedPairing;
   try {
     const url = ext.runtime.getURL("pairing.generated.json");
     const resp = await fetch(url);
@@ -134,6 +138,7 @@ async function loadLocalPairing() {
     const data = await resp.json();
     if (!data || !data.pairing_secret || !data.pairing_id) return null;
     if (data.port) activePort = data.port;
+    cachedPairing = data;
     return data;
   } catch {
     return null;
@@ -145,38 +150,38 @@ async function ensureToken(forceRefresh = false) {
     return sessionToken;
   }
 
+  const pairing = await loadLocalPairing(forceRefresh);
+  if (pairing) {
+    const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+    const nonce = Array.from(nonceBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const timestamp = Date.now();
+    const proof = await computeHmacHex(pairing.pairing_secret, `${nonce}:${timestamp}`);
+
+    try {
+      const resp = await fetch(`http://127.0.0.1:${activePort}/handshake`, {
+        method: "POST",
+        headers: buildHeaders({
+          "X-GhostCode-Pairing-Id": pairing.pairing_id,
+          "X-GhostCode-Nonce": nonce,
+          "X-GhostCode-Timestamp": String(timestamp),
+          "X-GhostCode-Proof": proof
+        }),
+        body: "{}"
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.session_token) {
+          sessionToken = data.session_token;
+          const ttlMs = (data.expires_in || 300) * 1000;
+          sessionExpiresAt = Date.now() + Math.max(30_000, ttlMs - 15_000);
+          return sessionToken;
+        }
+      }
+    } catch {}
+  }
+
   const nativeTok = await tryNativeHandshake();
   if (nativeTok) return nativeTok;
-
-  const pairing = await loadLocalPairing();
-  if (!pairing) return "";
-
-  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
-  const nonce = Array.from(nonceBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-  const timestamp = Date.now();
-  const proof = await computeHmacHex(pairing.pairing_secret, `${nonce}:${timestamp}`);
-
-  try {
-    const resp = await fetch(`http://127.0.0.1:${activePort}/handshake`, {
-      method: "POST",
-      headers: buildHeaders({
-        "X-GhostCode-Pairing-Id": pairing.pairing_id,
-        "X-GhostCode-Nonce": nonce,
-        "X-GhostCode-Timestamp": String(timestamp),
-        "X-GhostCode-Proof": proof
-      }),
-      body: "{}"
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data && data.session_token) {
-        sessionToken = data.session_token;
-        const ttlMs = (data.expires_in || 300) * 1000;
-        sessionExpiresAt = Date.now() + Math.max(30_000, ttlMs - 15_000);
-        return sessionToken;
-      }
-    }
-  } catch {}
   return "";
 }
 
@@ -200,13 +205,15 @@ async function postAuthenticated(path, bodyObj) {
         });
       }
     }
+    if (resp && resp.ok) lastHeartbeatAt = Date.now();
     return resp;
   } catch {
     return null;
   }
 }
 
-async function sendHeartbeat() {
+async function sendHeartbeat(force = false) {
+  if (!force && Date.now() - lastHeartbeatAt < 8000) return;
   await postAuthenticated("/heartbeat", {
     browser_name: "Firefox",
     ext_version: EXT_VERSION,
@@ -215,8 +222,9 @@ async function sendHeartbeat() {
 }
 
 async function clearContextInApp() {
-  if (!lastSentKey) return;
+  if (!lastSentKey && !inflightKey) return;
   lastSentKey = "";
+  inflightKey = "";
   lastSentAt = 0;
   await postAuthenticated("/context/clear", {});
 }
@@ -225,20 +233,25 @@ async function postToApp(payload, tabActive) {
   if (!payload || !payload.problem_code || !payload.url || !tabActive) return;
   const now = Date.now();
   const key = `${payload.platform}|${payload.problem_code}|${payload.problem_title}|${payload.url}`;
-  if (key === lastSentKey && now - lastSentAt < 15000) return;
+  if ((key === lastSentKey && now - lastSentAt < 15000) || key === inflightKey) return;
+  inflightKey = key;
 
-  const resp = await postAuthenticated("/context", {
-    problem_code: payload.problem_code,
-    problem_title: payload.problem_title || "",
-    platform: payload.platform || "",
-    url: payload.url || "",
-    tab_active: true,
-    timestamp: now,
-    browser_name: "Firefox"
-  });
-  if (resp && resp.ok) {
-    lastSentKey = key;
-    lastSentAt = now;
+  try {
+    const resp = await postAuthenticated("/context", {
+      problem_code: payload.problem_code,
+      problem_title: payload.problem_title || "",
+      platform: payload.platform || "",
+      url: payload.url || "",
+      tab_active: true,
+      timestamp: now,
+      browser_name: "Firefox"
+    });
+    if (resp && resp.ok) {
+      lastSentKey = key;
+      lastSentAt = Date.now();
+    }
+  } finally {
+    if (inflightKey === key) inflightKey = "";
   }
 }
 
@@ -342,7 +355,7 @@ if (ext.windows && ext.windows.onFocusChanged) {
   });
 }
 
-setInterval(sendHeartbeat, 4000);
-setInterval(scanFocusedActiveTab, 5000);
-sendHeartbeat();
+setInterval(() => sendHeartbeat(false), 10000);
+setInterval(scanFocusedActiveTab, 12000);
+sendHeartbeat(true);
 scanFocusedActiveTab();
