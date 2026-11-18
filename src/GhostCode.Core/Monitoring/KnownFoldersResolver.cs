@@ -45,9 +45,12 @@ public static class KnownFoldersResolver
     {
         if (string.IsNullOrWhiteSpace(path))
             return true;
+        var trimmed = path.Trim();
+        if (trimmed.Length == 2 && char.IsLetter(trimmed[0]) && trimmed[1] == ':')
+            return true;
         try
         {
-            var full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var full = Path.GetFullPath(trimmed).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             var root = Path.GetPathRoot(full)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             return string.Equals(full, root, StringComparison.OrdinalIgnoreCase);
         }

@@ -215,14 +215,16 @@ public sealed class Phase3And4BrowserAndToolchainTests : IDisposable
         Assert.True(gpp.IsAvailable, gpp.StatusDetail);
         Assert.True(py.IsAvailable, py.StatusDetail);
         Assert.Contains(new[] { "-std=c++17", "-std=c++14", "-std=c++11" }, flag => gpp.DefaultFlags.Contains(flag, StringComparison.Ordinal));
-        Assert.Contains(ides, i => i.Name == "Dev-C++" && i.IsInstalled);
-        Assert.Contains(ides, i => i.Name == "Visual Studio Code" && i.IsInstalled);
 
-        // Mocked PyCharm & Visual Studio discovery (for absent IDEs on current host)
+        // Mocked Dev-C++, VS Code, PyCharm & Visual Studio discovery (deterministic on clean CI runners without GUI IDEs)
         var mock = new MockToolchainProbe();
+        const string devCppExe = @"C:\Program Files (x86)\Embarcadero\Dev-Cpp\devcpp.exe";
+        const string vscodeExe = @"C:\Users\Test\AppData\Local\Programs\Microsoft VS Code\Code.exe";
         const string pyCharmExe = @"C:\JetBrains\PyCharm 2024.3\bin\pycharm64.exe";
         const string devenvExe = @"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\devenv.exe";
         const string mockPy = @"C:\Python312\python.exe";
+        mock.ExistingPaths.Add(devCppExe);
+        mock.ExistingPaths.Add(vscodeExe);
         mock.ExistingPaths.Add(pyCharmExe);
         mock.ExistingPaths.Add(devenvExe);
         mock.ExistingPaths.Add(mockPy);
@@ -237,9 +239,17 @@ public sealed class Phase3And4BrowserAndToolchainTests : IDisposable
         var cfg = new GhostCodeConfig
         {
             PythonInterpreterPath = mockPy,
-            CustomIdePaths = { ["PyCharm"] = pyCharmExe, ["Visual Studio"] = devenvExe }
+            CustomIdePaths =
+            {
+                ["Dev-C++"] = devCppExe,
+                ["VS Code"] = vscodeExe,
+                ["PyCharm"] = pyCharmExe,
+                ["Visual Studio"] = devenvExe
+            }
         };
         var (mockIdes, _) = mockSvc.DiscoverAll(cfg);
+        Assert.True(mockIdes.Single(i => i.Name == "Dev-C++").IsInstalled);
+        Assert.True(mockIdes.Single(i => i.Name == "Visual Studio Code").IsInstalled);
         Assert.True(mockIdes.Single(i => i.Name == "PyCharm").IsInstalled);
         Assert.True(mockIdes.Single(i => i.Name == "Visual Studio").IsInstalled);
     }
