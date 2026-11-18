@@ -22,7 +22,9 @@ jobs:
   build-and-release:
     name: Build, Package & Release (win-x64)
     runs-on: windows-latest
-    shell: pwsh
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - name: Checkout repository
@@ -188,12 +190,14 @@ jobs:
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: GhostCode ${{ env.TAG_NAME }}
           body_path: artifacts/Release/RELEASE_NOTES.md
           prerelease: ${{ env.IS_PRERELEASE == 'true' }}
-          make_latest: ${{ env.IS_PRERELEASE != 'true' }}
+          make_latest: ${{ env.IS_PRERELEASE == 'true' && 'false' || 'true' }}
           fail_on_unmatched_files: true
           files: |
             artifacts/Release/GhostCode-Setup-x64.exe
