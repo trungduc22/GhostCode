@@ -1,0 +1,43 @@
+name: NativeShellKit migration checks
+
+on:
+  push:
+    branches: [migration/nativeshellkit-ghostcode]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/checkout@v4
+        with:
+          repository: trungduc22/NativeShellKit
+          ref: 2a73d5f5d3772d0943ed362f18bd45ecaf8278ae
+          path: artifacts/m12/sdk-source
+          persist-credentials: false
+      - name: Prepare pinned SDK feed
+        shell: pwsh
+        run: ./artifacts/m12/sdk-source/packaging/Pack-NuGet.ps1 -OutputDir (Join-Path $PWD 'artifacts/m12/sdk-feed')
+      - name: Build GhostCode
+        run: dotnet build GhostCode.sln -c Release
+      - name: Archive and diff regression
+        run: dotnet test tests/GhostCode.Tests -c Release --no-build --filter "FullyQualifiedName~PhaseBArchiverTests|FullyQualifiedName~ArchiveDiffEngineTests"
+      - name: Run real WinUI with isolated app data
+        shell: pwsh
+        run: |
+          $exe = 'src/GhostCode.App/bin/x64/Release/net10.0-windows10.0.19041.0/win-x64/GhostCode.App.exe'
+          ./packaging/Test-M12Gui.ps1 -Application $exe -ReportDirectory (Join-Path $env:RUNNER_TEMP 'm12-gui')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m12-ghostcode-winui
+          path: |
+            ${{ runner.temp }}/m12-gui/checks.json
+            ${{ runner.temp }}/m12-gui/screenshots
+          if-no-files-found: warn

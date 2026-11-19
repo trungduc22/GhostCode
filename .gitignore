@@ -26,3 +26,4 @@ browser-extension-firefox/pairing.generated.json
 artifacts/Release/
 artifacts/*.zip
 .worktrees/
+/artifacts/m12/
