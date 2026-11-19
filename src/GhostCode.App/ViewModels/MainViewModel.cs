@@ -16,6 +16,7 @@ using GhostCode.Core.Storage;
 using GhostCode.Core.Toolchains;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ObservableCollectionSync = NativeShellKit.WinUI.Mvvm.ObservableCollectionSync;
 
 namespace GhostCode.App.ViewModels;
 
@@ -906,12 +907,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _suppressCollectionResetSelection = true;
         try
         {
-            SelectedFileVersions.Clear();
-            foreach (var v in ordered)
-            {
-                statusMap.TryGetValue(v.Id, out var qSt);
-                SelectedFileVersions.Add(new ArchiveVersionRow(v, _config.Language, qSt, _config.PrimaryCloudProvider));
-            }
+            var desiredVersions = ordered.Select(version => new ArchiveVersionRow(version, _config.Language,
+                statusMap.TryGetValue(version.Id, out var uploadStatus) ? uploadStatus : null,
+                _config.PrimaryCloudProvider)).ToArray();
+            ObservableCollectionSync.ApplyKeyedDiff(SelectedFileVersions, desiredVersions, row => row.Id);
 
             pick = preferredVersionId is not null
                 ? SelectedFileVersions.FirstOrDefault(v => v.Id == preferredVersionId)

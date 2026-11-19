@@ -2,6 +2,7 @@ using GhostCode.Core.Analysis;
 using GhostCode.Core.Models;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using NativeShellKit.WinUI.Mvvm;
 
 namespace GhostCode.App.ViewModels;
 
@@ -190,20 +191,19 @@ public sealed partial class MainViewModel
         _suppressCollectionResetSelection = true;
         try
         {
-            ArchiveVersions.Clear();
-            foreach (var v in list)
-            {
-                _cachedUploadStatuses.TryGetValue(v.Id, out var qSt);
-                ArchiveVersions.Add(new ArchiveVersionRow(v, _config.Language, qSt, _config.PrimaryCloudProvider));
-            }
+            var rows = list.Select(version => new ArchiveVersionRow(version, _config.Language,
+                _cachedUploadStatuses.TryGetValue(version.Id, out var status) ? status : null,
+                _config.PrimaryCloudProvider)).ToArray();
+            ArchiveVersions.ApplyKeyedDiff(rows, row => row.Id);
 
-            ArchiveFileGroups.Clear();
-            foreach (var grp in list.GroupBy(SourceAnalyzer.BuildLogicalGroupKey, StringComparer.OrdinalIgnoreCase))
+            var groups = rows.GroupBy(row => SourceAnalyzer.BuildLogicalGroupKey(row.Record), StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
             {
-                var latest = grp.OrderByDescending(x => x.VersionNum).ThenByDescending(x => x.CreatedAtUnixMs).First();
-                _cachedUploadStatuses.TryGetValue(latest.Id, out var qSt);
-                ArchiveFileGroups.Add(new ArchiveFileGroupRow(latest, grp.Count(), _config.Language, qSt, _config.PrimaryCloudProvider));
-            }
+                var latest = group.OrderByDescending(row => row.VersionNum)
+                    .ThenByDescending(row => row.Record.CreatedAtUnixMs).First();
+                return new ArchiveFileGroupRow(latest.Record, group.Count(), latest.Language, latest.QueueStatus, latest.Provider);
+            }).ToArray();
+            ArchiveFileGroups.ApplyKeyedDiff(groups, row => row.GroupKey.ToUpperInvariant());
         }
         finally
         {
@@ -212,9 +212,7 @@ public sealed partial class MainViewModel
 
         if (string.IsNullOrWhiteSpace(SearchQuery) && SelectedPlatformFilter == "All" && SelectedAvailabilityFilterIndex == 0)
         {
-            RecentDashboardArchives.Clear();
-            foreach (var g in ArchiveFileGroups.Take(6))
-                RecentDashboardArchives.Add(g);
+            RecentDashboardArchives.ApplyKeyedDiff(ArchiveFileGroups.Take(6).ToArray(), row => row.GroupKey.ToUpperInvariant());
             OnPropertyChanged(nameof(HasRecentDashboardArchivesVisibility));
             OnPropertyChanged(nameof(NoRecentDashboardArchivesVisibility));
         }

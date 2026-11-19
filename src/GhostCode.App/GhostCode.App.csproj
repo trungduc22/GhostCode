@@ -33,8 +33,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NativeShellKit.Hosting" Version="[0.1.0-alpha.2]" />
-    <PackageReference Include="NativeShellKit.Diagnostics" Version="[0.1.0-alpha.2]" />
+    <PackageReference Include="NativeShellKit.Hosting" Version="[0.2.0-alpha.3]" />
+    <PackageReference Include="NativeShellKit.Diagnostics" Version="[0.2.0-alpha.3]" />
+    <PackageReference Include="NativeShellKit.Communication" Version="[0.2.0-alpha.3]" />
+    <PackageReference Include="NativeShellKit.WinUI" Version="[0.2.0-alpha.3]" />
+    <PackageReference Include="NativeShellKit.Tray" Version="[0.2.0-alpha.3]" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
@@ -47,7 +50,8 @@
 
   <Target Name="IncludeCompiledXamlInPublish" AfterTargets="ComputeFilesToPublish">
     <ItemGroup>
-      <_CompiledXbfFiles Include="$(OutDir)**\*.xbf" />
+      <_CompiledXbfFiles Include="$(OutDir)**\*.xbf"
+        Exclude="$(OutDir)NativeShellKit.WinUI\**\*.xbf;$(OutDir)NativeShellKit.DesignSystem\**\*.xbf" />
       <ResolvedFileToPublish Include="@(_CompiledXbfFiles)">
         <RelativePath>%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>

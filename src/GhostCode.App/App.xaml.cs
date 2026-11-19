@@ -17,8 +17,12 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using NativeShellKit.Abstractions.Identity;
 using NativeShellKit.Abstractions.Lifecycle;
+using NativeShellKit.Abstractions.Threading;
+using NativeShellKit.Abstractions.Tray;
 using NativeShellKit.Diagnostics;
 using NativeShellKit.Hosting.Hosting;
+using NativeShellKit.Tray;
+using NativeShellKit.WinUI.Threading;
 using HostRegistryBridge = NativeShellKit.Hosting.DependencyInjection.MicrosoftDependencyInjectionExtensions;
 
 namespace GhostCode.App;
@@ -156,19 +160,24 @@ public partial class App : Application
         var launchArguments = Environment.GetCommandLineArgs().Skip(1).ToList();
         if (isSelfTest)
             launchArguments.Add("--self-test");
+        var uiDispatcher = new UiDispatcherHelper(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
         _host = NativeShellHostBuilder.Create(identity, launchArguments.ToArray())
             .ConfigureServices(registry =>
             {
                 HostRegistryBridge.PopulateFrom(registry, services);
                 registry.AddSecurityAndDiagnostics();
+                registry.AddSingleton<IUiDispatcher>(uiDispatcher);
             })
+            .AddNativeTray()
+            .AddModule(new HiberDeskPeerModule(string.IsNullOrWhiteSpace(customConfigEnv) ? null : appDataDir,
+                (provider, ct) => OpenArchiveForPeerAsync(provider.GetRequiredService<IUiDispatcher>(), ct)))
             .Build();
         await _host.StartAsync();
         _serviceProvider = _host.Services;
         Services = _serviceProvider;
 
         _window = _serviceProvider.GetRequiredService<MainWindow>();
-        _window.AttachTray(() => _ = ShutdownAndExitAsync());
+        _window.AttachTray(_serviceProvider.GetRequiredService<ITrayService>(), () => _ = ShutdownAndExitAsync());
         var dispatcherQueue = _window.DispatcherQueue;
         _shutdownSignalRegistration = ProcessShutdownSignal.RegisterListener(() =>
         {
@@ -189,6 +198,11 @@ public partial class App : Application
         {
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
             await store.InitializeAsync();
+            try { await _serviceProvider.GetRequiredService<HiberDeskPeer>().InitializeAsync(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                vmStartupWarnings.Add("HiberDesk connection setup is unavailable.");
+            }
 
             try { await UnifiedArchiveMigrationService.MigrateIfNeededAsync(config, configPath, store); }
             catch (Exception ex) { vmStartupWarnings.Add($"Migration: {ex.Message}"); }
@@ -282,7 +296,6 @@ public partial class App : Application
                 await _serviceProvider.GetRequiredService<GoogleDriveService>().StopAsync();
                 await _serviceProvider.GetRequiredService<OneDriveService>().StopAsync();
                 await _serviceProvider.GetRequiredService<SqliteArchiveStore>().CheckpointWalAsync();
-                _window?.DisposeTray();
             }
         }
         catch
@@ -291,14 +304,32 @@ public partial class App : Application
         }
         finally
         {
+            _window?.DisposeTray();
             if (_host is not null)
             {
                 try { await _host.DisposeAsync(); } catch { }
                 _host = null;
                 _serviceProvider = null;
             }
-            try { _window?.Close(); } catch { }
-            Exit();
+            if (_window is { } window)
+            {
+                window.SystemBackdrop = null;
+                window.Content = null;
+                window.DispatcherQueue.TryEnqueue(window.Close);
+            }
+            else
+                Exit();
         }
+    }
+
+    private async Task<bool> OpenArchiveForPeerAsync(IUiDispatcher dispatcher, CancellationToken ct)
+    {
+        return await dispatcher.EnqueueAsync(() =>
+        {
+            if (_shuttingDown || _window is not { } window)
+                return false;
+            window.TrayManager?.ShowAndActivateWindow();
+            return window.NavigateToTag("Archive");
+        }, ct).ConfigureAwait(false);
     }
 }

@@ -17,6 +17,11 @@
             Spacing="18"
             MaxWidth="1040"
             HorizontalAlignment="Stretch">
+            <StackPanel Spacing="6">
+                <TextBlock Text="HiberDesk" FontWeight="SemiBold" FontSize="16" />
+                <TextBlock x:Name="HiberDeskAccessText" TextWrapping="Wrap" />
+                <Button x:Name="HiberDeskAccessButton" Click="HiberDeskAccess_Click" />
+            </StackPanel>
 
             <!-- 1. General & Appearance + Paths -->
             <StackPanel Spacing="6">

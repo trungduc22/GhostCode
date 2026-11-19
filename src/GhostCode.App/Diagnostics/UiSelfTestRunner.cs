@@ -425,6 +425,7 @@ public static class UiSelfTestRunner
                     && vm.DiffSideBySideLines.Count > 0
                     && vm.CompareWithVersion?.VersionBadge == "v2"
                     && vm.DiffTargetVersion?.VersionBadge == "v3";
+                var diffDetails = $"rows={vm.DiffSideBySideLines.Count}, pair={vm.DiffVersionPairText}, baseline={vm.CompareWithVersion?.VersionBadge}, target={vm.DiffTargetVersion?.VersionBadge}";
                 await CaptureAsync("12_diff_side_by_side.png");
 
                 // Switch to Unified Diff + capture Light screenshot
@@ -483,7 +484,7 @@ public static class UiSelfTestRunner
                 vm.RunnerTabIndex = 1;
                 Record("VersionDiffAndSamples",
                     singleVerGuardOk && diffOk && unifiedOk && sameVerNoticeOk && diffReleasedOk && sampleOk,
-                    $"singleGuard={singleVerGuardOk}, diff={diffOk}, unified={unifiedOk}, sameGuard={sameVerNoticeOk}, released={diffReleasedOk}, sample='{vm.SampleRunSummaryText}'");
+                    $"singleGuard={singleVerGuardOk}, diff={diffOk}, {diffDetails}, unified={unifiedOk}, sameGuard={sameVerNoticeOk}, released={diffReleasedOk}, sample='{vm.SampleRunSummaryText}'");
 
                 var restoredPath = Path.Combine(testWorkspaceRoot, "restored_selftest.cpp");
                 bool restoreOk = await vm.RestoreSelectedVersionAsync(restoredPath)

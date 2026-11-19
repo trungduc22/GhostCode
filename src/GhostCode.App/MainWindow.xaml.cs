@@ -16,6 +16,7 @@ using Windows.Foundation;
 using Windows.Graphics;
 using Windows.System;
 using WinRT.Interop;
+using NativeShellKit.Abstractions.Tray;
 
 namespace GhostCode.App;
 
@@ -361,10 +362,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    public void AttachTray(Action onExitRequested)
+    public void AttachTray(ITrayService tray, Action onExitRequested)
     {
         _tray?.Dispose();
-        _tray = new TrayIconManager(this, ViewModel, onExitRequested, () => ViewModel.OpenQuickActionsPanel());
+        _tray = new TrayIconManager(this, ViewModel, tray, onExitRequested, () => ViewModel.OpenQuickActionsPanel());
         ViewModel.AttachExpansionHooks(
             ApplyMicaBackdrop,
             (enabled, gesture) => _tray.ConfigureGlobalHotkey(enabled, gesture));

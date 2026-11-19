@@ -2,7 +2,7 @@ name: NativeShellKit migration checks
 
 on:
   push:
-    branches: [migration/nativeshellkit-ghostcode]
+    branches: [migration/nativeshellkit-ghostcode, convergence/ghostcode-2.0]
 
 permissions:
   contents: read
@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: trungduc22/NativeShellKit
-          ref: 2a73d5f5d3772d0943ed362f18bd45ecaf8278ae
+          ref: 0c652d7e720309cb1f38d04b10fcb5bd102928b6
           path: artifacts/m12/sdk-source
           persist-credentials: false
       - name: Prepare pinned SDK feed
