@@ -22,6 +22,7 @@ public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
     private MainWindow? _window;
+    internal static HiberDeskPeer? CompanionPeer { get; private set; }
     private IDisposable? _shutdownSignalRegistration;
     private bool _shuttingDown;
 
@@ -167,6 +168,13 @@ public partial class App : Application
         {
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
             await store.InitializeAsync();
+            CompanionPeer = new HiberDeskPeer(string.IsNullOrWhiteSpace(customConfigEnv) ? null : appDataDir,
+                store, _serviceProvider.GetRequiredService<NotificationCoordinator>(), OpenArchiveForPeerAsync);
+            try { await CompanionPeer.InitializeAsync(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                vmStartupWarnings.Add("HiberDesk connection setup is unavailable.");
+            }
 
             try { await UnifiedArchiveMigrationService.MigrateIfNeededAsync(config, configPath, store); }
             catch (Exception ex) { vmStartupWarnings.Add($"Migration: {ex.Message}"); }
@@ -243,6 +251,30 @@ public partial class App : Application
         return null;
     }
 
+    private async Task<bool> OpenArchiveForPeerAsync(CancellationToken ct)
+    {
+        var window = _window;
+        if (window is null)
+            return false;
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!window.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (ct.IsCancellationRequested || _shuttingDown)
+            {
+                completion.TrySetResult(false);
+                return;
+            }
+            try
+            {
+                window.TrayManager?.ShowAndActivateWindow();
+                completion.TrySetResult(window.NavigateToTag("Archive"));
+            }
+            catch (Exception) { completion.TrySetResult(false); }
+        }))
+            return false;
+        return await completion.Task.WaitAsync(ct).ConfigureAwait(false);
+    }
+
     private async Task ShutdownAndExitAsync()
     {
         if (_shuttingDown)
@@ -256,6 +288,9 @@ public partial class App : Application
         {
             if (_serviceProvider is not null)
             {
+                if (CompanionPeer is { } peer)
+                    await peer.DisposeAsync();
+                CompanionPeer = null;
                 await _serviceProvider.GetRequiredService<MultiDirectoryMonitor>().StopAsync();
                 await _serviceProvider.GetRequiredService<AuthenticatedBrowserBridge>().StopAsync();
                 await _serviceProvider.GetRequiredService<GoogleDriveService>().StopAsync();

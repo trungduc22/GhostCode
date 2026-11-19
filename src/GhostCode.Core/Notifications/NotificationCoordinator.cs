@@ -34,6 +34,7 @@ public sealed class NotificationCoordinator
     }
 
     public TimeSpan DedupCooldown { get; set; } = TimeSpan.FromMinutes(10);
+    public event Action<NotificationRecord>? NotificationEligible;
 
     public void AttachPresenter(INativeNotificationPresenter presenter) => _presenter = presenter;
 
@@ -82,6 +83,7 @@ public sealed class NotificationCoordinator
         }
 
         _lastAlertSentMs[fullDedupKey] = nowMs;
+        NotificationEligible?.Invoke(record);
         try
         {
             _presenter?.Present(category, severity, title, message, actionHint);

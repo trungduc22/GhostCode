@@ -1,0 +1,3 @@
+[submodule "vendor/NativeShellKit"]
+	path = vendor/NativeShellKit
+	url = https://github.com/trungduc22/NativeShellKit.git

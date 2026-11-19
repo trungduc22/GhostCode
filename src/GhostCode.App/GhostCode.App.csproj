@@ -41,6 +41,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GhostCode.Core\GhostCode.Core.csproj" />
+    <ProjectReference Include="..\..\vendor\NativeShellKit\src\NativeShellKit.Communication\NativeShellKit.Communication.csproj" />
   </ItemGroup>
 
   <Target Name="IncludeCompiledXamlInPublish" AfterTargets="ComputeFilesToPublish">
