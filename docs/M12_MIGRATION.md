@@ -13,6 +13,7 @@ Baseline `4bc43e284701a25171438f342261bcd6cc484d3b`. The existing release workfl
 | Gate | Status |
 | --- | --- |
 | Release workflow for baseline 44217711931 | VERIFIED |
+| Local archive/diff baseline | VERIFIED, 10/10 fixture tests from PhaseBArchiverTests and ArchiveDiffEngineTests |
 | Migration build, real GUI, packaging, notifications and performance | NOT TESTED |
 | Migration start | BLOCKED by the required HiberDesk verification gate |
 
