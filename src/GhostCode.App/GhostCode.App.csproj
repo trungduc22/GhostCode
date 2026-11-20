@@ -33,15 +33,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NativeShellKit.Hosting" Version="[0.2.0-alpha.3]" />
-    <PackageReference Include="NativeShellKit.Diagnostics" Version="[0.2.0-alpha.3]" />
-    <PackageReference Include="NativeShellKit.Communication" Version="[0.2.0-alpha.3]" />
-    <PackageReference Include="NativeShellKit.WinUI" Version="[0.2.0-alpha.3]" />
-    <PackageReference Include="NativeShellKit.Tray" Version="[0.2.0-alpha.3]" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0" />
+    <PackageReference Include="NativeShellKit.Hosting" />
+    <PackageReference Include="NativeShellKit.Diagnostics" />
+    <PackageReference Include="NativeShellKit.Communication" />
+    <PackageReference Include="NativeShellKit.WinUI" />
+    <PackageReference Include="NativeShellKit.Tray" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
   </ItemGroup>
 
   <ItemGroup>

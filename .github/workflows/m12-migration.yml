@@ -2,10 +2,11 @@ name: NativeShellKit migration checks
 
 on:
   push:
-    branches: [migration/nativeshellkit-ghostcode, convergence/ghostcode-2.0]
+    branches: [migration/nativeshellkit-ghostcode, convergence/ghostcode-2.0, 'eco/**']
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   validate:
@@ -15,15 +16,14 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - uses: actions/checkout@v4
-        with:
-          repository: trungduc22/NativeShellKit
-          ref: 0c652d7e720309cb1f38d04b10fcb5bd102928b6
-          path: artifacts/m12/sdk-source
-          persist-credentials: false
-      - name: Prepare pinned SDK feed
+      - name: Authenticate GitHub Packages NuGet source
         shell: pwsh
-        run: ./artifacts/m12/sdk-source/packaging/Pack-NuGet.ps1 -OutputDir (Join-Path $PWD 'artifacts/m12/sdk-feed')
+        run: |
+          dotnet nuget update source github-nativeshellkit `
+            --username x-access-token `
+            --password "${{ secrets.GITHUB_TOKEN }}" `
+            --store-password-in-clear-text `
+            --configfile NuGet.Config
       - name: Build GhostCode
         run: dotnet build GhostCode.sln -c Release
       - name: Archive and diff regression
