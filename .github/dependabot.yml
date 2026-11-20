@@ -1,0 +1,23 @@
+version: 2
+registries:
+  github-nativeshellkit:
+    type: nuget-feed
+    url: https://nuget.pkg.github.com/trungduc22/index.json
+    username: x-access-token
+    password: ${{secrets.GITHUB_TOKEN}}
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    registries:
+      - github-nativeshellkit
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 5
+    groups:
+      nativeshellkit:
+        patterns:
+          - "NativeShellKit.*"
+    labels:
+      - dependencies
+      - nativeshellkit-sdk

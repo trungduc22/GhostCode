@@ -1,0 +1,28 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- NativeShellKit synchronized package train -->
+    <PackageVersion Include="NativeShellKit.Hosting" Version="0.2.0-alpha.4" />
+    <PackageVersion Include="NativeShellKit.Diagnostics" Version="0.2.0-alpha.4" />
+    <PackageVersion Include="NativeShellKit.Communication" Version="0.2.0-alpha.4" />
+    <PackageVersion Include="NativeShellKit.WinUI" Version="0.2.0-alpha.4" />
+    <PackageVersion Include="NativeShellKit.Tray" Version="0.2.0-alpha.4" />
+
+    <!-- Platform & UI -->
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageVersion Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="11.0.0" />
+    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="11.0.0" />
+
+    <!-- Test -->
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+</Project>

@@ -15,12 +15,22 @@ using GhostCode.Core.Toolchains;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using NativeShellKit.Abstractions.Identity;
+using NativeShellKit.Abstractions.Lifecycle;
+using NativeShellKit.Abstractions.Threading;
+using NativeShellKit.Abstractions.Tray;
+using NativeShellKit.Diagnostics;
+using NativeShellKit.Hosting.Hosting;
+using NativeShellKit.Tray;
+using NativeShellKit.WinUI.Threading;
+using HostRegistryBridge = NativeShellKit.Hosting.DependencyInjection.MicrosoftDependencyInjectionExtensions;
 
 namespace GhostCode.App;
 
 public partial class App : Application
 {
-    private ServiceProvider? _serviceProvider;
+    private IAppHost? _host;
+    private IServiceProvider? _serviceProvider;
     private MainWindow? _window;
     private IDisposable? _shutdownSignalRegistration;
     private bool _shuttingDown;
@@ -59,6 +69,8 @@ public partial class App : Application
 
         var appDataDir = Path.GetDirectoryName(configPath)!;
         var credPath = Path.Combine(appDataDir, "credentials.dpapi");
+        var selfTestReportPath = Environment.GetEnvironmentVariable("GHOSTCODE_SELF_TEST_REPORT");
+        bool isSelfTest = !string.IsNullOrWhiteSpace(selfTestReportPath);
 
         var services = new ServiceCollection();
         services.AddSingleton(config);
@@ -66,11 +78,12 @@ public partial class App : Application
         services.AddSingleton(sp => new LosslessArchiver(config, sp.GetRequiredService<SqliteArchiveStore>()));
         services.AddSingleton(_ => new DpapiCredentialStore(credPath));
         services.AddSingleton<HttpClient>(_ => new HttpClient { Timeout = TimeSpan.FromSeconds(45) });
-        services.AddSingleton<INativeNotificationPresenter, WindowsAppNotificationPresenter>();
+        if (!isSelfTest)
+            services.AddSingleton<INativeNotificationPresenter, WindowsAppNotificationPresenter>();
         services.AddSingleton(sp => new NotificationCoordinator(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
-            sp.GetRequiredService<INativeNotificationPresenter>()));
+            sp.GetService<INativeNotificationPresenter>()));
         services.AddSingleton(sp => new GoogleDriveService(
             config,
             sp.GetRequiredService<SqliteArchiveStore>(),
@@ -142,11 +155,29 @@ public partial class App : Application
             sp.GetRequiredService<CopilotAssistanceService>()));
         services.AddSingleton<MainWindow>();
 
-        _serviceProvider = services.BuildServiceProvider();
+        var identity = new AppIdentity("ghostcode", "GhostCode", "trungduc22",
+            typeof(App).Assembly.GetName().Version?.ToString() ?? "0.0.0", appDataDir);
+        var launchArguments = Environment.GetCommandLineArgs().Skip(1).ToList();
+        if (isSelfTest)
+            launchArguments.Add("--self-test");
+        var uiDispatcher = new UiDispatcherHelper(Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+        _host = NativeShellHostBuilder.Create(identity, launchArguments.ToArray())
+            .ConfigureServices(registry =>
+            {
+                HostRegistryBridge.PopulateFrom(registry, services);
+                registry.AddSecurityAndDiagnostics();
+                registry.AddSingleton<IUiDispatcher>(uiDispatcher);
+            })
+            .AddNativeTray()
+            .AddModule(new HiberDeskPeerModule(string.IsNullOrWhiteSpace(customConfigEnv) ? null : appDataDir,
+                (provider, ct) => OpenArchiveForPeerAsync(provider.GetRequiredService<IUiDispatcher>(), ct)))
+            .Build();
+        await _host.StartAsync();
+        _serviceProvider = _host.Services;
         Services = _serviceProvider;
 
         _window = _serviceProvider.GetRequiredService<MainWindow>();
-        _window.AttachTray(() => _ = ShutdownAndExitAsync());
+        _window.AttachTray(_serviceProvider.GetRequiredService<ITrayService>(), () => _ = ShutdownAndExitAsync());
         var dispatcherQueue = _window.DispatcherQueue;
         _shutdownSignalRegistration = ProcessShutdownSignal.RegisterListener(() =>
         {
@@ -167,6 +198,11 @@ public partial class App : Application
         {
             var store = _serviceProvider.GetRequiredService<SqliteArchiveStore>();
             await store.InitializeAsync();
+            try { await _serviceProvider.GetRequiredService<HiberDeskPeer>().InitializeAsync(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                vmStartupWarnings.Add("HiberDesk connection setup is unavailable.");
+            }
 
             try { await UnifiedArchiveMigrationService.MigrateIfNeededAsync(config, configPath, store); }
             catch (Exception ex) { vmStartupWarnings.Add($"Migration: {ex.Message}"); }
@@ -205,11 +241,10 @@ public partial class App : Application
                 try { await monitor.ReconcileOnceAsync(); } catch { }
             });
 
-            var selfTestReportPath = Environment.GetEnvironmentVariable("GHOSTCODE_SELF_TEST_REPORT");
-            if (!string.IsNullOrWhiteSpace(selfTestReportPath))
+            if (isSelfTest)
             {
                 await UiSelfTestRunner.RunAndWriteReportAsync(
-                    selfTestReportPath,
+                    selfTestReportPath!,
                     _window,
                     vm,
                     config,
@@ -261,9 +296,6 @@ public partial class App : Application
                 await _serviceProvider.GetRequiredService<GoogleDriveService>().StopAsync();
                 await _serviceProvider.GetRequiredService<OneDriveService>().StopAsync();
                 await _serviceProvider.GetRequiredService<SqliteArchiveStore>().CheckpointWalAsync();
-                _serviceProvider.GetRequiredService<MainViewModel>().Dispose();
-                _window?.DisposeTray();
-                await _serviceProvider.DisposeAsync();
             }
         }
         catch
@@ -272,8 +304,32 @@ public partial class App : Application
         }
         finally
         {
-            try { _window?.Close(); } catch { }
-            Exit();
+            _window?.DisposeTray();
+            if (_host is not null)
+            {
+                try { await _host.DisposeAsync(); } catch { }
+                _host = null;
+                _serviceProvider = null;
+            }
+            if (_window is { } window)
+            {
+                window.SystemBackdrop = null;
+                window.Content = null;
+                window.DispatcherQueue.TryEnqueue(window.Close);
+            }
+            else
+                Exit();
         }
+    }
+
+    private async Task<bool> OpenArchiveForPeerAsync(IUiDispatcher dispatcher, CancellationToken ct)
+    {
+        return await dispatcher.EnqueueAsync(() =>
+        {
+            if (_shuttingDown || _window is not { } window)
+                return false;
+            window.TrayManager?.ShowAndActivateWindow();
+            return window.NavigateToTag("Archive");
+        }, ct).ConfigureAwait(false);
     }
 }

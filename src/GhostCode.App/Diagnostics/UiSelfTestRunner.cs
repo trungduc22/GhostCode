@@ -6,6 +6,8 @@ using GhostCode.Core.Archiver;
 using GhostCode.Core.Browser;
 using GhostCode.Core.Cloud;
 using GhostCode.Core.Models;
+using GhostCode.Core.Storage;
+using NativeShellKit.Abstractions.Lifecycle;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -66,6 +68,16 @@ public static class UiSelfTestRunner
         try
         {
             await Task.Delay(350);
+
+            var host = App.Services.GetService<IAppHost>();
+            var legacyRoot = Path.GetFullPath(testWorkspaceRoot);
+            bool sdkStateIsolated = host is not null && Path.GetRelativePath(legacyRoot, host.Identity.DataDirectory)
+                .Equals(Path.Combine("trungduc22", "ghostcode"), StringComparison.OrdinalIgnoreCase);
+            bool archiveRootPreserved = Path.GetRelativePath(legacyRoot, config.DatabasePath)
+                .Equals("ghostcode.db", StringComparison.OrdinalIgnoreCase);
+            Record("NativeShellKitHostAndLegacyArchiveRoot",
+                host?.Lifecycle.IsRunning == true && host.Lifecycle.StartupContext.IsSelfTestMode &&
+                sdkStateIsolated && archiveRootPreserved && App.Services.GetService<SqliteArchiveStore>() is not null);
 
             Record("MicaBackdropAttached", window.SystemBackdrop is MicaBackdrop, window.SystemBackdrop?.GetType().Name ?? "null");
 
@@ -413,6 +425,7 @@ public static class UiSelfTestRunner
                     && vm.DiffSideBySideLines.Count > 0
                     && vm.CompareWithVersion?.VersionBadge == "v2"
                     && vm.DiffTargetVersion?.VersionBadge == "v3";
+                var diffDetails = $"rows={vm.DiffSideBySideLines.Count}, pair={vm.DiffVersionPairText}, baseline={vm.CompareWithVersion?.VersionBadge}, target={vm.DiffTargetVersion?.VersionBadge}";
                 await CaptureAsync("12_diff_side_by_side.png");
 
                 // Switch to Unified Diff + capture Light screenshot
@@ -471,7 +484,7 @@ public static class UiSelfTestRunner
                 vm.RunnerTabIndex = 1;
                 Record("VersionDiffAndSamples",
                     singleVerGuardOk && diffOk && unifiedOk && sameVerNoticeOk && diffReleasedOk && sampleOk,
-                    $"singleGuard={singleVerGuardOk}, diff={diffOk}, unified={unifiedOk}, sameGuard={sameVerNoticeOk}, released={diffReleasedOk}, sample='{vm.SampleRunSummaryText}'");
+                    $"singleGuard={singleVerGuardOk}, diff={diffOk}, {diffDetails}, unified={unifiedOk}, sameGuard={sameVerNoticeOk}, released={diffReleasedOk}, sample='{vm.SampleRunSummaryText}'");
 
                 var restoredPath = Path.Combine(testWorkspaceRoot, "restored_selftest.cpp");
                 bool restoreOk = await vm.RestoreSelectedVersionAsync(restoredPath)

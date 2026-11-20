@@ -1,0 +1,43 @@
+name: NativeShellKit migration checks
+
+on:
+  push:
+    branches: [migration/nativeshellkit-ghostcode, convergence/ghostcode-2.0, 'eco/**']
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Authenticate GitHub Packages NuGet source
+        shell: pwsh
+        run: |
+          dotnet nuget update source github-nativeshellkit `
+            --username x-access-token `
+            --password "${{ secrets.GITHUB_TOKEN }}" `
+            --store-password-in-clear-text `
+            --configfile NuGet.Config
+      - name: Build GhostCode
+        run: dotnet build GhostCode.sln -c Release
+      - name: Archive and diff regression
+        run: dotnet test tests/GhostCode.Tests -c Release --no-build --filter "FullyQualifiedName~PhaseBArchiverTests|FullyQualifiedName~ArchiveDiffEngineTests"
+      - name: Run real WinUI with isolated app data
+        shell: pwsh
+        run: |
+          $exe = 'src/GhostCode.App/bin/x64/Release/net10.0-windows10.0.19041.0/win-x64/GhostCode.App.exe'
+          ./packaging/Test-M12Gui.ps1 -Application $exe -ReportDirectory (Join-Path $env:RUNNER_TEMP 'm12-gui')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m12-ghostcode-winui
+          path: |
+            ${{ runner.temp }}/m12-gui/checks.json
+            ${{ runner.temp }}/m12-gui/screenshots
+          if-no-files-found: warn

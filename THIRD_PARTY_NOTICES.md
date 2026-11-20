@@ -12,6 +12,7 @@ Distributed builds bundle or depend on third-party libraries and runtimes govern
 | .NET 10 Desktop & Windows Runtime (self-contained) | `10.0.x` | `GhostCode.App` | MIT License (dotnet/runtime) / Microsoft Redistributable Terms |
 | `CommunityToolkit.Mvvm` | `8.4.0` | `GhostCode.App` | MIT License |
 | `CommunityToolkit.WinUI.Controls.SettingsControls` | `8.2.251219` | `GhostCode.App` | MIT License |
+| `NativeShellKit.Hosting`, `NativeShellKit.Diagnostics`, `NativeShellKit.Communication`, `NativeShellKit.WinUI`, `NativeShellKit.Tray` and transitive NativeShellKit packages | `0.2.0-alpha.3` | `GhostCode.App` | MIT License, Copyright (c) 2026 trungduc22. The MIT terms are included in [LICENSE](LICENSE). |
 | `Microsoft.Extensions.DependencyInjection` | `11.0.0` | `GhostCode.App`, `GhostCode.Core` | MIT License |
 | `Microsoft.Extensions.Logging` | `11.0.0` | `GhostCode.Core` | MIT License |
 | `Microsoft.Data.Sqlite` | `11.0.0` | `GhostCode.Core` | MIT License |

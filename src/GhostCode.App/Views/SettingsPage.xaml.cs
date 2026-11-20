@@ -12,9 +12,36 @@ public sealed partial class SettingsPage : Page
     {
         ViewModel = App.Services.GetRequiredService<MainViewModel>();
         InitializeComponent();
+        Loaded += (_, _) => UpdateHiberDeskAccess();
     }
 
     public MainViewModel ViewModel { get; }
+
+    private void UpdateHiberDeskAccess()
+    {
+        bool vi = App.Services.GetRequiredService<GhostCode.Core.Models.GhostCodeConfig>().Language == GhostCode.Core.Models.UiLanguage.Vi;
+        var peer = App.Services.GetService<HiberDeskPeer>();
+        HiberDeskAccessButton.IsEnabled = peer is not null;
+        HiberDeskAccessText.Text = vi
+            ? "Chia sẻ số liệu kho lưu trữ và trạng thái sao lưu với HiberDesk, đồng thời cho phép mở lịch sử lưu trữ."
+            : "Share archive counts and backup status with HiberDesk and allow it to open archive history.";
+        HiberDeskAccessButton.Content = peer?.Enabled == true
+            ? (vi ? "Thu hồi quyền HiberDesk" : "Revoke HiberDesk access")
+            : (vi ? "Cho phép HiberDesk" : "Allow HiberDesk");
+    }
+
+    private async void HiberDeskAccess_Click(object sender, RoutedEventArgs e)
+    {
+        if (App.Services.GetService<HiberDeskPeer>() is not { } peer)
+            return;
+        HiberDeskAccessButton.IsEnabled = false;
+        try { await peer.SetEnabledAsync(!peer.Enabled); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ViewModel.ShowInfoBar("HiberDesk", "The local authorization could not be saved.", InfoBarSeverity.Warning);
+        }
+        finally { UpdateHiberDeskAccess(); }
+    }
 
     private Task<string?> PickFolderAsync() =>
         FilePickerHelpers.PickSingleFolderAsync(App.MainWindowHandle);
